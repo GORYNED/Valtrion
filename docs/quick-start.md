@@ -7,7 +7,7 @@ device or third-party runtime dependency is needed.
 
 ## Install from this repository
 
-The repository is private; use your existing Git access. From a new checkout:
+Public HTTPS cloning needs no GitHub account or token. Private forks require your existing Git access. From a new checkout:
 
 ```sh
 git clone https://github.com/GORYNED/Valtrion.git

@@ -2,7 +2,7 @@
 
 Copy the prompt below into an agent working in your project. It first identifies the task and project type, then chooses a command check or the Unity integration. It works with an agent that has file and command access and needs no agent-specific plugin.
 
-The agent must have access to the private Valtrion repository. A missing repository permission or required tool is a blocker to report. The [Quick Start](quick-start.md) covers command jobs; the [Unity Quick Start](unity-quick-start.md) covers Editor integration. The [readiness record](release-readiness.md) separates observed evidence from unverified work.
+Use Valtrion's HTTPS repository URL; a public checkout needs no GitHub account or token. Private forks require existing repository access. A missing required tool or permission is a blocker to report. The [Quick Start](quick-start.md) covers command jobs; the [Unity Quick Start](unity-quick-start.md) covers Editor integration. The [readiness record](release-readiness.md) separates observed evidence from unverified work.
 
 ```text
 Use Valtrion for repeatable checks in this workspace, then prove the chosen path

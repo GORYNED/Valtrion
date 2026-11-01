@@ -1,9 +1,11 @@
 # Release readiness
 
-This is the evidence record for draft PR #1. The repository remains **private**.
-No merge, package upload, release, tag, visibility change or billing change is
-part of this preparation. Exact tested revisions and the final review are recorded
-in the PR; a result for an earlier revision is identified below.
+This is the verification record for PR #1, prepared while the repository was
+private. The owner subsequently authorized its squash merge and public launch as
+an open-source pre-release. Merge/publication/security-setting results are recorded
+in PR #1. Packages and a stable 1.0 release are outside this launch. Exact tested
+revisions and the final review are recorded in the PR; earlier results are
+identified below. Actions settings and billing are not changed by this launch.
 
 ## CURRENT — product and repository
 
@@ -118,15 +120,16 @@ available. No claim of a hidden-server-cache or external-copy audit is made.
 
 ## CURRENT — private vulnerability reporting and owner action
 
-The repository's reporting-status API returned 404. GitHub documents Private
+During private preparation the repository's reporting-status API returned 404. GitHub documents Private
 Vulnerability Reporting for **public repositories**; this response while private
 does not prove a settings defect. See [GitHub's instructions](https://docs.github.com/en/code-security/how-tos/report-and-fix-vulnerabilities/configure-vulnerability-reporting/configure-for-a-repository).
 
 At an explicitly authorized public launch, the owner must enable **Settings →
 Advanced Security → Private vulnerability reporting → Enable**, confirm **Security
 → Advisories → Report a vulnerability**, and enable security-alert notifications.
-A tested separate private contact is an alternative. No visibility change is
-authorized here. See [SECURITY.md](../SECURITY.md) for the reporting policy.
+A tested separate private contact is an alternative. A readiness assessment alone
+does not authorize a visibility change; that requires the owner's separate launch
+instruction. See [SECURITY.md](../SECURITY.md) for the reporting policy.
 
 ## CURRENT — final decision
 

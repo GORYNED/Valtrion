@@ -2,7 +2,7 @@
 
 Install the CLI, add the Unity package to a project, then run a small plan in the Editor. This checks the integration; it does not test your game's behavior or prove anything about a physical device.
 
-You need Git, Python 3.10 or newer with `venv` and `pip`, and a licensed Unity Editor matching your project's `ProjectSettings/ProjectVersion.txt`. The package declares Unity 6000.6 or newer. See [release readiness](release-readiness.md) for the versions actually tested. The repository is currently private: cloning requires access until the owner approves publication.
+You need Git, Python 3.10 or newer with `venv` and `pip`, and a licensed Unity Editor matching your project's `ProjectSettings/ProjectVersion.txt`. The package declares Unity 6000.6 or newer. See [release readiness](release-readiness.md) for the versions actually tested. Public HTTPS cloning and UPM Git installation need no GitHub account or token; private forks require existing access.
 
 ## 1. Install the CLI
 
