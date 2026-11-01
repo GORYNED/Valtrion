@@ -333,6 +333,21 @@ class _Runner:
         self.events.emit("progress", f"phase: {phase}" if phase else "phase cleared", data={"phase": phase})
         self.flush(force=True)
 
+    def build_log_bytes(self) -> int:
+        """Total size of the build logs the adapters write beside the build output (`ADAPTER_LOG_FOLDERS`): it grows while Unity or
+        xcodebuild work, so a watcher can tell a quiet but busy build from a stuck one. 0 when there are none."""
+        dirs = self.work_dirs()
+        base = dirs.base if dirs is not None else self.store.directory
+        total = 0
+        for name in ADAPTER_LOG_FOLDERS:
+            try:
+                for item in (base / name).iterdir():
+                    if item.is_file():
+                        total += item.stat().st_size
+            except OSError:
+                continue
+        return total
+
     def lease_wait_elapsed(self) -> float:
         """Seconds this job has spent acquiring leases (a wait in progress included). The pipeline timeout does not count them: a wait
         is bounded by `--lease-wait` alone, and work that has not started cannot use up the time meant for it."""
@@ -598,7 +613,9 @@ class _PipelineWatch:
             if now >= next_pulse:
                 next_pulse = now + tick
                 runner.last_progress = core.utc_now()
-                runner.events.emit("progress", "pipeline running", data={"elapsedSec": round(now - started, 1), "workingSec": round(working, 1)})
+                data = {"elapsedSec": round(now - started, 1), "workingSec": round(working, 1), "phase": runner.phase,
+                        "buildLogBytes": runner.build_log_bytes()}
+                runner.events.emit("progress", "pipeline running", data=data)
                 runner.flush(force=True)
 
 

@@ -352,6 +352,27 @@ class ScopedLeaseTests(unittest.TestCase):
         info = jobs.start_job(request, self.root, self.home, foreground=True)
         self.assertEqual("TIMEOUT", jobs.JobStore(Path(info["dir"])).read_job()["status"], "the 4 s wait did not buy 4 s more work time")
 
+    def test_a_long_silent_build_keeps_reporting_its_phase_and_the_growth_of_its_log(self):
+        self.open_gates("A")
+        self.world.gate("A", "build").clear()
+        threading.Timer(1.5, self.world.gate("A", "build").set).start()
+        base_class = adapter_class(self.world)
+
+        class Logging(base_class):
+            def build(self, project, profile, out):
+                log = out.parent / "build-logs"
+                log.mkdir(parents=True, exist_ok=True)
+                (log / "xcode-build.log").write_bytes(b"x" * 500)
+                return super().build(project, profile, out)
+
+        providers.register("android", Logging)
+        _, store = self.run_job("A", self.document())
+        self.assertEqual("PASS", store.read_job()["status"], store.read_job()["reason"])
+        pulses = [e["data"] for e in self.events_of(store) if e["type"] == "progress" and e.get("message") == "pipeline running"]
+        building = [d for d in pulses if d.get("phase") == "building"]
+        self.assertTrue(building, pulses)
+        self.assertTrue(all(d["buildLogBytes"] >= 500 for d in building), building)
+
     def test_the_job_timeout_still_ends_a_long_build(self):
         self.open_gates("A")
         self.world.gate("A", "build").clear()  # the build does not return within the 2 s timeout, only after 3 s
