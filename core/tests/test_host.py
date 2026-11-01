@@ -182,8 +182,8 @@ class DoctorTests(HostTestCase):
         report = json.loads(out)
         # `adapters` appears when this checkout ships platform adapters; it is not part of the host's own probe.
         self.assertEqual({"host", "capabilities", "tools", "editors", "gui", "disk", "githubRunner", "blocked", "devices",
-                          "workRoot", "storage", "warnings", "core"}, set(report) - {"adapters"})
-        self.assertEqual({"workRoot", "artifactsRoot", "buildCache", "freeBytes"}, set(report["storage"]), "no threshold is set")
+                          "workRoot", "storage", "checkouts", "warnings", "core"}, set(report) - {"adapters"})
+        self.assertEqual({"workRoot", "artifactsRoot", "buildCache", "incremental", "freeBytes"}, set(report["storage"]), "no threshold is set")
 
 
 class FakeSsh(Transport):

@@ -48,6 +48,29 @@ class HostEntry:
 
 
 @dataclass(frozen=True)
+class ManagedCheckout:
+    id: str
+    path: Path  # the root of the git checkout
+
+
+@dataclass(frozen=True)
+class ManagedProject:
+    """`host.json` `projects.<name>`: a small pool of build checkouts valtrion owns, and the remote it can create them from."""
+    name: str
+    checkouts: tuple[ManagedCheckout, ...]
+    remote: str | None = None
+    unity_path: str = "."  # the Unity project below the checkout root
+    default: str = ""  # id of the checkout used when a job names none
+
+    def pick(self, checkout_id: str | None) -> ManagedCheckout | None:
+        wanted = checkout_id or self.default or self.checkouts[0].id
+        return next((item for item in self.checkouts if item.id == wanted), None)
+
+    def project_dir(self, item: ManagedCheckout) -> Path:
+        return item.path if self.unity_path in ("", ".") else item.path / self.unity_path
+
+
+@dataclass(frozen=True)
 class HostSettings:
     artifacts_root: Path
     retention_days: float = DEFAULT_RETENTION_DAYS
@@ -56,6 +79,11 @@ class HostSettings:
     min_free_gib: float | None = None
     #: `disk.keepDaysUnderPressure`: run folders older than this are removed when space is low (instead of `retention.keepDays`).
     keep_days_under_pressure: float = 2.0
+    #: `projects`: the projects whose build checkouts valtrion owns (see `checkout.py`).
+    projects: tuple["ManagedProject", ...] = ()
+
+    def project(self, name: str) -> "ManagedProject | None":
+        return next((item for item in self.projects if item.name == name), None)
 
     @property
     def roots(self) -> workroot.WorkRoots:
@@ -132,9 +160,54 @@ def _load_host_settings(home: Path | None = None) -> HostSettings:
     pressure_days = disk.get("keepDaysUnderPressure", 2.0)
     if isinstance(pressure_days, bool) or not isinstance(pressure_days, (int, float)) or not math.isfinite(pressure_days) or pressure_days < 0:
         raise ConfigError("host.json: disk.keepDaysUnderPressure must be a non-negative number")
+    projects = _load_projects(document.get("projects", {}))
     return HostSettings(Path(root).expanduser() if root else default_root, float(days),
                         Path(work).expanduser() if work else default_work, float(minimum) if minimum is not None else None,
-                        float(pressure_days))
+                        float(pressure_days), projects)
+
+
+def _load_projects(value: Any) -> tuple[ManagedProject, ...]:
+    if not isinstance(value, dict):
+        raise ConfigError("host.json: projects must be an object")
+    found: list[ManagedProject] = []
+    for name, item in value.items():
+        where = f"host.json: projects.{name}"
+        if not isinstance(item, dict) or not isinstance(item.get("checkouts"), list) or not item["checkouts"]:
+            raise ConfigError(f"{where} must be an object with a non-empty checkouts list")
+        checkouts: list[ManagedCheckout] = []
+        for entry in item["checkouts"]:
+            identifier = entry.get("id") if isinstance(entry, dict) else None
+            path = entry.get("path") if isinstance(entry, dict) else None
+            if not isinstance(identifier, str) or not re.fullmatch(r"[A-Za-z0-9._-]{1,40}", identifier) or identifier == "auto":
+                raise ConfigError(f"{where}.checkouts: every entry needs an id of letters, digits, '.', '_' and '-'")
+            if not isinstance(path, str) or not path or not Path(path).expanduser().is_absolute():
+                raise ConfigError(f"{where}.checkouts[{identifier}].path must be an absolute path (or start with ~)")
+            if any(existing.id == identifier for existing in checkouts):
+                raise ConfigError(f"{where}.checkouts: the id {identifier} is used twice")
+            checkouts.append(ManagedCheckout(identifier, Path(path).expanduser()))
+        remote = item.get("remote")
+        if remote is not None and (not isinstance(remote, str) or not remote):
+            raise ConfigError(f"{where}.remote must be a non-empty string")
+        if remote is not None and (remote.startswith("-") or remote.lower().startswith("ext::")):
+            raise ConfigError(f"{where}.remote must be a git URL or path, not an option or an ext:: transport")
+        unity_path = item.get("unityPath", ".")
+        if (not isinstance(unity_path, str) or Path(unity_path).is_absolute() or ".." in Path(unity_path).parts
+                or Path(unity_path).drive or Path(unity_path).root or unity_path.startswith(("/", "\\"))):
+            raise ConfigError(f"{where}.unityPath must be a relative path inside the checkout")
+        default = item.get("default", checkouts[0].id)
+        if default not in {c.id for c in checkouts}:
+            raise ConfigError(f"{where}.default must be the id of one of its checkouts")
+        found.append(ManagedProject(name, tuple(checkouts), remote, unity_path, default))
+    seen: list[tuple[Path, str]] = []
+    for project in found:
+        for entry in project.checkouts:
+            here = Path(os.path.normcase(os.path.abspath(entry.path.expanduser())))
+            for other, label in seen:
+                if here == other or other in here.parents or here in other.parents:
+                    raise ConfigError(f"host.json: the checkout {project.name}/{entry.id} ({entry.path}) is the same folder as, or lies inside "
+                                      f"or around, {label}; managed checkouts must not overlap")
+            seen.append((here, f"{project.name}/{entry.id}"))
+    return tuple(found)
 
 
 def _default_work_root(home: Path) -> Path:

@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from valtrion import config, constants, core, jobs, providers, supervise
+from valtrion import config, constants, core, incremental, jobs, providers, supervise
 from valtrion.adapter import DeviceInfo
 from valtrion.providers import ios
 
@@ -165,7 +165,7 @@ class IosTests(unittest.TestCase):
 
     def make_app(self, argv, call):
         derived = Path(argv[argv.index("-derivedDataPath") + 1])
-        (derived / "Build" / "Products" / "ReleaseForRunning-iphoneos" / "Game.app").mkdir(parents=True)
+        (derived / "Build" / "Products" / "ReleaseForRunning-iphoneos" / "Game.app").mkdir(parents=True, exist_ok=True)
         return result()
 
     def test_a_good_build_exports_then_builds_for_the_discovered_device_and_returns_the_app(self):
@@ -184,6 +184,88 @@ class IosTests(unittest.TestCase):
         xcode = self.recorder.named("xcodebuild")[0]
         self.assertIn(f"platform=iOS,id={UDID}", xcode["argv"], "the destination comes from discovery, not from a script constant")
         self.assertIn("-allowProvisioningUpdates", xcode["argv"])
+
+    # -- incremental builds in a managed checkout (incremental.py) -------------------------------------------------------------
+
+    def incremental_plan(self, key="k1", clean=False):
+        return incremental.Plan(self.home / "incremental" / "Game" / "queue", key, clean)
+
+    def incremental_build(self, plan):
+        self.adapter.bind_incremental(plan, "unity-project:abc")
+        return self.adapter.build(self.project, "Internal", self.out)
+
+    def test_the_second_build_exports_with_append_into_the_same_folder_and_reuses_derived_data(self):
+        self.recorder.answers["unity"] = self.make_export
+        self.recorder.answers["xcodebuild"] = self.make_app
+        plan = self.incremental_plan()
+        first = self.incremental_build(plan)
+        self.assertEqual(constants.PASS, first.status, first.reason)
+        self.assertIn("clean build (first build here)", first.details[ios.INCREMENTAL_DETAIL])
+        self.assertNotIn("-gdv-export-append", self.recorder.named("unity")[0]["argv"], "nothing to append to yet")
+        self.assertEqual(self.out / "Game.app", first.artifacts[0], "the pipeline publishes a copy; the product stays in DerivedData")
+        marker = plan.folder / "DerivedData" / "compiled.o"
+        marker.write_text("object", encoding="utf-8")
+        (plan.folder / "export" / "Classes.cpp").write_text("il2cpp", encoding="utf-8")
+        second = self.incremental_build(plan)
+        self.assertEqual(constants.PASS, second.status, second.reason)
+        self.assertIn("reused", second.details[ios.INCREMENTAL_DETAIL])
+        unity = self.recorder.named("unity")[1]["argv"]
+        self.assertEqual(str(plan.folder / "export"), unity[unity.index("-gdv-export-path") + 1], "the same export folder, outside the job")
+        self.assertEqual("1", unity[unity.index("-gdv-export-append") + 1], "Unity is asked to append")
+        xcode = self.recorder.named("xcodebuild")[1]["argv"]
+        self.assertEqual(str(plan.folder / "DerivedData"), xcode[xcode.index("-derivedDataPath") + 1])
+        self.assertTrue(marker.exists(), "DerivedData of the previous build is still there")
+        self.assertTrue((plan.folder / "export" / "Classes.cpp").exists(), "the export is not wiped")
+
+    def test_a_changed_key_or_a_clean_request_starts_from_nothing(self):
+        self.recorder.answers["unity"] = self.make_export
+        self.recorder.answers["xcodebuild"] = self.make_app
+        plan = self.incremental_plan("k1")
+        self.incremental_build(plan)
+        (plan.folder / "DerivedData" / "compiled.o").write_text("object", encoding="utf-8")
+        changed = self.incremental_build(self.incremental_plan("k2"))
+        self.assertIn("toolchain, build profile or signing changed", changed.details[ios.INCREMENTAL_DETAIL])
+        self.assertFalse((plan.folder / "DerivedData" / "compiled.o").exists())
+        self.assertNotIn("-gdv-export-append", self.recorder.named("unity")[1]["argv"])
+        (plan.folder / "DerivedData" / "compiled.o").write_text("object", encoding="utf-8")
+        forced = self.incremental_build(self.incremental_plan("k2", clean=True))
+        self.assertIn("clean rebuild was requested", forced.details[ios.INCREMENTAL_DETAIL])
+        self.assertFalse((plan.folder / "DerivedData" / "compiled.o").exists())
+
+    def test_a_build_killed_half_way_is_not_trusted_by_the_next_one(self):
+        self.recorder.answers["unity"] = self.make_export
+        self.recorder.answers["xcodebuild"] = self.make_app
+        plan = self.incremental_plan()
+        self.incremental_build(plan)
+        self.recorder.answers["xcodebuild"] = lambda argv, call: result(constants.TIMEOUT, "", None, "timed out")
+        broken = self.incremental_build(plan)
+        self.assertEqual(constants.TIMEOUT, broken.status)
+        self.assertFalse((plan.folder / "export").exists(), "the half-built project is removed")
+        self.recorder.answers["xcodebuild"] = self.make_app
+        again = self.incremental_build(plan)
+        self.assertIn("clean build", again.details[ios.INCREMENTAL_DETAIL])
+
+    def test_a_failed_build_keeps_the_folder_for_the_next_try(self):
+        self.recorder.answers["unity"] = self.make_export
+        self.recorder.answers["xcodebuild"] = self.make_app
+        plan = self.incremental_plan()
+        self.incremental_build(plan)
+        self.recorder.answers["unity"] = lambda argv, call: result(constants.FAIL, "", 1, "compile error")
+        failed = self.incremental_build(plan)
+        self.assertEqual(constants.FAIL, failed.status)
+        self.recorder.answers["unity"] = self.make_export
+        again = self.incremental_build(plan)
+        self.assertIn("did not finish", again.details[ios.INCREMENTAL_DETAIL], "a build that did not succeed never marks the folder as good")
+
+    def test_an_unmanaged_build_is_not_incremental(self):
+        self.recorder.answers["unity"] = self.make_export
+        self.recorder.answers["xcodebuild"] = self.make_app
+        self.adapter.bind_incremental(self.incremental_plan())
+        self.adapter.bind_incremental(None)
+        outcome = self.adapter.build(self.project, "Internal", self.out)
+        self.assertNotIn(ios.INCREMENTAL_DETAIL, outcome.details)
+        xcode = self.recorder.named("xcodebuild")[0]["argv"]
+        self.assertEqual(str(self.out / "DerivedData"), xcode[xcode.index("-derivedDataPath") + 1])
 
     def test_an_export_without_a_workspace_is_built_with_project(self):
         self.recorder.answers["unity"] = self.make_export

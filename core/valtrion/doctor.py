@@ -14,7 +14,7 @@ import subprocess
 from pathlib import Path
 from typing import Callable, Sequence
 
-from . import __version__, buildcache, core, diskspace, workroot
+from . import __version__, buildcache, compare, core, diskspace, incremental, lease, workroot
 from .resolver import HostCapabilities
 
 PROBE_TIMEOUT_SEC = 20
@@ -217,11 +217,40 @@ def storage_report(work_root: Path, artifacts_root: Path, min_free_gib: float | 
         "artifactsRoot": {"path": str(artifacts_root), "bytes": diskspace.folder_bytes(artifacts_root) if artifacts_root.is_dir() else 0},
         "buildCache": {"path": str(cache), "bytes": diskspace.folder_bytes(cache) if cache.is_dir() else 0,
                        "entries": len(buildcache.entries(cache))},
+        "incremental": [{"path": str(path), "bytes": diskspace.folder_bytes(path)} for path in incremental.folders(home)],
         "freeBytes": free}
     if min_free_gib:
         report["minFreeGiB"] = min_free_gib
         report["belowMinimum"] = free < min_free_gib * diskspace.GIB
     return report
+
+
+def checkouts_report(projects: Sequence, home: Path | None = None, sizes: bool = False) -> dict:
+    """The managed build checkouts of `host.json` `projects` (their commit, size and who holds each one's lease), and the project folders
+    outside them that hold a `unity-project:` lease right now."""
+    held: dict[str, dict] = {}
+    try:
+        for status in lease.LeaseManager(home or core.valtrion_home()).list_all():
+            if status.state == "held" and status.resource.startswith("unity-project:") and status.record is not None:
+                held[status.resource] = {"owner": status.record.owner, "session": status.record.session, "purpose": status.record.purpose}
+    except OSError:
+        held = {}
+    managed_resources: set[str] = set()
+    listed = []
+    for project in projects:
+        for item in project.checkouts:
+            folder = project.project_dir(item)
+            resource = lease.unity_project_resource(folder)
+            managed_resources.add(resource)
+            exists = item.path.is_dir() and (item.path / ".git").exists()
+            head = None
+            if exists:
+                code, output = compare.run_git(item.path, ["rev-parse", "HEAD"])
+                head = output.strip() if code == 0 else None
+            listed.append({"project": project.name, "id": item.id, "path": str(item.path), "exists": exists, "commit": head,
+                           "bytes": diskspace.folder_bytes(item.path) if exists and sizes else None, "lease": held.get(resource)})
+    return {"managed": listed, "unmanagedLeases": [{"resource": resource, **info} for resource, info in sorted(held.items())
+                                                    if resource not in managed_resources]}
 
 
 def build_platforms(os_name: str, editors: Sequence[dict], apple_ok: bool) -> list[str]:
@@ -240,7 +269,8 @@ def build_platforms(os_name: str, editors: Sequence[dict], apple_ok: bool) -> li
 
 def probe_local(
         os_name: str | None = None, run: Runner = run_probe, artifacts_root: Path | None = None,
-        environ: dict | None = None, work_root: Path | None = None, min_free_gib: float | None = None) -> dict:
+        environ: dict | None = None, work_root: Path | None = None, min_free_gib: float | None = None,
+        projects: Sequence = (), checkout_sizes: bool = False) -> dict:
     """The full report of this host. Pure of side effects except running read-only commands."""
     os_name = os_name or core.local_os()
     work_root = work_root or workroot.default_work_root(os_name)
@@ -276,6 +306,7 @@ def probe_local(
         "disk": disk_report(artifacts_root or core.valtrion_home()), "githubRunner": probe_runner(os_name, run), "blocked": blocked,
         "workRoot": work_root_report(work_root),
         "storage": storage_report(work_root, artifacts_root or core.valtrion_home() / "artifacts", min_free_gib),
+        "checkouts": checkouts_report(projects, sizes=checkout_sizes),
         "warnings": protected_path_warnings(os_name, {
             "work root": work_root, "artifacts root": artifacts_root or core.valtrion_home() / "artifacts", "valtrion home": core.valtrion_home()},
             virtualized={"work root": virtual_work_root})
@@ -315,6 +346,14 @@ def render(report: dict) -> str:
         lines.append(f"  storage: work root {storage['workRoot']['bytes'] / gib:.1f} GiB, run folders {storage['artifactsRoot']['bytes'] / gib:.1f} GiB, "
                      f"build cache {storage['buildCache']['bytes'] / gib:.1f} GiB ({storage['buildCache']['entries']} build(s)), "
                      f"{storage['freeBytes'] / gib:.1f} GiB free")
+        for item in storage.get("incremental", []):
+            lines.append(f"  incremental build folder {item['path']}: {item['bytes'] / gib:.1f} GiB")
+        for item in (report.get("checkouts") or {}).get("managed", []):
+            state = f"at {item['commit'][:12]}" if item["commit"] else ("not a git checkout" if item["exists"] else "not created yet")
+            holder = f", leased by {item['lease']['owner']} ({item['lease']['purpose']})" if item.get("lease") else ""
+            lines.append(f"  checkout {item['project']}/{item['id']}: {item['path']} {state}, {(item['bytes'] or 0) / gib:.1f} GiB{holder}")
+        for item in (report.get("checkouts") or {}).get("unmanagedLeases", []):
+            lines.append(f"  project folder outside host.json projects holds a lease: {item['resource']} ({item['owner']}, {item['purpose']})")
         if storage.get("belowMinimum"):
             lines.append(f"  WARNING free space is below disk.minFreeGiB ({storage['minFreeGiB']:g} GiB): the next build cleans up first and is BLOCKED if that is not enough")
     if work and work["staleJobDirectories"]:

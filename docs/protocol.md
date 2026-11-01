@@ -58,6 +58,8 @@ The app never sees these; they are listed because they extend documents that wat
 - `job.json` (`gdv.job/1`): `phase` is `waiting-build`, `building`, `waiting-device` or `on-device` while a pipeline job runs that stage, and absent otherwise. Each change is also a `progress` event whose `data.phase` is the new phase (`null` when cleared).
 - `lease.acquired` / `lease.released` events now occur per stage: the `unity-project` and `unity-editor` leases around the `build` stage, the `device:<id>` lease around the device stages. See [cli.md](cli.md#leases-by-stage-build-reuse) for the order and why it cannot deadlock.
 - `result.json` (`gdv.result/1`): `build` describes the build artifact the run used: `path`, `sha256` (of the file, or over the sorted relative paths and file hashes of a folder), `sizeBytes`, `candidateSha`, `dirty`, `profile`, and `key`, `kind`, `platform`, `toolchain`, `reused`, `builtByJob`. A `progress` event with `data.build` carries the same object when the artifact is published or reused.
+- Job notes: `incremental build: reused the previous export and DerivedData` or `incremental build: clean build (<why>)` for a managed iOS build.
+- `result.json` (`gdv.result/1`): `checkout` (optional) is present when the job's `build` stage settled which commit the project folder is at (`--sha`): `folder` (the Unity project), `sha`, `switched`, `fetched`, and for a managed checkout also `id`, `created` and `previousSha`. An unmanaged folder is only verified (`switched` false, no `id`). A `log` event with `data.checkout` carries the same object. See [Managed checkouts](cli.md#managed-checkouts-and-the-commit-at-build-time).
 
 ## Environment variables passed to tools
 

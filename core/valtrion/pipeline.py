@@ -21,7 +21,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
-from . import artifacts, buildcache, compare, config, constants, core, diskspace, gitstate, lease, providers, supervise
+from . import artifacts, buildcache, checkout, compare, config, constants, core, diskspace, gitstate, incremental, lease, providers, supervise
 from .adapter import DeviceHealth, DeviceInfo, PlatformAdapter, StepOutcome
 from .jobs import JobContext
 from .jobs import reap_cancelled_jobs as jobs_reap
@@ -57,6 +57,10 @@ class PipelineOptions:
     device_poll_sec: float = DEFAULT_DEVICE_POLL_SEC
     op_timeout_sec: float = 300.0
     sha_pinned: bool = False  # `valtrion pipeline --sha`: the commit was named on the command line and must be the one checked out
+    checkout_id: str | None = None  # set for a managed checkout (`--checkout`): valtrion owns the folder and checks the commit out in it
+    checkout_root: Path | None = None  # the root of that git checkout (the project folder may be a subfolder of it)
+    checkout_remote: str | None = None  # what a missing managed checkout is cloned from
+    unity_path: str = "."  # the Unity project below the checkout root
     sleep: Callable[[float], None] = time.sleep
     monotonic: Callable[[], float] = time.monotonic
     adapter_factory: Callable[[str], PlatformAdapter | None] = providers.get
@@ -480,9 +484,10 @@ def run_on_device(
 def assemble_result(
         run_id: str, outcome: DeviceRun, pipeline: Mapping[str, Any], plan: Mapping[str, Any], plan_sha256: str,
         device: DeviceInfo | None, host: Mapping[str, Any], unity: str, dirty: bool, extra_layers: Mapping[str, str],
-        extra_unverified: Sequence[str] = (), build: Mapping[str, Any] | None = None) -> dict:
+        extra_unverified: Sequence[str] = (), build: Mapping[str, Any] | None = None, checkout: Mapping[str, Any] | None = None) -> dict:
     """Build the `gdv.result/1` of one run from what the host observed and what the harness reported. `build` is the published
-    (or reused) build artifact of the job, when it has one."""
+    (or reused) build artifact of the job, when it has one; `checkout` says which commit the job's build stage had checked out in
+    which folder, when it did."""
     candidate = pipeline["candidate"]
     device_result = outcome.device_result or {}
     status, reason = outcome.status, outcome.reason
@@ -512,6 +517,8 @@ def assemble_result(
         "unverified": [*device_result.get("unverified", []), *outcome.unverified, *extra_unverified]}
     if build:
         document["build"] = dict(build)
+    if checkout:
+        document["checkout"] = dict(checkout)
     return document
 
 
@@ -554,10 +561,20 @@ def execute(pipeline: Mapping[str, Any], pipeline_path: Path | None, ctx: JobCon
     requested = pipeline["candidate"].get("sha")
     unspecified = not requested or set(requested) == {"0"}  # a committed pipeline file cannot name its own commit
     candidate_sha = requested
-    if project_dir is not None:
+    own = [Path(ctx.spec[key]) for key in ("artifactsRoot", "workRoot") if ctx.spec.get(key)]
+    #: A managed checkout (`--checkout`) is reset to the job's commit when the `build` stage starts, under its lease; any other folder is
+    #: checked then to be at the commit (`checkout.py`). Jobs of other commits may use the folder while this one waits in the queue.
+    managed = options.checkout_id is not None and options.checkout_root is not None
+    has_build = any(s["stage"] == "build" for s in pipeline["stages"])
+    if managed and (project_dir is None or unspecified or not has_build):
+        return PipelineOutcome(constants.BLOCKED, "a managed checkout needs a build stage and the commit to build (--sha)")
+    enforce_checkout = bool(options.sha_pinned and project_dir is not None and not unspecified and has_build)
+    checkout_info: dict[str, Any] | None = None
+    if managed:
+        dirty = True  # until the build stage has checked the commit out and read the tree
+    elif project_dir is not None:
         # The sha in the result must be the commit that was actually tested, not a label given on the command line. The state is read
         # now, before any stage, and the folders this run keeps (artifacts, work root) are not part of the tree being judged.
-        own = [Path(ctx.spec[key]) for key in ("artifactsRoot", "workRoot") if ctx.spec.get(key)]
         state = gitstate.read_state(project_dir, options.git, [*own, directory])
         dirty, head, readable = state.dirty, state.sha, state.sha is not None
         head_note.extend(state.notes)
@@ -570,8 +587,9 @@ def execute(pipeline: Mapping[str, Any], pipeline_path: Path | None, ctx: JobCon
             reason = (f"the checkout is at {head[:12] if readable else 'an unreadable commit'}, not the candidate {requested[:12]}")
             if options.sha_pinned:
                 return PipelineOutcome(constants.BLOCKED, reason + "; --sha must name the commit that is checked out")
-            dirty = True
-            head_note.append(f"{reason}; the result is marked dirty and cannot become a baseline")
+            else:
+                dirty = True
+                head_note.append(f"{reason}; the result is marked dirty and cannot become a baseline")
     elif unspecified:
         candidate_sha = NO_SHA
         dirty = True
@@ -610,6 +628,9 @@ def execute(pipeline: Mapping[str, Any], pipeline_path: Path | None, ctx: JobCon
     if raw_adapter is not None and project_dir is not None and hasattr(raw_adapter, "use_project"):
         raw_adapter.use_project(project_dir)  # an adapter that reads the project's profiles (Editor, Windows) learns where it is
     adapter = GuardedAdapter(raw_adapter, options.op_timeout_sec) if raw_adapter is not None else None
+    if managed and raw_adapter is not None and not getattr(raw_adapter, "build_uses_editor", True):
+        return PipelineOutcome(constants.BLOCKED, f"a managed checkout is for platforms that build in the Editor and run the built app; "
+                               f"{platform} runs from the project folder itself, which another job could switch before it starts")
     if adapter is None:
         return PipelineOutcome(constants.BLOCKED, f"no adapter for platform {platform} is installed on host {host['id']}"
                                + (f" ({providers.load_errors().get(platform)})" if providers.load_errors().get(platform) else ""))
@@ -634,7 +655,7 @@ def execute(pipeline: Mapping[str, Any], pipeline_path: Path | None, ctx: JobCon
 
     def early(status: str, reason: str, on: DeviceInfo | None = None) -> dict:
         return _early_result(ctx, pipeline, plans, load_plan, first_plan, on or device, host, unity, dirty, extra_layers, status, reason,
-                             head_note, build_info)
+                             head_note, build_info, checkout_info)
 
     def release_device() -> None:
         nonlocal device_leased
@@ -754,6 +775,57 @@ def execute(pipeline: Mapping[str, Any], pipeline_path: Path | None, ctx: JobCon
         stage_results.append(early(constants.BLOCKED, outcome.reason or "low disk space"))
         return fail(constants.BLOCKED, outcome.reason or "low disk space")
 
+    def adopt_cached(cached: buildcache.Entry, name: str) -> None:
+        """The job uses a build from the cache instead of building."""
+        nonlocal artifact, used_entry, build_outcome, build_info
+        buildcache.touch(cached)
+        artifact, used_entry, build_outcome = cached.path, cached, StepOutcome(constants.PASS)
+        build_info = {**cached.describe(), "reused": True, "builtByJob": cached.manifest.get("builtByJob", "unknown")}
+        diskspace.remember_build(directory, cached.key)
+        head_note.append(f"the build was reused from the cache (key {cached.key}, built by job {build_info['builtByJob']}); "
+                         "no build ran for this job")
+        events.emit("progress", f"build reused from cache {cached.key}", step=name, data={"build": build_info})
+        events.emit("step.finished", "reused from the build cache", step=name, status=constants.PASS)
+
+    def check_out(name: str) -> PipelineOutcome | None:
+        """The job's commit is in the project folder (the caller holds the folder's `unity-project` lease for a managed checkout, and
+        for any build in the Editor). A managed checkout is reset to the commit; any other folder must already be at it. Ends the stage
+        BLOCKED when that is not so; afterwards the tree is read again, so the dirty flag and the Unity version are the commit's own."""
+        nonlocal dirty, unity, checkout_info
+        assert project_dir is not None and candidate_sha
+        if managed:
+            assert options.checkout_root is not None
+            slow = None if options.git is not compare.run_git else (lambda folder, arguments: compare.run_git(folder, arguments, timeout=1800))
+            done = checkout.ensure(options.checkout_root, candidate_sha, options.git, remote=options.checkout_remote,
+                                   keep=[*own, directory], slow_git=slow, cancelled=ctx.cancelled, unity_path=options.unity_path)
+            problem = None if done.ok else f"the commit {candidate_sha[:12]} cannot be checked out in {options.checkout_root}: {done.reason}"
+            record = {**done.describe(options.checkout_id), "folder": str(project_dir)}
+            if done.created:
+                events.emit("log", f"created the managed checkout {options.checkout_id} in {options.checkout_root}", step=name)
+            if done.removed:
+                events.emit("log", f"removed stray build output from the checkout: {', '.join(done.removed)}", step=name,
+                            data={"removed": list(done.removed)})
+            if done.ok and done.switched:
+                note = (f"checkout {options.checkout_id}: reset to {candidate_sha[:12]} in {project_dir} (it was at "
+                        f"{(done.previous or 'no commit')[:12]})" + ("; the commit was fetched from the remote first" if done.fetched else ""))
+                head_note.append(note)
+                events.emit("log", note, step=name, data={"checkout": record})
+        else:
+            problem = checkout.verify_head(project_dir, candidate_sha, options.git)
+            record = {"folder": str(project_dir), "sha": candidate_sha, "switched": False, "fetched": False}
+        if problem:
+            events.emit("step.finished", problem, step=name, status=constants.BLOCKED)
+            stage_results.append(early(constants.BLOCKED, problem))
+            return fail(constants.BLOCKED, problem)
+        checkout_info = record
+        state = gitstate.read_state(project_dir, options.git, [*own, directory])
+        dirty = state.dirty
+        head_note.extend(state.notes)
+        unity = unity_version(project_dir)
+        if raw_adapter is not None and hasattr(raw_adapter, "use_project"):
+            raw_adapter.use_project(project_dir)  # profiles may differ between commits
+        return None
+
     def release_build_output() -> None:
         """The build output in the job's work folder is not needed once it is published or installed: remove it now instead of at
         the end of the job (several finished builds that wait for the device would otherwise hold several GiB each)."""
@@ -776,6 +848,8 @@ def execute(pipeline: Mapping[str, Any], pipeline_path: Path | None, ctx: JobCon
             events.emit("log", f"released {freed / (1 << 20):.0f} MiB of build output from the job work folder"
                         + (f"; could not remove: {'; '.join(errors)}" if errors else ""), data={"freedBytes": freed})
 
+    config_hash_seen: list[str | None] = [None]  # the profile settings the cache key was made from (read under the lease)
+
     def reuse_or_none(stage_args: Mapping[str, Any]) -> tuple[buildcache.Entry | None, str | None, Mapping[str, str]]:
         """(cached build or None, cache key or None, toolchain) for the build stage. No key means the build cannot be cached."""
         toolchain: dict[str, str] = {"unity": unity}
@@ -787,9 +861,9 @@ def execute(pipeline: Mapping[str, Any], pipeline_path: Path | None, ctx: JobCon
         assert project_dir is not None
         if dirty or candidate_sha in (None, NO_SHA):
             return None, buildcache.dirty_key(ctx.job_id), toolchain
+        config_hash_seen[0] = buildcache.profile_config_hash(project_dir, pipeline["candidate"]["profile"])
         key = buildcache.compute_key(
-            pipeline["candidate"]["repo"], platform, candidate_sha, pipeline["candidate"]["profile"], toolchain,
-            buildcache.profile_config_hash(project_dir, pipeline["candidate"]["profile"]),
+            pipeline["candidate"]["repo"], platform, candidate_sha, pipeline["candidate"]["profile"], toolchain, config_hash_seen[0],
             device.id if device is not None and adapter.signs_for_device else None)
         if stage_args.get("reuse") is False:
             return None, key, toolchain
@@ -817,16 +891,10 @@ def execute(pipeline: Mapping[str, Any], pipeline_path: Path | None, ctx: JobCon
                 if blocked is not None:
                     return blocked
             profile = pipeline["candidate"]["profile"]
-            cached, cache_key, toolchain = reuse_or_none(stage.get("args", {}))
+            # With a commit to check out, the cache key is read after the checkout (the profile settings are the commit's own).
+            cached, cache_key, toolchain = (None, None, {"unity": unity}) if managed else reuse_or_none(stage.get("args", {}))
             if cached is not None:
-                buildcache.touch(cached)
-                artifact, used_entry, build_outcome = cached.path, cached, StepOutcome(constants.PASS)
-                build_info = {**cached.describe(), "reused": True, "builtByJob": cached.manifest.get("builtByJob", "unknown")}
-                diskspace.remember_build(directory, cached.key)
-                head_note.append(f"the build was reused from the cache (key {cached.key}, built by job {build_info['builtByJob']}); "
-                                 "no build ran for this job")
-                events.emit("progress", f"build reused from cache {cached.key}", step=name, data={"build": build_info})
-                events.emit("step.finished", "reused from the build cache", step=name, status=constants.PASS)
+                adopt_cached(cached, name)
                 continue
             # The build holds the unity-project lease and an editor slot for this stage only; both are released as soon as it ends,
             # so another job can build while this one is on the device, and no job holds them while it waits for a device. A
@@ -838,14 +906,17 @@ def execute(pipeline: Mapping[str, Any], pipeline_path: Path | None, ctx: JobCon
             ctx.set_phase("waiting-build")
             build_outcome = None  # this stage's outcome only (the finally below reads it)
             try:
-                if adapter.build_uses_editor:
+                if adapter.build_uses_editor or managed:
+                    # The checkout moves the project folder, so it too is done only under the folder's lease.
                     try:
-                        capacity = lease.unity_editor_capacity(ctx.home)
+                        capacity = lease.unity_editor_capacity(ctx.home) if adapter.build_uses_editor else 0
                     except ValueError as error:
                         reason = str(error)
                     else:
-                        for item in ({"resource": lease.unity_project_resource(project_dir)},
-                                     {"resource": lease.UNITY_EDITOR_RESOURCE, "slots": capacity}):
+                        wanted = [{"resource": lease.unity_project_resource(project_dir)}]
+                        if adapter.build_uses_editor:
+                            wanted.append({"resource": lease.UNITY_EDITOR_RESOURCE, "slots": capacity})
+                        for item in wanted:
                             reason = ctx.acquire(item)
                             if reason:
                                 break
@@ -859,6 +930,27 @@ def execute(pipeline: Mapping[str, Any], pipeline_path: Path | None, ctx: JobCon
                         jobs_reap(Path(ctx.spec["artifactsRoot"]), ctx.spec["project"], project_dir, events, ctx.job_id)
                     except (KeyError, OSError):
                         pass
+                if enforce_checkout:
+                    blocked = check_out(name)
+                    if blocked is not None:
+                        return blocked
+                    if managed:
+                        cached, cache_key, toolchain = reuse_or_none(stage.get("args", {}))
+                        if cached is not None:
+                            adopt_cached(cached, name)  # the leases are released below; no build is needed
+                            continue
+                if raw_adapter is not None and hasattr(raw_adapter, "bind_incremental"):
+                    # A managed checkout keeps its export, DerivedData and IL2CPP cache between builds (incremental.py); anything else
+                    # builds from nothing as before. The key says when the kept state may no longer be used.
+                    plan = None
+                    if managed:
+                        profile_key = buildcache.compute_key(
+                            pipeline["candidate"]["repo"], platform, "incremental", profile, toolchain,
+                            buildcache.profile_config_hash(project_dir, profile),
+                            device.id if device is not None and adapter.signs_for_device else None)
+                        plan = incremental.Plan(incremental.folder_of(ctx.home, pipeline["candidate"]["repo"], options.checkout_id or "default"),
+                                                profile_key, clean=stage.get("args", {}).get("clean") is True)
+                    raw_adapter.bind_incremental(plan, lease.unity_project_resource(project_dir))
                 low = check_disk(name)
                 if low is not None:
                     return low
@@ -880,6 +972,9 @@ def execute(pipeline: Mapping[str, Any], pipeline_path: Path | None, ctx: JobCon
             for key, value in build_outcome.details.items():
                 if key.startswith("temp."):
                     artifacts.register_temp(ctx.layout, Path(value))
+            if build_outcome.details.get("incremental.note"):
+                head_note.append("incremental build: " + str(build_outcome.details["incremental.note"]))
+                events.emit("log", "incremental build: " + str(build_outcome.details["incremental.note"]), step=name)
             extra_layers.update(_stage_outcome_layers("build", build_outcome))
             if build_outcome.ok and build_outcome.artifacts:
                 artifact = build_outcome.artifacts[0]
@@ -898,7 +993,7 @@ def execute(pipeline: Mapping[str, Any], pipeline_path: Path | None, ctx: JobCon
                         buildcache.builds_root(ctx.home), cache_key, artifact, out=out, project=pipeline["candidate"]["repo"], platform=platform,
                         sha=candidate_sha, profile=profile, dirty=dirty, toolchain=toolchain, job_id=ctx.job_id,
                         cacheable=not cache_key.startswith("dirty-"), replace=stage.get("args", {}).get("reuse") is False,
-                        config_hash=buildcache.profile_config_hash(project_dir, profile))
+                        config_hash=config_hash_seen[0] or buildcache.profile_config_hash(project_dir, profile))
                 except (OSError, ValueError) as error:
                     head_note.append(f"the build artifact could not be published outside the work folder: {error}")
                 else:
@@ -954,6 +1049,13 @@ def execute(pipeline: Mapping[str, Any], pipeline_path: Path | None, ctx: JobCon
             continue
         if kind == "run":
             assert device is not None
+            if enforce_checkout and not adapter.build_uses_editor and project_dir is not None:
+                # The player runs from the folder itself (the Editor platform): another job may have moved it since this job's build stage.
+                moved = checkout.verify_head(project_dir, candidate_sha, options.git)
+                if moved:
+                    events.emit("step.finished", moved, step=name, status=constants.BLOCKED)
+                    stage_results.append(early(constants.BLOCKED, moved))
+                    return fail(constants.BLOCKED, moved)
             if not stage.get("plan"):
                 return fail(constants.BLOCKED, "a run stage needs a plan")
             plan_path, plan, plan_sha = load_plan(stage["plan"])
@@ -964,7 +1066,7 @@ def execute(pipeline: Mapping[str, Any], pipeline_path: Path | None, ctx: JobCon
                 run_directory = directory / "runs" / f"{index + 1:02d}-{core.safe_segment(plan['id'], 'plan', 40)}-{attempt}"
                 outcome = run_on_device(adapter, device, plan_path, plan, stage, run_directory, options, ctx.cancelled)
                 document = assemble_result(run_id, outcome, pipeline, plan, plan_sha, device, host, unity, dirty, extra_layers, head_note,
-                                           build_info)
+                                           build_info, checkout_info)
                 runs.append(finalize_result(document, run_directory, run_directory / "result.json", include_top=True))
                 events.emit("progress", f"run {attempt}/{repeats} {outcome.status}", step=name, data={"run": attempt, "status": outcome.status})
                 ctx.flush()
@@ -1081,7 +1183,8 @@ def _collect_build_cache(ctx: JobContext, keep_key: str) -> None:
 
 
 def _early_result(ctx, pipeline, plans, load_plan, first_plan, device, host, unity, dirty, extra_layers, status, reason,
-                  head_note: Sequence[str] = (), build: Mapping[str, Any] | None = None) -> dict:
+                  head_note: Sequence[str] = (), build: Mapping[str, Any] | None = None,
+                  checkout: Mapping[str, Any] | None = None) -> dict:
     """The result of a pipeline that stopped before any run (a failed build, no device) or has no run stage (build only,
     install only): no metrics, a clear reason."""
     plan_id, plan_sha = "unknown", core.sha256_bytes(b"")
@@ -1094,7 +1197,7 @@ def _early_result(ctx, pipeline, plans, load_plan, first_plan, device, host, uni
     stamp = core.utc_now()
     outcome = DeviceRun(status, reason, None, {}, ctx.store.directory, stamp, stamp, [])
     return assemble_result(core.safe_identifier(ctx.job_id), outcome, pipeline, {"id": plan_id, "metrics": {}}, plan_sha, device, host,
-                           unity, dirty, extra_layers, ["no run was started on a device", *head_note], build)
+                           unity, dirty, extra_layers, ["no run was started on a device", *head_note], build, checkout)
 
 
 def baseline_folders(baselines: str, pipeline_dir: Path, project_dir: Path | None) -> list[Path]:
@@ -1137,5 +1240,7 @@ def run_pipeline_job(ctx: JobContext) -> PipelineOutcome:
         project_dir=Path(payload["projectDir"]) if payload.get("projectDir") else None,
         pipeline_dir=Path(payload["baseDir"]) if payload.get("baseDir") else path.parent,
         device_poll_sec=float(payload.get("devicePollSec", DEFAULT_DEVICE_POLL_SEC)),
-        op_timeout_sec=float(payload.get("opTimeoutSec", 300.0)), sha_pinned=bool(payload.get("shaPinned", False)))
+        op_timeout_sec=float(payload.get("opTimeoutSec", 300.0)), sha_pinned=bool(payload.get("shaPinned", False)),
+        checkout_id=payload.get("checkoutId"), checkout_root=Path(payload["checkoutRoot"]) if payload.get("checkoutRoot") else None,
+        checkout_remote=payload.get("checkoutRemote"), unity_path=payload.get("unityPath") or ".")
     return execute(pipeline, path, ctx, options)

@@ -113,6 +113,21 @@
         "details": { "$ref": "common.schema.json#/$defs/stringList" }
       }
     },
+    "checkout": {
+      "description": "Present when the job's build stage settled which commit the project folder is at (`--sha`): the Unity project folder, the commit, and for a managed checkout its id, whether it was reset from another commit, created, and whether the commit was fetched from the remote first. An unmanaged folder is only verified (`switched` false).",
+      "type": "object",
+      "required": ["folder", "sha", "switched", "fetched"],
+      "additionalProperties": false,
+      "properties": {
+        "folder": { "type": "string", "minLength": 1 },
+        "sha": { "$ref": "common.schema.json#/$defs/gitSha" },
+        "switched": { "type": "boolean" },
+        "fetched": { "type": "boolean" },
+        "id": { "type": "string", "minLength": 1, "description": "The managed checkout (host.json projects.<name>.checkouts[].id); absent for an unmanaged folder." },
+        "created": { "type": "boolean", "description": "True when the job's build stage had to create the managed checkout." },
+        "previousSha": { "$ref": "common.schema.json#/$defs/gitSha" }
+      }
+    },
     "build": {
       "description": "The build artifact the run was made with, published outside the job's work folder: either built by this job or reused from the build cache / installed by key. Absent for a pipeline without a build.",
       "type": "object",

@@ -20,6 +20,7 @@ from . import artifacts, buildcache, compare as comparing, config, constants, co
 from . import __version__
 from .adapter import DeviceInfo
 from .cli import Command, register
+from .pipeline import validate_prelaunch
 from .resolver import HostResolver, Request, SELECTED_LOCAL
 from .schema import SchemaError, UnreadableInput, Validator, validate_document
 
@@ -225,7 +226,8 @@ def apply_adapter_capabilities(report: dict, timeout_sec: float = 60.0) -> None:
 
 def local_report(with_devices: bool, home: Path | None = None) -> dict:
     settings = config.load_host_settings(home)
-    report = doctor.probe_local(artifacts_root=settings.artifacts_root, work_root=settings.work_root, min_free_gib=settings.min_free_gib)
+    report = doctor.probe_local(artifacts_root=settings.artifacts_root, work_root=settings.work_root, min_free_gib=settings.min_free_gib,
+                                  projects=settings.projects, checkout_sizes=True)
     registry = config.load_registry(home)
     if with_devices:
         devices, errors, done = discover_all()
@@ -646,6 +648,50 @@ def resolve_host(request: Request, pinned: str | None, remote_project: str | Non
     return resolver.resolve(replace(request, pinned_host=pinned)), by_id
 
 
+def _managed_project(wanted: str, candidate: dict, payload: dict) -> Path:
+    """The Unity project folder of the managed checkout `wanted` (an id, or `auto`) of `candidate.repo` on this host; the job's payload
+    says which checkout it is and how to create it. `ValueError` says why a job cannot use one."""
+    sha = candidate.get("sha")
+    if not sha or not re.fullmatch(r"[0-9a-f]{40}", sha) or set(sha) == {"0"}:
+        raise ValueError("--checkout needs the commit to build: give --sha (the full 40-character commit)")
+    settings = config.load_host_settings()
+    managed = settings.project(candidate["repo"])
+    if managed is None:
+        raise ValueError(f"host.json declares no project {candidate['repo']!r} (projects.<name>.checkouts), so --checkout cannot be used")
+    chosen = managed.pick(None if wanted == "auto" else wanted)
+    if chosen is None:
+        raise ValueError(f"project {managed.name} has no checkout {wanted!r}; it has " + ", ".join(item.id for item in managed.checkouts))
+    payload.update({"projectDir": str(managed.project_dir(chosen)), "checkoutId": chosen.id, "checkoutRoot": str(chosen.path),
+                    "checkoutRemote": managed.remote, "unityPath": managed.unity_path, "shaPinned": True})
+    return managed.project_dir(chosen)
+
+
+def _preflight(pipeline: dict, base: Path, payload: dict, project_dir: Path | None) -> str | None:
+    """What would end the job `BLOCKED` before any stage runs, found at submit: the run stages' plans and pre-launch files, a build stage
+    without a project, and (for a managed checkout) a commit that is neither in the checkout nor on its
+    remote. None when the job can go on to wait for its leases."""
+    from . import checkout as checkouts
+    problem = validate_prelaunch(pipeline["stages"], base)
+    if problem:
+        return problem
+    for stage in pipeline["stages"]:
+        if stage["stage"] == "run" and stage.get("plan"):
+            plan = Path(stage["plan"])
+            plan = plan if plan.is_absolute() else (base / plan)
+            try:
+                _, errors = validate_document(json.loads(plan.read_text(encoding="utf-8-sig")))
+            except (OSError, ValueError) as error:
+                return f"cannot read the plan {stage['plan']}: {error}"
+            if errors:
+                return f"plan {stage['plan']} is invalid: " + "; ".join(errors[:3])
+    if any(stage["stage"] == "build" for stage in pipeline["stages"]) and project_dir is None:
+        return "a build stage needs --project-dir (or --checkout for a managed project)"
+    if payload.get("checkoutRoot"):
+        return checkouts.preflight(Path(payload["checkoutRoot"]), pipeline["candidate"]["sha"], payload.get("checkoutRemote"),
+                                   comparing.run_git, lambda folder, arguments: comparing.run_git(folder, arguments, timeout=600))
+    return None
+
+
 def _start_pipeline(arguments: argparse.Namespace, pipeline: dict, payload: dict, base: Path, project_dir: Path | None, label: str) -> int:
     if arguments.local:
         entry, selected = config.local_host(), arguments.selected_by
@@ -664,6 +710,8 @@ def _start_pipeline(arguments: argparse.Namespace, pipeline: dict, payload: dict
     settings_root = entry.artifacts_root
     host = {"id": entry.id, "transport": transport or "local", "selectedBy": selected or SELECTED_LOCAL}
     candidate = pipeline["candidate"]
+    if getattr(arguments, "checkout", None):
+        project_dir = _managed_project(arguments.checkout, candidate, payload)
     sha = candidate.get("sha")
     if (not sha or set(sha) == {"0"}) and project_dir is not None:
         # The run folder is named after the commit, so read it from the checkout that is built (the result records the same one).
@@ -675,6 +723,9 @@ def _start_pipeline(arguments: argparse.Namespace, pipeline: dict, payload: dict
                  "the run folder is `unversioned` and the result will carry no commit")
     if sha and set(sha) == {"0"}:
         sha = None  # no commit known: the run folder is `unversioned`, not `00000000`
+    problem = _preflight(pipeline, base, payload, project_dir)
+    if problem:
+        return _blocked(arguments.command, problem)  # before the job exists: nothing was leased and nothing waits in a queue
     request = jobs.JobRequest(
         kind="pipeline", project=candidate["repo"], sha=sha, label=label, payload=payload, host=host,
         stall_sec=arguments.stall_sec, timeout_sec=arguments.timeout_sec, owner=_owner(), purpose=f"valtrion {arguments.command} {label}",
@@ -702,7 +753,9 @@ def _remote_command_line(arguments: argparse.Namespace, entry: config.HostEntry,
     source_file = arguments.pipeline if arguments.command == "pipeline" else arguments.plan
     runs_in_editor = _request_for(pipeline, source_file.resolve().parent, project_dir).platform == "editor"  # the Editor opens a project
     needs_project = project_dir is not None or runs_in_editor or any(stage["stage"] == "build" for stage in pipeline["stages"])
-    if not explicit and entry.projects_root and needs_project:
+    if getattr(arguments, "checkout", None):
+        raw = submit.drop_option(raw, "--project-dir")  # the host resolves the managed checkout from its own host.json
+    elif not explicit and entry.projects_root and needs_project:
         found = submit.find_project(prep, entry, submit.project_names(project_dir, pipeline["candidate"]["repo"]))
         raw = [*submit.drop_option(raw, "--project-dir"), "--project-dir", found]
     inputs = submit.Inputs()
@@ -749,6 +802,8 @@ def _common_run_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--watch", action="store_true", help="follow the job to its end")
     parser.add_argument("--host", help="pin the host instead of choosing by capability")
     parser.add_argument("--remote-project")
+    parser.add_argument("--checkout", metavar="ID", help="build in a managed checkout of the project (host.json projects.<candidate.repo>): "
+                        "its id, or `auto` for the project's default; needs --sha, replaces --project-dir and --remote-project")
     parser.add_argument("--local", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--inbox", help=argparse.SUPPRESS)  # set by the caller of an SSH host: the folder name its files were sent to
     parser.add_argument("--selected-by", default=SELECTED_LOCAL, help=argparse.SUPPRESS)
@@ -768,7 +823,7 @@ def _pipeline(arguments: argparse.Namespace) -> int:
         return code
     if document.get("schema") != "gdv.pipeline/1":
         return _blocked("pipeline", f"{arguments.pipeline} is a {document.get('schema')}, not a gdv.pipeline/1")
-    project_dir = _unity_project(arguments)
+    project_dir = None if getattr(arguments, "checkout", None) else _unity_project(arguments)
     payload = {"type": "pipeline", "file": str(arguments.pipeline.resolve()), "projectDir": str(project_dir) if project_dir else None,
                "baseDir": str(arguments.pipeline.resolve().parent)}
     if arguments.inbox and arguments.local and arguments.transport == "ssh":  # only a command forwarded by a caller carries an inbox
@@ -795,6 +850,8 @@ def _configure_build(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--device-class", help="iOS signs for one device: the class to build for")
     parser.add_argument("--device-id", help="iOS signs for one device: the device to build for")
     parser.add_argument("--no-reuse", action="store_true", help="build even when a clean build of this commit, profile and toolchain is cached")
+    parser.add_argument("--clean", action="store_true", help="a managed checkout keeps its export, DerivedData and caches between builds; "
+                                                              "build from nothing this time")
     _common_run_options(parser)
 
 
@@ -803,15 +860,15 @@ def _build(arguments: argparse.Namespace) -> int:
     `valtrion pipeline` / `valtrion run --artifact-key KEY` installs it without building."""
     device = {k: v for k, v in (("class", arguments.device_class), ("id", arguments.device_id), ("platform", arguments.platform)) if v}
     stage: dict = {"stage": "build"}
-    if arguments.no_reuse:
-        stage["args"] = {"reuse": False}
+    if arguments.no_reuse or arguments.clean:
+        stage["args"] = {**({"reuse": False} if arguments.no_reuse else {}), **({"clean": True} if arguments.clean else {})}
     document = {"schema": "gdv.pipeline/1", "id": core.safe_identifier(f"build-{arguments.repo}-{arguments.profile}"),
                 "candidate": {"repo": arguments.repo, "profile": arguments.profile}, "device": device, "stages": [stage]}
     _, errors = validate_document(document)
     if errors:
         return _blocked("build", "; ".join(errors))
     own = ("--repo", "--profile", "--platform", "--target", "--device-class", "--device-id")
-    forwarded = [item for item in arguments.raw_argv[1:] if item != "--no-reuse"]
+    forwarded = [item for item in arguments.raw_argv[1:] if item not in ("--no-reuse", "--clean")]
     for option in own:
         forwarded = submit.drop_option(forwarded, option)
     with tempfile.TemporaryDirectory(prefix="valtrion-build-") as staging:
@@ -909,7 +966,7 @@ def _run(arguments: argparse.Namespace) -> int:
     _, errors = validate_document(pipeline)
     if errors:
         return _blocked("run", "; ".join(errors))
-    project_dir = _unity_project(arguments)
+    project_dir = None if getattr(arguments, "checkout", None) else _unity_project(arguments)
     payload = {"type": "pipeline", "file": "<inline>", "inline": pipeline, "projectDir": str(project_dir) if project_dir else None,
                "baseDir": str(plan_path.parent)}
     if arguments.inbox and arguments.local and arguments.transport == "ssh":  # only a command forwarded by a caller carries an inbox
