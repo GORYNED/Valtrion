@@ -7,6 +7,7 @@ discovered on this host; discovery refreshes it, only aliases, classes and notes
 
 from __future__ import annotations
 
+import math
 import os
 import re
 from dataclasses import dataclass, field, replace
@@ -51,6 +52,10 @@ class HostSettings:
     artifacts_root: Path
     retention_days: float = DEFAULT_RETENTION_DAYS
     work_root: Path = field(default_factory=workroot.default_work_root)
+    #: `disk.minFreeGiB`: free space the work root's volume must have before a build; None (the default) turns the check off.
+    min_free_gib: float | None = None
+    #: `disk.keepDaysUnderPressure`: run folders older than this are removed when space is low (instead of `retention.keepDays`).
+    keep_days_under_pressure: float = 2.0
 
     @property
     def roots(self) -> workroot.WorkRoots:
@@ -118,8 +123,18 @@ def _load_host_settings(home: Path | None = None) -> HostSettings:
     days = retention.get("keepDays", DEFAULT_RETENTION_DAYS) if isinstance(retention, dict) else DEFAULT_RETENTION_DAYS
     if isinstance(days, bool) or not isinstance(days, (int, float)) or days < 0:
         raise ConfigError("host.json: retention.keepDays must be a non-negative number")
+    disk = document.get("disk", {})
+    if not isinstance(disk, dict):
+        raise ConfigError("host.json: disk must be an object")
+    minimum = disk.get("minFreeGiB")
+    if minimum is not None and (isinstance(minimum, bool) or not isinstance(minimum, (int, float)) or not math.isfinite(minimum) or minimum <= 0):
+        raise ConfigError("host.json: disk.minFreeGiB must be a positive number")
+    pressure_days = disk.get("keepDaysUnderPressure", 2.0)
+    if isinstance(pressure_days, bool) or not isinstance(pressure_days, (int, float)) or not math.isfinite(pressure_days) or pressure_days < 0:
+        raise ConfigError("host.json: disk.keepDaysUnderPressure must be a non-negative number")
     return HostSettings(Path(root).expanduser() if root else default_root, float(days),
-                        Path(work).expanduser() if work else default_work)
+                        Path(work).expanduser() if work else default_work, float(minimum) if minimum is not None else None,
+                        float(pressure_days))
 
 
 def _default_work_root(home: Path) -> Path:

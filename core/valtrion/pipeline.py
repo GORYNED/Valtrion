@@ -21,9 +21,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
-from . import artifacts, buildcache, compare, constants, core, gitstate, lease, providers, supervise
+from . import artifacts, buildcache, compare, config, constants, core, diskspace, gitstate, lease, providers, supervise
 from .adapter import DeviceHealth, DeviceInfo, PlatformAdapter, StepOutcome
 from .jobs import JobContext
+from .jobs import work_cleanup_blocker as jobs_blocker
 from .schema import Validator, validate_document
 
 DEVICE_OUT = "gdv/out"
@@ -617,6 +618,7 @@ def execute(pipeline: Mapping[str, Any], pipeline_path: Path | None, ctx: JobCon
     artifact: Path | None = None
     build_outcome: StepOutcome | None = None
     build_info: dict[str, Any] | None = None  # the published build (or the reused one), recorded in every result of the job
+    build_pending_release = False  # a build whose output is still in the work folder (not published): released after the install
     used_entry: buildcache.Entry | None = None  # touched again before the install, so a long wait for the device does not let gc take it
     extra_layers: dict[str, str] = {}
     stage_results: list[dict] = []
@@ -643,6 +645,13 @@ def execute(pipeline: Mapping[str, Any], pipeline_path: Path | None, ctx: JobCon
         """Write the job-level result: the first non-passing stage result, otherwise the last one. Runs on every way out, so a
         pipeline that stopped early (a failed build, a busy device) still leaves a result that says why."""
         release_device()
+        nonlocal build_pending_release
+        if build_pending_release:
+            # A build that could not be published may be run from its artifact (a Windows player, a macOS app): its output is
+            # released when the last stage is done, not after the install. After a failure it stays for diagnosis, as before.
+            build_pending_release = False
+            if overall.status == constants.PASS:
+                release_build_output()
         if not stage_results and (overall.status != constants.PASS or not runs_a_plan):
             # Stopped before any stage produced a result (a timeout or cancel while building, a missing project), or a pipeline
             # with no run stage (build only, install only): still say what happened.
@@ -722,6 +731,49 @@ def execute(pipeline: Mapping[str, Any], pipeline_path: Path | None, ctx: JobCon
         ctx.set_phase("on-device")
         return None
 
+    def check_disk(name: str) -> PipelineOutcome | None:
+        """Before the build starts: with `disk.minFreeGiB` set, clean up when the work root's volume is low on space, and end the
+        stage BLOCKED (no toolchain started) when it still is. Without the setting nothing happens."""
+        try:
+            settings = config.load_host_settings(ctx.home)
+        except config.ConfigError as error:
+            head_note.append(f"the free-space check was skipped: {error}")
+            return None
+        if not settings.min_free_gib:
+            return None
+        outcome = diskspace.ensure_free(settings, ctx.home, ctx.spec.get("protectedPaths", []))
+        if outcome.removed:
+            events.emit("log", f"low disk space ({outcome.free_before / diskspace.GIB:.1f} GiB free): removed {len(outcome.removed)} "
+                        f"abandoned or expired item(s), {outcome.free_after / diskspace.GIB:.1f} GiB free now",
+                        data={"removed": list(outcome.removed)})
+        if outcome.ok:
+            return None
+        events.emit("step.finished", outcome.reason, step=name, status=constants.BLOCKED)
+        stage_results.append(early(constants.BLOCKED, outcome.reason or "low disk space"))
+        return fail(constants.BLOCKED, outcome.reason or "low disk space")
+
+    def release_build_output() -> None:
+        """The build output in the job's work folder is not needed once it is published or installed: remove it now instead of at
+        the end of the job (several finished builds that wait for the device would otherwise hold several GiB each)."""
+        try:
+            blocker = jobs_blocker(ctx.spec)
+        except (KeyError, OSError):
+            blocker = None
+        if blocker and not blocker.startswith("results are not saved"):
+            return  # cleanup is off, the run is retained or a protected path overlaps: the work folder stays as the user asked
+        try:
+            listed = [Path(item) for item in core.read_json(directory / artifacts.TEMP_REGISTRY)]
+        except (OSError, ValueError):
+            listed = []
+        base = ctx.work.base.resolve() if ctx.work is not None else None
+        scratch = (directory / "build").resolve()
+        targets = [path for path in listed if (base is not None and path.resolve() != base and artifacts._is_within(path.resolve(), base))  # noqa: SLF001
+                   or path.resolve() == scratch]
+        freed, errors = diskspace.release_paths(targets)
+        if freed or errors:
+            events.emit("log", f"released {freed / (1 << 20):.0f} MiB of build output from the job work folder"
+                        + (f"; could not remove: {'; '.join(errors)}" if errors else ""), data={"freedBytes": freed})
+
     def reuse_or_none(stage_args: Mapping[str, Any]) -> tuple[buildcache.Entry | None, str | None, Mapping[str, str]]:
         """(cached build or None, cache key or None, toolchain) for the build stage. No key means the build cannot be cached."""
         toolchain: dict[str, str] = {"unity": unity}
@@ -768,6 +820,7 @@ def execute(pipeline: Mapping[str, Any], pipeline_path: Path | None, ctx: JobCon
                 buildcache.touch(cached)
                 artifact, used_entry, build_outcome = cached.path, cached, StepOutcome(constants.PASS)
                 build_info = {**cached.describe(), "reused": True, "builtByJob": cached.manifest.get("builtByJob", "unknown")}
+                diskspace.remember_build(directory, cached.key)
                 head_note.append(f"the build was reused from the cache (key {cached.key}, built by job {build_info['builtByJob']}); "
                                  "no build ran for this job")
                 events.emit("progress", f"build reused from cache {cached.key}", step=name, data={"build": build_info})
@@ -798,6 +851,9 @@ def execute(pipeline: Mapping[str, Any], pipeline_path: Path | None, ctx: JobCon
                 if reason:
                     events.emit("step.finished", reason, step=name, status=constants.BLOCKED)
                     return fail(constants.BLOCKED, reason)
+                low = check_disk(name)
+                if low is not None:
+                    return low
                 ctx.set_phase("building")
                 # Build output goes to the work root (outside protected folders, removed with the job) when the job has one.
                 out = ctx.work.build if ctx.work is not None else directory / "build"
@@ -840,8 +896,13 @@ def execute(pipeline: Mapping[str, Any], pipeline_path: Path | None, ctx: JobCon
                 else:
                     artifact, used_entry = published.path, published
                     build_info = {**published.describe(), "reused": False, "builtByJob": ctx.job_id}
+                    diskspace.remember_build(directory, published.key)
                     events.emit("progress", f"build published {published.key}", step=name, data={"build": build_info})
                     _collect_build_cache(ctx, published.key)
+                    release_build_output()
+                    build_pending_release = False
+                    continue
+            build_pending_release = True  # not published (no key, or it failed): the output is released after the install
             continue
         if kind in ("install", "run"):
             blocked = claim_device(name)
@@ -867,6 +928,7 @@ def execute(pipeline: Mapping[str, Any], pipeline_path: Path | None, ctx: JobCon
                 used_entry = entry
                 chosen = entry.path
                 build_info = {**entry.describe(), "reused": True, "builtByJob": entry.manifest.get("builtByJob", "unknown")}
+                diskspace.remember_build(directory, entry.key)
                 head_note.append(f"installed the published build {entry.key} (candidate {entry.manifest['sha'][:12]}, "
                                  f"{'dirty' if entry.manifest['dirty'] else 'clean'}); this job did not build it")
             if chosen is None and args.get("artifact"):
@@ -1004,7 +1066,7 @@ def _merge_runs(runs: list[dict], plan: Mapping[str, Any], plan_sha: str) -> dic
 def _collect_build_cache(ctx: JobContext, keep_key: str) -> None:
     """Retention of the published builds, applied after each publish (the new build is never removed by it)."""
     try:
-        report = buildcache.gc(buildcache.builds_root(ctx.home), protect=[keep_key])
+        report = buildcache.gc(buildcache.builds_root(ctx.home), protect=[keep_key, *diskspace.active_build_keys(ctx.home)])
     except (OSError, ValueError):
         return
     if report.removed:

@@ -16,7 +16,7 @@ import tempfile
 from pathlib import Path
 from typing import Any, Callable, Sequence
 
-from . import artifacts, buildcache, compare as comparing, config, constants, core, doctor, hostsync, jobs, lease, project, providers, remote, submit, supervise, wheel, workroot
+from . import artifacts, buildcache, compare as comparing, config, constants, core, diskspace, doctor, hostsync, jobs, lease, project, providers, remote, submit, supervise, wheel, workroot
 from . import __version__
 from .adapter import DeviceInfo
 from .cli import Command, register
@@ -225,7 +225,7 @@ def apply_adapter_capabilities(report: dict, timeout_sec: float = 60.0) -> None:
 
 def local_report(with_devices: bool, home: Path | None = None) -> dict:
     settings = config.load_host_settings(home)
-    report = doctor.probe_local(artifacts_root=settings.artifacts_root, work_root=settings.work_root)
+    report = doctor.probe_local(artifacts_root=settings.artifacts_root, work_root=settings.work_root, min_free_gib=settings.min_free_gib)
     registry = config.load_registry(home)
     if with_devices:
         devices, errors, done = discover_all()
@@ -847,7 +847,8 @@ def _builds(arguments: argparse.Namespace) -> int:
         _out({**entry.describe(), "manifest": entry.manifest})
         return constants.EXIT_PASS
     try:
-        report = buildcache.gc(root, arguments.keep_days, arguments.dirty_keep_days, arguments.max_entries, arguments.dry_run, arguments.protect)
+        report = buildcache.gc(root, arguments.keep_days, arguments.dirty_keep_days, arguments.max_entries, arguments.dry_run,
+                                [*arguments.protect, *diskspace.active_build_keys()])
     except ValueError as error:
         return _blocked("builds", str(error))
     verb = "would remove" if arguments.dry_run else "removed"
@@ -1024,7 +1025,7 @@ def _gc(arguments: argparse.Namespace) -> int:
     stale = workroot.sweep(settings.roots, jobs.active_job_ids(), dry_run=arguments.dry_run, keep=jobs.kept_work_reason)
     for path in stale:
         print(f"{verb} {path} (work root, abandoned by a runner that died)")
-    built = buildcache.gc(buildcache.builds_root(), dry_run=arguments.dry_run)
+    built = buildcache.gc(buildcache.builds_root(), dry_run=arguments.dry_run, protect=diskspace.active_build_keys())
     for item in built.removed:
         print(f"{verb} build {item}")
     return constants.EXIT_PASS

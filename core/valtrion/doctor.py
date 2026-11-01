@@ -14,7 +14,7 @@ import subprocess
 from pathlib import Path
 from typing import Callable, Sequence
 
-from . import __version__, core, workroot
+from . import __version__, buildcache, core, diskspace, workroot
 from .resolver import HostCapabilities
 
 PROBE_TIMEOUT_SEC = 20
@@ -207,6 +207,23 @@ def work_root_report(work_root: Path) -> dict:
     return report
 
 
+def storage_report(work_root: Path, artifacts_root: Path, min_free_gib: float | None = None, home: Path | None = None) -> dict:
+    """Disk facts a build host needs: free space where builds are made, what the three big consumers hold (job folders of the work
+    root, run folders, published builds), and the `disk.minFreeGiB` threshold with whether the host is below it."""
+    cache = buildcache.builds_root(home)
+    free = diskspace.free_bytes(work_root)
+    report = {
+        "workRoot": {"path": str(work_root), "bytes": diskspace.folder_bytes(work_root) if work_root.is_dir() else 0},
+        "artifactsRoot": {"path": str(artifacts_root), "bytes": diskspace.folder_bytes(artifacts_root) if artifacts_root.is_dir() else 0},
+        "buildCache": {"path": str(cache), "bytes": diskspace.folder_bytes(cache) if cache.is_dir() else 0,
+                       "entries": len(buildcache.entries(cache))},
+        "freeBytes": free}
+    if min_free_gib:
+        report["minFreeGiB"] = min_free_gib
+        report["belowMinimum"] = free < min_free_gib * diskspace.GIB
+    return report
+
+
 def build_platforms(os_name: str, editors: Sequence[dict], apple_ok: bool) -> list[str]:
     if not editors:
         return []
@@ -223,7 +240,7 @@ def build_platforms(os_name: str, editors: Sequence[dict], apple_ok: bool) -> li
 
 def probe_local(
         os_name: str | None = None, run: Runner = run_probe, artifacts_root: Path | None = None,
-        environ: dict | None = None, work_root: Path | None = None) -> dict:
+        environ: dict | None = None, work_root: Path | None = None, min_free_gib: float | None = None) -> dict:
     """The full report of this host. Pure of side effects except running read-only commands."""
     os_name = os_name or core.local_os()
     work_root = work_root or workroot.default_work_root(os_name)
@@ -258,6 +275,7 @@ def probe_local(
             key: apple[key] for key in ("guiSession", "keychainReadable", "signingIdentities") if key in apple},
         "disk": disk_report(artifacts_root or core.valtrion_home()), "githubRunner": probe_runner(os_name, run), "blocked": blocked,
         "workRoot": work_root_report(work_root),
+        "storage": storage_report(work_root, artifacts_root or core.valtrion_home() / "artifacts", min_free_gib),
         "warnings": protected_path_warnings(os_name, {
             "work root": work_root, "artifacts root": artifacts_root or core.valtrion_home() / "artifacts", "valtrion home": core.valtrion_home()},
             virtualized={"work root": virtual_work_root})
@@ -291,6 +309,14 @@ def render(report: dict) -> str:
         lines.append(f"  BLOCKED {name}: {reason}")
     for warning in report.get("warnings", []):
         lines.append(f"  WARNING {warning}")
+    storage = report.get("storage")  # absent in a report cached from a host that runs an older valtrion
+    if storage:
+        gib = 1024 ** 3
+        lines.append(f"  storage: work root {storage['workRoot']['bytes'] / gib:.1f} GiB, run folders {storage['artifactsRoot']['bytes'] / gib:.1f} GiB, "
+                     f"build cache {storage['buildCache']['bytes'] / gib:.1f} GiB ({storage['buildCache']['entries']} build(s)), "
+                     f"{storage['freeBytes'] / gib:.1f} GiB free")
+        if storage.get("belowMinimum"):
+            lines.append(f"  WARNING free space is below disk.minFreeGiB ({storage['minFreeGiB']:g} GiB): the next build cleans up first and is BLOCKED if that is not enough")
     if work and work["staleJobDirectories"]:
         lines.append(f"  WARNING {len(work['staleJobDirectories'])} abandoned job dir(s) in the work root; `valtrion workroot sweep` removes them")
     return "\n".join(lines)

@@ -2,6 +2,17 @@
 
 Core (the `valtrion` Python package) and the Unity package `com.goryned.valtrion.unity` are versioned independently. The Unity changelog is in `integrations/unity/com.goryned.valtrion.unity/CHANGELOG.md`; `compat.json` lists compatible pairs.
 
+## 0.8.2
+
+Host disk: a build host no longer fills up silently while builds queue.
+
+- **Cleanup before a build (opt-in).** With `disk.minFreeGiB` in `host.json`, a `build` stage that finds less free space on the work root's volume first removes abandoned job folders (idle for an hour; running, retained and protected ones are never touched), run folders older than `disk.keepDaysUnderPressure` (default 2 days; active, retained and `--protect`ed runs are kept) and published builds beyond the cache retention.
+- A published build that a still-active job depends on (it built or reused it and waits for the device, or installs it by key) is never removed by this cleanup, nor by `valtrion builds gc` / `valtrion gc` (the job records its key in its run folder). Other builds are removed by retention; they can be rebuilt.
+- **Fail fast.** If the volume is still below the minimum, the stage ends `BLOCKED` with the free space, the minimum and the largest consumers; no toolchain is started (instead of `No space left on device` inside xcodebuild).
+- **Early release.** The build output (and the folders the build registered as temporary) is removed from the job's work folder as soon as the build is published, or, when it could not be published, when the last stage is done (a player may run from its artifact). This applies to every host. A reused build needs no space.
+- The periodic `progress` event of a running pipeline job (every `tickSec`, 15 s; it was already there and refreshes `lastProgressUtc`) now carries `currentPhase` and `buildLogBytes` (the size of the build logs, which grows while Unity or xcodebuild work), so a watcher can tell a quiet build from a stuck one.
+- `valtrion doctor --json` has `storage`: free bytes, the sizes of the work root, the run folders and the build cache, `minFreeGiB` and `belowMinimum`.
+
 ## 0.8.1
 
 - Fix: the timeout of a pipeline job (`--timeout-sec`) no longer counts the time the job spends waiting for a lease. A long `--lease-wait` for the Editor slot or the device used to end the job with `TIMEOUT` before the run started; now a wait is bounded by `--lease-wait` alone and the timeout covers working time (the `progress` event adds `workingSec`).
