@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "valtrion"
 version = "0.7.4"
-description = "Device validation: build, install, launch and verify apps on local or remote hosts and real devices, with structured evidence."
+description = "Repeatable checks, supervised execution and verifiable evidence on local and SSH hosts."
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]

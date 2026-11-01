@@ -12,7 +12,7 @@ cd Valtrion
 python tools/install.py --venv
 ```
 
-Use the CLI path printed by the installer. See [installation](docs/install.md) and the [Quick Start](docs/quick-start.md) for project integration.
+Use the CLI path printed by the installer. See [installation](docs/install.md), the [Core Quick Start](docs/quick-start.md), and the separate [Unity Quick Start](docs/unity-quick-start.md). Ordinary command checks do not require an app integration. Do not describe platform providers as support for another engine without a working example.
 
 ## Verify your change
 

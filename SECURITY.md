@@ -16,7 +16,7 @@ Security fixes currently target the latest `main`. There is no stable-release su
 
 ## Scope and trust boundaries
 
-Valtrion runs project-defined build methods, signing scripts, test runners and app code with the invoking user's permissions. It is not a sandbox for untrusted projects. Read the [trust model](docs/trust-model.md) before using it on a build host or device.
+Valtrion runs command jobs, project-defined build methods, signing scripts, test runners and app code with the invoking user's permissions. Core command jobs have this same trust boundary without Unity. It is not a sandbox for untrusted projects. Read the [trust model](docs/trust-model.md) before using it on a build host or device.
 
 Report cases where Valtrion executes unintended commands, crosses a documented data boundary, exposes sensitive information unexpectedly, accepts malformed results as success, or defeats resource isolation. Deliberately configured project code is trusted input; document how a report crosses that boundary.
 

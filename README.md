@@ -1,23 +1,24 @@
 # Valtrion
 
-Repeatable checks for Unity apps, with results you can inspect and share.
+Repeatable checks, managed execution and evidence you can inspect and share.
 
-Valtrion takes a JSON test plan, runs it in your Unity project or development player, and collects the result, logs and metrics. It helps you answer **“did this change work on the target?”** without repeating the same build, install and launch steps by hand.
+Valtrion helps you run the same checks again, control their execution and keep the evidence behind the outcome. Core can supervise an ordinary command without Unity: start a job, set time and progress limits, hold resource locks, and retain its exit status, events and console output.
 
-Use it for smoke checks, app-specific scenarios, performance measurements and longer runs. Run checks yourself, from CI, or through an AI coding agent; no particular agent is required.
+Unity is the first and currently only ready application integration. Its package executes JSON plans inside the Editor or a development player and produces structured steps, logs and metrics. Use it for smoke checks, app-specific scenarios, performance measurements and longer runs. Run checks yourself or through an AI coding agent; no particular agent is required.
 
 ## How it works
 
-1. Add the Unity package and define what your app should check in a plan.
-2. Configure your project's build method or Editor test runner.
-3. Run the plan with the Python CLI, locally or on a host you configure over SSH.
-4. Read the structured result and collected files. Compare metrics with a compatible baseline when needed.
+1. Define a repeatable command, or use the Unity package to define an app-side plan.
+2. Run it with the Python CLI, locally or on a host you configure over SSH.
+3. Core watches execution and saves evidence. Missing tools or permissions do not count as a pass.
+4. Inspect the outcome and files. Unity plan results also support metric comparison with compatible baselines.
 
-The Unity package runs the steps inside your app. The CLI handles hosts, builds, device access, time limits and results. Missing tools or permissions are reported explicitly; they do not count as a pass. Editor, emulator, host and physical-device results carry different evidence labels.
+Command jobs record process outcomes; they do not automatically turn console output into app assertions or `gdv.result/1`. The Unity package runs the steps inside your app. Platform providers handle builds, device access and file transport; they are not integrations for other engines. Editor, emulator, host and physical-device plan results carry different evidence labels.
 
 ## Start here
 
-- [Quick Start](docs/quick-start.md): install and run a first check in a Unity project.
+- [Quick Start](docs/quick-start.md): install Core and run a useful Python check without Unity.
+- [Unity Quick Start](docs/unity-quick-start.md): add the package and run an Editor smoke check.
 - [AI-agent setup prompt](docs/ai-agent-setup.md): a ready-to-use prompt for Claude Code, Codex, Copilot and other coding agents.
 - [Installation](docs/install.md): install from this repository and configure additional hosts.
 
@@ -29,14 +30,15 @@ From a repository checkout, install the CLI with:
 python tools/install.py --venv
 ```
 
-Use the absolute `valtrion` command path printed by the installer, or add its directory to your `PATH`. See the Quick Start for the Unity package and project configuration.
+Use the absolute `valtrion` command path printed by the installer, or add its directory to your `PATH`. See the Quick Start for an ordinary command job; no Unity installation or project configuration is needed.
 
 ## What is available
 
 | Area | Current implementation |
 | --- | --- |
+| Core command checks | Supervised local or configured SSH commands, process status, retained logs/events and resource leases; no Unity required |
 | Unity integration | Development-only runner, built-in steps, custom C# steps, metrics, screenshots, heartbeat and JSON results |
-| Platforms | Providers for Unity Editor, Android, iOS, Windows and macOS; each needs its own tools and project configuration |
+| Platform providers | Unity Editor, Android, iOS, Windows and macOS; the documented app workflow uses Unity and needs platform tools and project configuration |
 | Multiple machines | Explicit SSH host inventory, host selection, detached jobs and result collection |
 | Repeatable checks | JSON plans, build/run pipelines, time limits, stall detection and resource locks |
 | Review evidence | Check selection from changed files, result reports and metric comparison with compatible baselines |

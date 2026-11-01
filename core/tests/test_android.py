@@ -1,9 +1,12 @@
 import json
 import os
+import runpy
+from contextlib import contextmanager
 import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -58,7 +61,7 @@ class AndroidTestCase(unittest.TestCase):
         path = self.state / "state.json"
         state = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {"package": PACKAGE}
         state.update(values)
-        path.write_text(json.dumps(state), encoding="utf-8")
+        core.atomic_write_json(path, state)
 
     def read_state(self):
         return json.loads((self.state / "state.json").read_text(encoding="utf-8"))
@@ -72,6 +75,49 @@ class AndroidTestCase(unittest.TestCase):
 
     def device_file(self, relative):
         return self.state / "sdcard" / "Android" / "data" / PACKAGE / "files" / relative
+
+
+class FixtureStateTests(AndroidTestCase):
+    def test_concurrent_readers_never_observe_partial_json_from_either_writer(self):
+        fake = runpy.run_path(str(FAKE_ADB))
+        real_open = open
+        for generation, publish in enumerate((lambda: self.set_state(generation=1),
+                                             lambda: fake["save"]({"package": PACKAGE, "generation": 2})), start=1):
+            with self.subTest(generation=generation):
+                before = self.read_state()
+                opened = threading.Event()
+                release = threading.Event()
+                failures = []
+
+                @contextmanager
+                def pause_writer(file, mode="r", *args, **kwargs):
+                    with real_open(file, mode, *args, **kwargs) as stream:
+                        if "w" in mode:
+                            opened.set()
+                            if not release.wait(5):
+                                raise TimeoutError("reader did not release the staged writer")
+                        yield stream
+
+                def write_state():
+                    try:
+                        publish()
+                    except Exception as error:
+                        failures.append(error)
+
+                # Pause at the file-write boundary: a reader runs while output is
+                # open but incomplete, before replacement can cause Windows sharing errors.
+                with mock.patch("builtins.open", pause_writer), mock.patch("io.open", pause_writer):
+                    writer = threading.Thread(target=write_state)
+                    writer.start()
+                    try:
+                        self.assertTrue(opened.wait(5), "the state writer must reach its write boundary")
+                        self.assertEqual(before, self.read_state(), "readers must retain the previous complete document")
+                    finally:
+                        release.set()
+                        writer.join(timeout=5)
+                self.assertFalse(writer.is_alive())
+                self.assertEqual([], failures)
+                self.assertEqual(generation, self.read_state()["generation"])
 
 
 class DiscoveryTests(AndroidTestCase):

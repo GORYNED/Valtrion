@@ -1,6 +1,6 @@
 # Installing
 
-Install Core from a checkout and add the Unity package separately. Start with the [Quick Start](quick-start.md) for a first Editor run or use the [AI-agent setup prompt](ai-agent-setup.md). The repository remains private until publication is explicitly approved; the clone URL currently requires access. These instructions do not depend on a package-index release.
+Install Core from a checkout. Start with the [Quick Start](quick-start.md) for a command check without Unity or use the [AI-agent setup prompt](ai-agent-setup.md). For Unity, add the package separately using the [Unity Quick Start](unity-quick-start.md). The repository remains private; the clone URL currently requires access. These instructions do not depend on a package-index release.
 
 ## Requirements
 
