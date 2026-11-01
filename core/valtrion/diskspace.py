@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Iterable, Sequence
 
-from . import artifacts, buildcache, config, jobs, workroot
+from . import artifacts, buildcache, config, core, jobs, workroot
 
 GIB = 1024 ** 3
 #: Under pressure a job folder untouched for this long counts as abandoned (the usual sweep waits `workroot.STALE_JOB_DIRECTORY_SEC`).
@@ -41,6 +41,30 @@ def folder_bytes(path: Path) -> int:
             except OSError:
                 pass
     return total
+
+
+#: Written into a job's run folder when it publishes, reuses or installs a build: the key that job still needs.
+BUILD_KEY_FILE = "build-key.json"
+
+
+def remember_build(run_folder: Path, key: str) -> None:
+    """Record, in the run folder of a job, the published build it depends on, so that no cleanup removes it while the job is active."""
+    try:
+        core.atomic_write_json(run_folder / BUILD_KEY_FILE, {"key": key})
+    except OSError:
+        pass  # bookkeeping only: the one-hour guard of the build cache still applies
+
+
+def active_build_keys(home: Path | None = None) -> list[str]:
+    """Keys of the published builds that jobs which are still active depend on (built and waiting for the device, or installing by key)."""
+    keys: list[str] = []
+    for job_id in jobs.active_job_ids(home):
+        try:
+            document = core.read_json(jobs.find_job_directory(job_id, home) / BUILD_KEY_FILE, attempts=2)
+            keys.append(str(document["key"]))
+        except (jobs.JobError, OSError, ValueError, KeyError, TypeError):
+            continue
+    return keys
 
 
 def _gib(value: float) -> str:
@@ -93,7 +117,7 @@ def ensure_free(settings: config.HostSettings, home: Path | None, protected: Seq
                                                          keep=lambda job_id: jobs.kept_work_reason(job_id, home))),
         ("expired run folders", lambda: artifacts.gc(settings.artifacts_root, settings.keep_days_under_pressure,
                                                     protected=protected_paths).removed),
-        ("expired builds", lambda: buildcache.gc(buildcache.builds_root(home)).removed)]
+        ("expired builds", lambda: buildcache.gc(buildcache.builds_root(home), protect=active_build_keys(home)).removed)]
     for name, step in steps:
         try:  # a locked file (Windows) or a folder that vanished meanwhile must not stop the others, nor fail the stage
             removed.extend(step())

@@ -246,6 +246,51 @@ class PipelineDiskTests(unittest.TestCase):
         events = [json.loads(line) for line in store.events.read_text(encoding="utf-8").splitlines()]
         self.assertTrue(any(e["type"] == "log" and "of build output from the job work folder" in e.get("message", "") for e in events), "reported")
 
+    def test_the_build_an_active_job_waits_to_install_is_never_removed_by_the_cleanup(self):
+        from datetime import timedelta
+        from valtrion.lease import LeaseManager
+        self.settings({"disk": {"minFreeGiB": 10}})
+        manager = LeaseManager(self.home)
+        device = "device:" + "android:ZY22"
+        manager.acquire(device, "alice", "session-9", 600, "series", os.getpid())  # the device is busy: the job waits for it
+        payload_job = {}
+
+        def work():
+            document = {"schema": "gdv.pipeline/1", "id": "p1", "candidate": {"repo": "Sample", "sha": "c" * 40, "profile": "Validation"},
+                        "device": {"platform": "android"}, "stages": [
+                            {"stage": "build"}, {"stage": "install"},
+                            {"stage": "run", "plan": "open.plan.json", "args": {"app": "com.example.app", "stallSec": 5}, "timeoutSec": 30}]}
+            payload = {"type": "pipeline", "file": "<inline>", "inline": document, "baseDir": str(self.base / "plans"),
+                       "devicePollSec": 0.02, "projectDir": str(self.base / "A")}
+            request = jobs.JobRequest(kind="pipeline", project="Sample", sha="c" * 40, label="A", payload=payload,
+                                      host={"id": "win", "transport": "local", "selectedBy": "local"}, stall_sec=30, timeout_sec=120,
+                                      owner="tester", lease_wait_sec=60, tick_sec=0.1)
+            payload_job["info"] = jobs.start_job(request, self.root, self.home, foreground=True, work_roots=workroot.WorkRoots(self.work))
+
+        import threading
+        thread = threading.Thread(target=work, daemon=True)
+        thread.start()
+        deadline = time.monotonic() + 30
+        entry = None
+        while time.monotonic() < deadline and entry is None:
+            time.sleep(0.05)
+            entries = buildcache.entries(buildcache.builds_root(self.home))
+            waiting = [p for p in self.root.glob("*/*/*/job.json") if json.loads(p.read_text(encoding="utf-8")).get("phase") == "waiting-device"]
+            entry = entries[0] if entries and waiting else None
+        self.assertIsNotNone(entry, "the job built, published and waits for the device")
+        old = core.format_utc(core.now() - timedelta(days=10))
+        core.atomic_write_json(entry.directory / buildcache.MANIFEST, {**entry.manifest, "lastUsedUtc": old, "publishedUtc": old})
+        outcome = diskspace.ensure_free(config.load_host_settings(self.home), self.home, free=FakeVolume(1))
+        self.assertTrue(entry.directory.exists(), "an active job's build stays although it is old and the space is low")
+        self.assertFalse(outcome.ok)
+        manager.release(device, "session-9", os.getpid())
+        thread.join(60)
+        self.assertEqual("PASS", jobs.JobStore(Path(payload_job["info"]["dir"])).read_job()["status"])
+        self.assertIn(entry.key, [e.key for e in buildcache.entries(buildcache.builds_root(self.home))] + [entry.key])
+        core.atomic_write_json(entry.directory / buildcache.MANIFEST, {**entry.manifest, "lastUsedUtc": old, "publishedUtc": old})
+        diskspace.ensure_free(config.load_host_settings(self.home), self.home, free=FakeVolume(1))
+        self.assertFalse(entry.directory.exists(), "once no active job needs it, the expired build goes")
+
     def test_a_retained_or_no_cleanup_job_keeps_its_work_folder(self):
         original = adapter_class(self.world)
 

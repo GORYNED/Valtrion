@@ -820,6 +820,7 @@ def execute(pipeline: Mapping[str, Any], pipeline_path: Path | None, ctx: JobCon
                 buildcache.touch(cached)
                 artifact, used_entry, build_outcome = cached.path, cached, StepOutcome(constants.PASS)
                 build_info = {**cached.describe(), "reused": True, "builtByJob": cached.manifest.get("builtByJob", "unknown")}
+                diskspace.remember_build(directory, cached.key)
                 head_note.append(f"the build was reused from the cache (key {cached.key}, built by job {build_info['builtByJob']}); "
                                  "no build ran for this job")
                 events.emit("progress", f"build reused from cache {cached.key}", step=name, data={"build": build_info})
@@ -895,6 +896,7 @@ def execute(pipeline: Mapping[str, Any], pipeline_path: Path | None, ctx: JobCon
                 else:
                     artifact, used_entry = published.path, published
                     build_info = {**published.describe(), "reused": False, "builtByJob": ctx.job_id}
+                    diskspace.remember_build(directory, published.key)
                     events.emit("progress", f"build published {published.key}", step=name, data={"build": build_info})
                     _collect_build_cache(ctx, published.key)
                     release_build_output()
@@ -926,6 +928,7 @@ def execute(pipeline: Mapping[str, Any], pipeline_path: Path | None, ctx: JobCon
                 used_entry = entry
                 chosen = entry.path
                 build_info = {**entry.describe(), "reused": True, "builtByJob": entry.manifest.get("builtByJob", "unknown")}
+                diskspace.remember_build(directory, entry.key)
                 head_note.append(f"installed the published build {entry.key} (candidate {entry.manifest['sha'][:12]}, "
                                  f"{'dirty' if entry.manifest['dirty'] else 'clean'}); this job did not build it")
             if chosen is None and args.get("artifact"):
@@ -1063,7 +1066,7 @@ def _merge_runs(runs: list[dict], plan: Mapping[str, Any], plan_sha: str) -> dic
 def _collect_build_cache(ctx: JobContext, keep_key: str) -> None:
     """Retention of the published builds, applied after each publish (the new build is never removed by it)."""
     try:
-        report = buildcache.gc(buildcache.builds_root(ctx.home), protect=[keep_key])
+        report = buildcache.gc(buildcache.builds_root(ctx.home), protect=[keep_key, *diskspace.active_build_keys(ctx.home)])
     except (OSError, ValueError):
         return
     if report.removed:
