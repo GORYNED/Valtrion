@@ -2,6 +2,10 @@
 
 Core (the `valtrion` Python package) and the Unity package `com.goryned.valtrion.unity` are versioned independently. The Unity changelog is in `integrations/unity/com.goryned.valtrion.unity/CHANGELOG.md`; `compat.json` lists compatible pairs.
 
+## 0.8.1
+
+- Fix: the timeout of a pipeline job (`--timeout-sec`) no longer counts the time the job spends waiting for a lease. A long `--lease-wait` for the Editor slot or the device used to end the job with `TIMEOUT` before the run started; now a wait is bounded by `--lease-wait` alone and the timeout covers working time (the `progress` event adds `workingSec`).
+
 ## 0.8.0
 
 Pipelines lease the device only while they use it, build while the device is busy, and reuse builds. Existing pipelines need no change.
