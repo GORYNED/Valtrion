@@ -34,6 +34,9 @@ jobs:
   verify:
     name: verify and build
     runs-on: ubuntu-latest
+    # write is needed only so the API lists draft Releases (a read-only token cannot see them); this job publishes nothing
+    permissions:
+      contents: write
     outputs:
       tag: ${{ steps.guard.outputs.tag }}
       mode: ${{ steps.state.outputs.mode }}
@@ -187,7 +190,12 @@ jobs:
           while read -r asset_id name; do
             gh api -H "Accept: application/octet-stream" "repos/$GITHUB_REPOSITORY/releases/assets/$asset_id" > "held/$name"
           done < assets.txt
-          python tools/release_guard.py verify-pypi --version "$VERSION" --dir held
+          ok=no
+          for attempt in 1 2 3 4 5 6 7 8 9 10; do
+            if python tools/release_guard.py verify-pypi --version "$VERSION" --dir held; then ok=yes; break; fi
+            echo "PyPI does not match yet (attempt $attempt); waiting"; sleep 30
+          done
+          test "$ok" = yes
           echo "release_id=$id" >> "$GITHUB_ENV"
       - name: Publish the Release (creates the tag at the commit stored in the draft)
         env:

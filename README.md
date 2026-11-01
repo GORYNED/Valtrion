@@ -21,7 +21,7 @@ Your check supplies the assertions. A command job's PASS means exit zero; it sav
 
 ## Install
 
-Core (Python 3.10+, standard library only) from PyPI:
+Core (Python 3.10+, standard library only) from PyPI (available from the first release, Core 0.7.4; before that use the checkout installer in [installation](docs/install.md)):
 
 ```sh
 pipx install valtrion
