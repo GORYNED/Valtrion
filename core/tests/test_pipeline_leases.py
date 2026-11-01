@@ -321,6 +321,34 @@ class ScopedLeaseTests(unittest.TestCase):
         thread.join(WAIT)
         self.assertEqual("PASS", self.outcomes["A"][1].read_job()["status"], self.outcomes["A"][1].read_job()["reason"])
 
+    def test_the_job_timeout_does_not_count_the_time_spent_waiting_for_a_lease(self):
+        manager = LeaseManager(self.home)
+        manager.acquire("device:" + PHONE, "alice", "session-9", 600, "series", os.getpid())
+        self.open_gates("A")
+        threading.Timer(4.0, lambda: manager.release("device:" + PHONE, "session-9", os.getpid())).start()
+        payload = {"type": "pipeline", "file": "<inline>", "inline": self.document(), "baseDir": str(self.base / "plans"),
+                   "devicePollSec": 0.02, "projectDir": str(self.project("A"))}
+        request = jobs.JobRequest(
+            kind="pipeline", project="Sample", sha="c" * 40, label="A", payload=payload,
+            host={"id": "win", "transport": "local", "selectedBy": "local"}, stall_sec=30, timeout_sec=3, owner="tester",
+            lease_wait_sec=30, tick_sec=0.1)
+        info = jobs.start_job(request, self.root, self.home, foreground=True)
+        job = jobs.JobStore(Path(info["dir"])).read_job()
+        self.assertEqual(("finished", "PASS"), (job["state"], job["status"]), job["reason"])
+
+    def test_the_job_timeout_still_ends_a_long_build(self):
+        self.open_gates("A")
+        self.world.gate("A", "build").clear()  # the build does not return within the 2 s timeout, only after 3 s
+        threading.Timer(3.0, self.world.gate("A", "build").set).start()
+        payload = {"type": "pipeline", "file": "<inline>", "inline": self.document(), "baseDir": str(self.base / "plans"),
+                   "devicePollSec": 0.02, "projectDir": str(self.project("A"))}
+        request = jobs.JobRequest(
+            kind="pipeline", project="Sample", sha="c" * 40, label="A", payload=payload,
+            host={"id": "win", "transport": "local", "selectedBy": "local"}, stall_sec=30, timeout_sec=2, owner="tester",
+            lease_wait_sec=30, tick_sec=0.1)
+        info = jobs.start_job(request, self.root, self.home, foreground=True)
+        self.assertEqual("TIMEOUT", jobs.JobStore(Path(info["dir"])).read_job()["status"])
+
     def test_a_failed_build_releases_the_build_resources_and_never_takes_the_device(self):
         failing = adapter_class(self.world)
 

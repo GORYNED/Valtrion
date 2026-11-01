@@ -316,6 +316,8 @@ class _Runner:
         self.state, self.status, self.reason = "running", None, None
         self._flushed = 0.0
         self.keeper: lease.LeaseKeeper | None = None
+        self._waited_sec = 0.0
+        self._wait_since: float | None = None
         self.phase: str | None = None
         #: The lease each `acquire_one` resource name resolved to (a counted resource becomes one of its slots), for `release_one`.
         self.taken: dict[str, str] = {}
@@ -330,6 +332,12 @@ class _Runner:
         self.last_progress = core.utc_now()
         self.events.emit("progress", f"phase: {phase}" if phase else "phase cleared", data={"phase": phase})
         self.flush(force=True)
+
+    def lease_wait_elapsed(self) -> float:
+        """Seconds this job has spent acquiring leases (a wait in progress included). The pipeline timeout does not count them: a wait
+        is bounded by `--lease-wait` alone, and work that has not started cannot use up the time meant for it."""
+        since = self._wait_since
+        return self._waited_sec + (time.monotonic() - since if since is not None else 0.0)
 
     def command_environment(self) -> dict | None:
         """The payload's own `env` (which replaces the environment, as before) or, for a job with a work root, this process's
@@ -389,10 +397,15 @@ class _Runner:
                 slots = lease.unity_editor_capacity(self.home)  # the host's total, so every claimant counts the same slots
             except ValueError as error:  # a broken host.json blocks the job like the CLI does
                 return str(error)
-        if slots is not None:
-            outcome = self.leases.acquire_slot(resource, int(slots), owner, self.job_id, ttl, purpose, pid, wait_sec=wait, on_wait=waiting)
-        else:
-            outcome = self.leases.acquire(resource, owner, self.job_id, ttl, purpose, pid, wait_sec=wait, on_wait=waiting)
+        self._wait_since = time.monotonic()  # the time spent here is a wait for someone else: it does not count against the timeout
+        try:
+            if slots is not None:
+                outcome = self.leases.acquire_slot(resource, int(slots), owner, self.job_id, ttl, purpose, pid, wait_sec=wait, on_wait=waiting)
+            else:
+                outcome = self.leases.acquire(resource, owner, self.job_id, ttl, purpose, pid, wait_sec=wait, on_wait=waiting)
+        finally:
+            self._waited_sec += time.monotonic() - self._wait_since
+            self._wait_since = None
         if not outcome.acquired:
             return outcome.reason
         self.keeper.add(outcome.lease.resource)
@@ -573,7 +586,8 @@ class _PipelineWatch:
         started = next_pulse = time.monotonic()
         while not self._stop.wait(0.25):
             now = time.monotonic()
-            if now - started >= runner.timeout_sec and not self.timed_out:
+            working = now - started - runner.lease_wait_elapsed()
+            if working >= runner.timeout_sec and not self.timed_out:
                 self.timed_out = True
                 runner.events.emit("timeout.detected", f"no result within the {runner.timeout_sec:g} s timeout")
                 try:
@@ -583,7 +597,7 @@ class _PipelineWatch:
             if now >= next_pulse:
                 next_pulse = now + tick
                 runner.last_progress = core.utc_now()
-                runner.events.emit("progress", "pipeline running", data={"elapsedSec": round(now - started, 1)})
+                runner.events.emit("progress", "pipeline running", data={"elapsedSec": round(now - started, 1), "workingSec": round(working, 1)})
                 runner.flush(force=True)
 
 
