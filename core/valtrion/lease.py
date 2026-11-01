@@ -397,23 +397,26 @@ class LeaseManager:
     def _queue_directory(self, name: str) -> Path:
         return self.directory / QUEUE_FOLDER / lease_file_name(name)[: -len(".lock")]
 
-    def _enqueue(self, name: str, owner: str, session: str, pid: int, ttl_sec: int) -> Path:
-        """Join the waiting line of a resource. Tickets sort by the time they were made, so the longest waiter is first."""
+    def _enqueue(self, name: str, owner: str, session: str, pid: int, ttl_sec: int, poll_sec: float = 1.0) -> Path:
+        """Join the waiting line of a resource. Tickets sort by the time they were made (never before the newest ticket already in the
+        line, so a clock that stands still or steps back cannot put a newcomer ahead), so the longest waiter is first."""
         directory = self._queue_directory(name)
         directory.mkdir(parents=True, exist_ok=True)
-        ticket = directory / f"{int(self._clock().timestamp() * 1_000_000):020d}-{os.getpid()}-{uuid.uuid4().hex[:8]}.ticket"
-        self._write_ticket(ticket, owner, session, pid, ttl_sec, core.format_utc(self._clock()))
+        stamp = int(self._clock().timestamp() * 1_000_000)
+        newest = max((int(p.name.split("-", 1)[0]) for p in directory.glob("*.ticket") if p.name.split("-", 1)[0].isdigit()), default=-1)
+        ticket = directory / f"{max(stamp, newest + 1):020d}-{os.getpid()}-{uuid.uuid4().hex[:8]}.ticket"
+        self._write_ticket(ticket, owner, session, pid, ttl_sec, core.format_utc(self._clock()), poll_sec)
         return ticket
 
-    def _write_ticket(self, ticket: Path, owner: str, session: str, pid: int, ttl_sec: int, enqueued: str) -> None:
-        core.atomic_write_json(ticket, {"owner": owner, "session": session, "pid": pid, "ttlSec": ttl_sec, "enqueuedUtc": enqueued,
-                                        "renewedUtc": core.format_utc(self._clock())})
+    def _write_ticket(self, ticket: Path, owner: str, session: str, pid: int, ttl_sec: int, enqueued: str, poll_sec: float) -> None:
+        core.atomic_write_json(ticket, {"owner": owner, "session": session, "pid": pid, "ttlSec": ttl_sec, "pollSec": poll_sec,
+                                        "enqueuedUtc": enqueued, "renewedUtc": core.format_utc(self._clock())})
 
     def _renew_ticket(self, ticket: Path) -> None:
         try:
             document = core.read_json(ticket, attempts=2)
             self._write_ticket(ticket, document["owner"], document["session"], int(document["pid"]), int(document["ttlSec"]),
-                               document["enqueuedUtc"])
+                               document["enqueuedUtc"], float(document.get("pollSec", 1.0)))
         except (OSError, ValueError, KeyError, TypeError):
             pass  # a waiter whose ticket is gone is simply not in line any more; it joins again on the next failed attempt
 
@@ -421,10 +424,11 @@ class LeaseManager:
         """Same rule as a lease: the waiter's process is dead AND its renewal is older than the TTL (an unreadable ticket: old)."""
         try:
             document = core.read_json(ticket, attempts=2)
-            idle = self._clock() - core.parse_utc(document["renewedUtc"])
-            ttl = timedelta(seconds=int(document["ttlSec"]))
-            # A waiter renews at every poll, so one that has not for twice its TTL is gone even if its pid was reused or is shared.
-            return (idle > ttl and not self._is_alive(int(document["pid"]))) or idle > 2 * ttl
+            idle = (self._clock() - core.parse_utc(document["renewedUtc"])).total_seconds()
+            poll = max(0.0, float(document.get("pollSec", 1.0)))
+            # A waiter renews at every poll, so the line moves on soon after one stops: a few polls when its process is dead, a
+            # longer silence (a reused or shared pid, a stopped process) when it looks alive. The lease TTL does not matter here.
+            return (idle > max(5.0, 5 * poll) and not self._is_alive(int(document["pid"]))) or idle > max(30.0, 10 * poll)
         except FileNotFoundError:
             return False
         except (OSError, ValueError, KeyError, TypeError):
@@ -471,7 +475,7 @@ class LeaseManager:
                 if result.acquired or self._monotonic() >= deadline:
                     return result
                 if ticket is None or not ticket.exists():
-                    ticket = self._enqueue(name, owner, session, pid, ttl_sec)
+                    ticket = self._enqueue(name, owner, session, pid, ttl_sec, poll_sec)
                 else:
                     self._renew_ticket(ticket)
                 notice.tick(result.reason or f"{name} is held", self._monotonic())
