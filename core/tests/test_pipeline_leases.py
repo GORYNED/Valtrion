@@ -40,6 +40,8 @@ class World:
         self.toolchain = {}
         self.devices = [phone()]
         self.violations = []
+        self.plans = []  # (label, incremental plan or None, lease resource) of every build
+        self.on_build = None  # optional callable(label, project folder, job id) run when a fake build starts
 
     def mark(self, label, what):
         with self.lock:
@@ -69,6 +71,9 @@ def adapter_class(world):
         def use_project(self, project):
             self.label = Path(project).name
 
+        def bind_incremental(self, plan, lease_resource=None):
+            world.plans.append((self.label, plan, lease_resource))
+
         def probe(self):
             return Capabilities("android", ("build",))
 
@@ -85,6 +90,8 @@ def adapter_class(world):
             if any(resource.startswith("device:") for resource in mine):
                 world.violations.append(f"{self.label} builds while it holds {mine}")
             world.mark(self.label, "build.start")
+            if world.on_build:
+                world.on_build(self.label, Path(project), job)
             world.gate(self.label, "build").wait(WAIT)
             out.mkdir(parents=True, exist_ok=True)
             apk = out / "app.apk"

@@ -34,7 +34,7 @@ from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 from urllib.parse import unquote
 
-from .. import config, constants, core, supervise
+from .. import config, constants, core, incremental, supervise
 from ..adapter import Capabilities, DeviceHealth, DeviceInfo, PlatformAdapter, StepOutcome
 from . import register
 
@@ -44,6 +44,7 @@ UNITY_EDITORS_ENV = "GDV_UNITY_EDITORS"
 DEFAULT_UNITY_EDITORS = "/Applications/Unity/Hub/Editor"
 TOOL_PATH = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 #: Result detail naming what `xcodebuild` was given to build: `workspace` (CocoaPods export) or `project`.
+INCREMENTAL_DETAIL = "incremental.note"
 XCODE_CONTAINER_DETAIL = "xcodebuild.container"
 APP_DATA_ROOT = "Documents"  # `Application.persistentDataPath` of an iOS player, relative to the app data container
 
@@ -221,6 +222,7 @@ class IosAdapter(PlatformAdapter):
         self._app: str | None = None
         self._device: DeviceInfo | None = None
         self._register_temp: Callable[[Path], None] | None = None
+        self._incremental: tuple[incremental.Plan, str | None] | None = None
         self._stage_budget: float | None = None
         self._consoles: dict[str, tuple[Any, supervise.ProcessTree, Any]] = {}
 
@@ -245,6 +247,10 @@ class IosAdapter(PlatformAdapter):
 
     def bind_build_budget(self, seconds: float) -> None:
         self._stage_budget = seconds
+
+    def bind_incremental(self, plan: incremental.Plan | None, lease_resource: str | None = None) -> None:
+        """Build in the managed checkout's persistent folder (see `incremental.py`) instead of a fresh export in the job work folder."""
+        self._incremental = (plan, lease_resource) if plan is not None else None
 
     def _require_app(self) -> str | None:
         return self._app
@@ -341,7 +347,12 @@ class IosAdapter(PlatformAdapter):
                                            f"{os.environ.get(UNITY_EDITORS_ENV, DEFAULT_UNITY_EDITORS)}")
         out.mkdir(parents=True, exist_ok=True)
         logs.mkdir(parents=True, exist_ok=True)
-        if settings.export_path:
+        persistent = self._incremental[0] if self._incremental is not None else None
+        prepared = incremental.prepare(persistent, self._incremental[1]) if persistent is not None else None
+        if prepared is not None:
+            export = prepared.export  # outside the project and the job work folder; the next build there reuses it
+            notes[INCREMENTAL_DETAIL] = prepared.note
+        elif settings.export_path:
             export = (project / settings.export_path).resolve()
             relative = export.relative_to(project.resolve()).parts if project.resolve() in export.parents else ()
             # APFS is case-insensitive: "assets/Gen" is the Assets folder.
@@ -403,11 +414,17 @@ class IosAdapter(PlatformAdapter):
         # `-buildOutput` is the switch other Unity build methods already read; `-gdv-export-path` is the neutral name.
         argv += ["-executeMethod", settings.execute_method, "-gdv-export-path", str(export), "-buildOutput", str(export),
                  "-logFile", str(unity_log), *settings.unity_args]
+        if prepared is not None and prepared.append:
+            # The export method adds BuildOptions.AcceptExternalModificationsToPlayer (Append) when it is given this switch, so Unity
+            # changes the Xcode project in place and Xcode recompiles only what changed.
+            argv += ["-gdv-export-append", "1"]
         # A hung export is TIMEOUT or STALL (the Unity log and the CPU of the editor both stopped), not a wait without end.
         exported = self._run(argv, min(settings.export_timeout_sec, remaining()), settings.stall_sec, str(project), _tool_env(),
                              logs / "unity-export.out", progress_files=(unity_log,), cpu_counts=True)
         layers["export"] = exported.status
         if not exported.ok:
+            if exported.status in (constants.STALL, constants.TIMEOUT) and persistent is not None:
+                incremental.discard(persistent.folder)  # killed half way: the export cannot be trusted
             return done(exported.status, f"Unity export {exported.status.lower()}: "
                                          f"{exported.reason or 'exit code ' + str(exported.returncode)}; see {unity_log}")
         xcodeproj = self._find_xcodeproj(export, settings.xcode_project)
@@ -415,7 +432,7 @@ class IosAdapter(PlatformAdapter):
             layers["export"] = constants.FAIL
             return done(constants.FAIL, f"the export produced no Xcode project in {export}")
 
-        derived = out / "DerivedData"
+        derived = prepared.derived if prepared is not None else out / "DerivedData"
         destination = "generic/platform=iOS"
         if settings.destination == "device":
             try:
@@ -443,6 +460,8 @@ class IosAdapter(PlatformAdapter):
             progress_files=(derived,), cpu_counts=True)
         if not built.ok:
             if built.status in (constants.STALL, constants.TIMEOUT):
+                if persistent is not None:
+                    incremental.discard(persistent.folder)  # killed half way: neither the project nor DerivedData can be trusted
                 layers["nativeBuild"] = built.status
                 return done(built.status, f"xcodebuild {built.status.lower()}: {built.reason}; see {xcode_log}")
             layer, status = classify_xcodebuild_failure(built.output)
@@ -461,7 +480,19 @@ class IosAdapter(PlatformAdapter):
             return done(constants.FAIL, f"xcodebuild succeeded but produced no .app in Build/Products/{settings.configuration}-iphoneos")
         layers["nativeBuild"] = constants.PASS
         layers["sign"] = constants.PASS
-        return done(constants.PASS, None, (apps[0],))
+        app = apps[0]
+        if persistent is not None:
+            # The product stays in the persistent DerivedData so the next build can reuse it; the pipeline publishes a copy.
+            copy = out / app.name
+            if copy.exists():
+                shutil.rmtree(copy, ignore_errors=True)
+            try:
+                shutil.copytree(app, copy, symlinks=True)
+            except OSError as error:
+                return done(constants.FAIL, f"cannot copy the built app out of the persistent DerivedData: {error}")
+            app = copy
+            incremental.commit(persistent)
+        return done(constants.PASS, None, (app,))
 
     def _unity_binary(self, project: Path, override: str | None = None) -> Path | None:
         if override:

@@ -182,18 +182,19 @@ def git_environment(base: Mapping[str, str] | None = None) -> dict[str, str]:
     environment = {key: value for key, value in (os.environ if base is None else base).items() if key not in _REPOSITORY_VARIABLES}
     environment["GIT_OPTIONAL_LOCKS"] = "0"
     environment["GIT_TERMINAL_PROMPT"] = "0"
+    environment["GCM_INTERACTIVE"] = "never"  # a credential manager must not wait for a window nobody sees
     return environment
 
 
-def run_git(folder: Path, arguments: Sequence[str]) -> tuple[int, str]:
+def run_git(folder: Path, arguments: Sequence[str], timeout: float = 60) -> tuple[int, str]:
     """(exit code, stdout) of `git <arguments>` in `folder`; for a failed call the second item is the error text, so a caller can say
     why. Trailing whitespace is trimmed, leading whitespace is kept (it is part of a porcelain status line)."""
     import subprocess
     try:
         done = subprocess.run(["git", *arguments], cwd=folder, capture_output=True, text=True, encoding="utf-8", errors="replace",
-                              timeout=60, check=False, env=git_environment(), stdin=subprocess.DEVNULL)
+                              timeout=timeout, check=False, env=git_environment(), stdin=subprocess.DEVNULL)
     except subprocess.TimeoutExpired:
-        return 124, f"git {arguments[0] if arguments else ''} timed out after 60 s"
+        return 124, f"git {arguments[0] if arguments else ''} timed out after {timeout:g} s"
     except (OSError, subprocess.SubprocessError) as error:
         return 127, str(error)
     if done.returncode != 0:

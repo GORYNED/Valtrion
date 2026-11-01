@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Iterable, Sequence
 
-from . import artifacts, buildcache, config, core, jobs, workroot
+from . import artifacts, buildcache, config, core, incremental, jobs, lease, workroot
 
 GIB = 1024 ** 3
 #: Under pressure a job folder untouched for this long counts as abandoned (the usual sweep waits `workroot.STALE_JOB_DIRECTORY_SEC`).
@@ -103,6 +103,8 @@ def largest_consumers(settings: config.HostSettings, home: Path | None, limit: i
     items.append((f"{settings.artifacts_root} (run folders)", folder_bytes(settings.artifacts_root) if settings.artifacts_root.is_dir() else 0))
     cache = buildcache.builds_root(home)
     items.append((f"{cache} (build cache)", folder_bytes(cache) if cache.is_dir() else 0))
+    for folder in incremental.folders(home):
+        items.append((f"{folder} (incremental build)", folder_bytes(folder)))
     return sorted(items, key=lambda item: item[1], reverse=True)[:limit]
 
 
@@ -129,7 +131,9 @@ def ensure_free(settings: config.HostSettings, home: Path | None, protected: Seq
                                                          keep=lambda job_id: jobs.kept_work_reason(job_id, home))),
         ("expired run folders", lambda: artifacts.gc(settings.artifacts_root, settings.keep_days_under_pressure,
                                                     protected=protected_paths).removed),
-        ("expired builds", lambda: buildcache.gc(buildcache.builds_root(home), protect=active_build_keys(home, active)).removed)]
+        ("expired builds", lambda: buildcache.gc(buildcache.builds_root(home), protect=active_build_keys(home, active)).removed),
+        # Last: the next build there compiles everything again, so it goes only when nothing else was enough.
+        ("idle incremental build folders", lambda: release_idle_incremental(home))]
     for name, step in steps:
         try:  # a locked file (Windows) or a folder that vanished meanwhile must not stop the others, nor fail the stage
             removed.extend(step())
@@ -146,6 +150,23 @@ def ensure_free(settings: config.HostSettings, home: Path | None, protected: Seq
     return Outcome(False, f"only {_gib(after)} free on the volume of {settings.work_root}, below the {settings.min_free_gib:g} GiB "
                           f"minimum (host.json disk.minFreeGiB) after removing {len(removed)} abandoned or expired item(s); "
                           f"largest: {consumers}{problems}", tuple(removed), before, after)
+
+
+def release_idle_incremental(home: Path | None) -> list[str]:
+    """Remove the export and DerivedData of the persistent build folders whose checkout nobody builds in right now (their
+    `unity-project:` lease is free); the next build there starts clean. A folder that cannot be shown to be idle is kept."""
+    manager = lease.LeaseManager(home or core.valtrion_home())
+    removed: list[str] = []
+    for folder in incremental.folders(home):
+        try:
+            resource = core.read_json(folder / incremental.OWNER).get("leaseResource")
+        except (OSError, ValueError, AttributeError):
+            continue
+        if not isinstance(resource, str) or manager.status(resource).state != "free":
+            continue
+        if incremental.discard(folder):
+            removed.append(f"{folder} (incremental build)")
+    return removed
 
 
 def release_paths(paths: Iterable[Path]) -> tuple[int, list[str]]:

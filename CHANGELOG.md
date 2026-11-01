@@ -2,6 +2,18 @@
 
 Core (the `valtrion` Python package) and the Unity package `com.goryned.valtrion.unity` are versioned independently. The Unity changelog is in `integrations/unity/com.goryned.valtrion.unity/CHANGELOG.md`; `compat.json` lists compatible pairs.
 
+## 0.8.4
+
+Managed build checkouts: queued jobs of different commits no longer depend on a project folder that someone switched by hand.
+
+- **Managed checkouts.** `host.json` `projects.<candidate.repo>` declares a small pool of checkouts (`id`, `path`, optional `remote`, `unityPath`, `default`). `--checkout ID|auto` on `pipeline`, `build` and `run` names one (with `--sha`; `--project-dir` and `--remote-project` are not used). Valtrion creates a missing checkout (clone of `remote`) and, when the `build` stage holds the checkout's `unity-project:` lease and an Editor slot, resets it to the job's commit: fetch if the commit is missing (an unknown commit is `BLOCKED` at once), forced detached checkout, `clean -fd` (ignored files such as `Library/` stay; the run's own folders are kept), `git lfs pull` when any tracked `.gitattributes` uses LFS, `HEAD` verified, tree read again. The dirty flag, Unity version and build-cache key are the commit's own.
+- **Incremental builds (iOS).** A managed checkout keeps its build state: a persistent export folder (Unity exports with Append; the project's export method gets `-gdv-export-append 1`), persistent Xcode DerivedData and the IL2CPP cache in `Library/`, so a build after a small change recompiles only what changed. The state is used only under the checkout's lease and starts clean when the toolchain, build profile or signing changed, after a build killed half way, or with `valtrion build --clean` / `args.clean`. The built app is copied out before it is published. The folders are listed by `doctor` (`storage.incremental`) and released by the disk cleanup when nobody builds in them.
+- **Preflight at submit.** Plans, pre-launch files, a missing project, and (managed) a commit that is not on the remote are found before the job is queued: `BLOCKED` at once, no lease taken.
+- **Unmanaged folders** are never switched. With `--sha` they are checked at submit as before and again when the build starts: if another job moved the folder, the stage is `BLOCKED` naming both commits and nothing is built. For the Editor platform `HEAD` is verified again before each `run` stage.
+- **Build output.** Stray `Builds/*` in a managed checkout is removed at each checkout (under the lease). The build output of a job stays in its work folder and goes away with the job.
+- **Report.** `result.json` has an optional `checkout` object (project folder, commit, `id`, `switched`/`previousSha`, `created`, `fetched`); an event `log` with `data.checkout` says the same. `valtrion doctor` lists managed checkouts (commit, size, lease holder) and project folders outside them that hold a `unity-project:` lease.
+- `compare.run_git` takes an optional timeout (the long git steps of a checkout use 30 minutes instead of 60 seconds).
+
 ## 0.8.3
 
 Follow-ups of the host-disk cleanup (0.8.2).
