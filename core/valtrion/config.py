@@ -7,6 +7,7 @@ discovered on this host; discovery refreshes it, only aliases, classes and notes
 
 from __future__ import annotations
 
+import math
 import os
 import re
 from dataclasses import dataclass, field, replace
@@ -126,10 +127,10 @@ def _load_host_settings(home: Path | None = None) -> HostSettings:
     if not isinstance(disk, dict):
         raise ConfigError("host.json: disk must be an object")
     minimum = disk.get("minFreeGiB")
-    if minimum is not None and (isinstance(minimum, bool) or not isinstance(minimum, (int, float)) or minimum <= 0):
+    if minimum is not None and (isinstance(minimum, bool) or not isinstance(minimum, (int, float)) or not math.isfinite(minimum) or minimum <= 0):
         raise ConfigError("host.json: disk.minFreeGiB must be a positive number")
     pressure_days = disk.get("keepDaysUnderPressure", 2.0)
-    if isinstance(pressure_days, bool) or not isinstance(pressure_days, (int, float)) or pressure_days < 0:
+    if isinstance(pressure_days, bool) or not isinstance(pressure_days, (int, float)) or not math.isfinite(pressure_days) or pressure_days < 0:
         raise ConfigError("host.json: disk.keepDaysUnderPressure must be a non-negative number")
     return HostSettings(Path(root).expanduser() if root else default_root, float(days),
                         Path(work).expanduser() if work else default_work, float(minimum) if minimum is not None else None,

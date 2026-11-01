@@ -135,7 +135,8 @@ class DiskTests(unittest.TestCase):
         self.assertEqual(7, round(outcome.free_after / GIB))
 
     def test_config_rejects_bad_disk_settings(self):
-        for bad in ({"minFreeGiB": 0}, {"minFreeGiB": "5"}, {"keepDaysUnderPressure": -1}, []):
+        for bad in ({"minFreeGiB": 0}, {"minFreeGiB": "5"}, {"keepDaysUnderPressure": -1}, [], {"minFreeGiB": float("nan")},
+                    {"minFreeGiB": float("inf")}, {"keepDaysUnderPressure": float("inf")}):
             (self.home / "host.json").write_text(json.dumps({"disk": bad}), encoding="utf-8")
             with self.assertRaises(config.ConfigError, msg=bad):
                 config.load_host_settings(self.home)
@@ -244,6 +245,31 @@ class PipelineDiskTests(unittest.TestCase):
         self.assertTrue(Path(build["path"]).exists())
         events = [json.loads(line) for line in store.events.read_text(encoding="utf-8").splitlines()]
         self.assertTrue(any(e["type"] == "log" and "of build output from the job work folder" in e.get("message", "") for e in events), "reported")
+
+    def test_a_retained_or_no_cleanup_job_keeps_its_work_folder(self):
+        original = adapter_class(self.world)
+
+        class Leftover(original):
+            def bind_temporary_registrar(self, register):
+                self.register = register
+
+            def build(self, project, profile, out):
+                extra = out.parent / "xcode-export-test"
+                extra.mkdir(parents=True)
+                self.register(extra)
+                return super().build(project, profile, out)
+
+        providers.register("android", Leftover)
+        document = {"schema": "gdv.pipeline/1", "id": "p1", "candidate": {"repo": "Sample", "sha": "c" * 40, "profile": "Validation"},
+                    "device": {"platform": "android"}, "stages": [{"stage": "build"}]}
+        payload = {"type": "pipeline", "file": "<inline>", "inline": document, "baseDir": str(self.base / "plans"),
+                   "projectDir": str(self.base / "A")}
+        request = jobs.JobRequest(kind="pipeline", project="Sample", sha="c" * 40, label="A", payload=payload,
+                                  host={"id": "win", "transport": "local", "selectedBy": "local"}, stall_sec=30, timeout_sec=60,
+                                  owner="tester", cleanup=False)
+        info = jobs.start_job(request, self.root, self.home, foreground=True, work_roots=workroot.WorkRoots(self.work))
+        self.assertEqual("PASS", jobs.JobStore(Path(info["dir"])).read_job()["status"])
+        self.assertTrue(list((self.work / "jobs").glob("*/xcode-export-test")), "--no-cleanup keeps the work folder, early release included")
 
     def test_an_unpublished_build_is_kept_until_the_last_stage_and_released_then(self):
         observed = {}

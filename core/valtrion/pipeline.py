@@ -24,6 +24,7 @@ from typing import Any, Callable, Mapping, Sequence
 from . import artifacts, buildcache, compare, config, constants, core, diskspace, gitstate, lease, providers, supervise
 from .adapter import DeviceHealth, DeviceInfo, PlatformAdapter, StepOutcome
 from .jobs import JobContext
+from .jobs import work_cleanup_blocker as jobs_blocker
 from .schema import Validator, validate_document
 
 DEVICE_OUT = "gdv/out"
@@ -647,9 +648,10 @@ def execute(pipeline: Mapping[str, Any], pipeline_path: Path | None, ctx: JobCon
         nonlocal build_pending_release
         if build_pending_release:
             # A build that could not be published may be run from its artifact (a Windows player, a macOS app): its output is
-            # released when the last stage is done, not after the install.
+            # released when the last stage is done, not after the install. After a failure it stays for diagnosis, as before.
             build_pending_release = False
-            release_build_output()
+            if overall.status == constants.PASS:
+                release_build_output()
         if not stage_results and (overall.status != constants.PASS or not runs_a_plan):
             # Stopped before any stage produced a result (a timeout or cancel while building, a missing project), or a pipeline
             # with no run stage (build only, install only): still say what happened.
@@ -753,6 +755,12 @@ def execute(pipeline: Mapping[str, Any], pipeline_path: Path | None, ctx: JobCon
     def release_build_output() -> None:
         """The build output in the job's work folder is not needed once it is published or installed: remove it now instead of at
         the end of the job (several finished builds that wait for the device would otherwise hold several GiB each)."""
+        try:
+            blocker = jobs_blocker(ctx.spec)
+        except (KeyError, OSError):
+            blocker = None
+        if blocker and not blocker.startswith("results are not saved"):
+            return  # cleanup is off, the run is retained or a protected path overlaps: the work folder stays as the user asked
         try:
             listed = [Path(item) for item in core.read_json(directory / artifacts.TEMP_REGISTRY)]
         except (OSError, ValueError):
