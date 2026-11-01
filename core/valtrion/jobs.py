@@ -1032,8 +1032,11 @@ def reap_cancelled_jobs(artifacts_root: Path, project: str, project_dir: Path, e
         try:
             if directory.name == current_job or registry.stat().st_size <= 2:  # absent, or an emptied `[]`
                 continue
-            if core.read_json(job_json, attempts=2).get("state") != "cancelled":
+            document = core.read_json(job_json, attempts=2)
+            if document.get("state") != "cancelled":
                 continue
+            if document.get("pid") and core.process_alive(int(document["pid"])):
+                continue  # a live process under the recorded pid may still be the runner (cancel could not prove otherwise)
             if not core.read_json(registry, attempts=2):
                 continue
             spec = core.read_json(directory / "spec.json", attempts=2)

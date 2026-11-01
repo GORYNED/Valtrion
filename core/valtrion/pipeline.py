@@ -619,6 +619,7 @@ def execute(pipeline: Mapping[str, Any], pipeline_path: Path | None, ctx: JobCon
     artifact: Path | None = None
     build_outcome: StepOutcome | None = None
     build_info: dict[str, Any] | None = None  # the published build (or the reused one), recorded in every result of the job
+    reaped_dead_jobs = False  # the leftovers of cancelled jobs are removed before this job's first build only
     build_pending_release = False  # a build whose output is still in the work folder (not published): released after the install
     used_entry: buildcache.Entry | None = None  # touched again before the install, so a long wait for the device does not let gc take it
     extra_layers: dict[str, str] = {}
@@ -852,7 +853,8 @@ def execute(pipeline: Mapping[str, Any], pipeline_path: Path | None, ctx: JobCon
                 if reason:
                     events.emit("step.finished", reason, step=name, status=constants.BLOCKED)
                     return fail(constants.BLOCKED, reason)
-                if adapter.build_uses_editor:  # only then the project lease is held: nobody else builds in this tree
+                if adapter.build_uses_editor and not reaped_dead_jobs:  # only then the project lease is held; once per job
+                    reaped_dead_jobs = True
                     try:
                         jobs_reap(Path(ctx.spec["artifactsRoot"]), ctx.spec["project"], project_dir, events, ctx.job_id)
                     except (KeyError, OSError):

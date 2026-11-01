@@ -414,6 +414,22 @@ class PipelineDiskTests(unittest.TestCase):
         self.assertEqual("PASS", store.read_job()["status"], store.read_job()["reason"])
         self.assertTrue(leftover.exists(), "another checkout of the same project may be in use under its own lease")
 
+    def test_a_cancelled_job_whose_recorded_pid_is_alive_is_not_reaped(self):
+        self.settings({"artifactsRoot": str(self.root)})
+        project = self.base / "A"
+        leftover = project / "Builds" / "iOS"
+        leftover.mkdir(parents=True)
+        old = self.root / "Sample" / "abcdef12" / "20261101T000000Z-old-abcdef12"
+        old.mkdir(parents=True)
+        core.atomic_write_json(old / "job.json", {"state": "cancelled", "pid": os.getpid()})  # alive: it may still be working there
+        core.atomic_write_json(old / "spec.json", {
+            "jobId": old.name, "project": "Sample", "sha8": "abcdef12", "artifactsRoot": str(self.root), "cleanup": True,
+            "payload": {"type": "pipeline", "projectDir": str(project)}})
+        core.atomic_write_json(old / "temp-paths.json", [str(leftover)])
+        store = self.run_job()
+        self.assertEqual("PASS", store.read_job()["status"], store.read_job()["reason"])
+        self.assertTrue(leftover.exists())
+
     def test_a_spec_that_does_not_describe_its_own_folder_removes_nothing(self):
         leftover = self.base / "A" / "Builds" / "iOS"
         leftover.mkdir(parents=True)
