@@ -37,9 +37,9 @@ make every pipeline or comparison application-neutral.
 
 JSON schemas `gdv.*/1` and fixtures. They define every document that crosses a boundary: plans, pipelines, results, heartbeats, jobs, events, hosts, registry, leases, checks and baselines. The core validates against them; app-side runners produce documents that validate against them. See [contracts.md](contracts.md).
 
-### Unity package (`unity/`)
+### Unity package (`integrations/unity/`)
 
-`com.goryned.valtrion.unity` is the app-side runner for Unity: it reads the plan, runs the steps, writes the heartbeat and result. It is a separate component with its own SemVer and release lifecycle, developed under `unity/`. It does not depend on the core to build, and the core does not need Unity to run. The two meet only through the contracts and the file protocol ([protocol.md](protocol.md)).
+`com.goryned.valtrion.unity` is the app-side runner for Unity: it reads the plan, runs the steps, writes the heartbeat and result. It is a separate component with its own SemVer and release lifecycle, developed under `integrations/unity/com.goryned.valtrion.unity/`. Its test project is `integrations/unity/UnityProject/`. It does not depend on the core to build, and the core does not need Unity to run. The two meet only through the contracts and the file protocol ([protocol.md](protocol.md)).
 
 ### Compatibility (`compat.json`)
 

@@ -62,7 +62,7 @@ Valtrion is pre-release software under the [MIT license](LICENSE). Install from 
 | [Overview](docs/overview.md) | A run from plan to result |
 | [CLI reference](docs/cli.md) | Commands and exit codes |
 | [Providers](docs/providers.md) | Platform requirements and build profiles |
-| [Unity package guide](unity/com.goryned.valtrion.unity/Documentation~/index.md) | C# steps, probes and test integration |
+| [Unity package guide](integrations/unity/com.goryned.valtrion.unity/Documentation~/index.md) | C# steps, probes and test integration |
 | [Contracts](docs/contracts.md) and [protocol](docs/protocol.md) | JSON formats and host/app communication |
 | [Local files and jobs](docs/work-root.md) | State, temporary work, locks and cleanup |
 | [Architecture](docs/ARCHITECTURE.md) | Components and boundaries |

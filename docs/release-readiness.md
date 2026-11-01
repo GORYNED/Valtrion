@@ -23,6 +23,11 @@ enforce a timeout. Its evidence is job state, events and console output, not a
 fabricated app result. Unity is the only ready app integration. Project discovery,
 profiles and comparison metadata retain Unity-specific assumptions.
 
+The Unity integration lives under `integrations/unity/`: the unchanged UPM package
+is `com.goryned.valtrion.unity`, and its test project is `UnityProject/`.
+Use the new subdirectory in local package paths and commit-pinned UPM Git URLs.
+The source move does not rename public APIs, CLI commands, contracts or versions.
+
 ## HISTORICAL EVIDENCE — supplied from earlier preparation
 
 The owner reported Windows / Python 3.14.4: 799 Core tests (793 passed, six
@@ -52,11 +57,12 @@ being counted as passes.
 | Repository identity | Correct origin and initial history; GitHub ID and private visibility confirmed |
 | Remote refs | `git ls-remote origin` returned only HEAD and `refs/heads/main`, both at the initial commit, before this task branch was pushed |
 | Core example | Fresh offline CLI installation; catalog PASS/0, duplicate SKU FAIL/1, delayed process TIMEOUT/3; actual console/status/timeout event checked; six job/event validations and `pip check` passed |
-| Core suite | Windows / Python 3.14.4: `cd core` then `python -m unittest discover -s tests -t . -v`: 800 tests, 794 passed, six platform skips, zero failures/errors after the fixture fix |
+| Core suite | Windows / Python 3.14.4: `cd core` then `python -m unittest discover -s tests -t . -v`: 803 tests, 797 passed, six platform skips, zero failures/errors after the fixture fix and integration move |
+| Integration layout | All 115 moved files present; all 48 `.meta` files preserved byte for byte; manifest/lock local package paths still resolve; new release-checker tests pass |
 | Contracts / source / docs | `python tools/check_contracts.py`: 12 schemas, zero problems; `python tools/check_release.py`: zero problems; local Markdown targets and `git diff --check` passed |
 | Packaging | Direct wheel and sdist → wheel → fresh offline installation passed; installed version/schema/example checks and `pip check` passed; runtime dependencies empty; MIT payloads inspected |
 | Unity preflight | Required 6000.6.7f1 installed; package declares minimum 6000.6; test project pins 6000.6.7f1 |
-| Compatibility | Installed `valtrion doctor --project unity/TestProject --json`: `project.status=ok`, package 0.7.1 / Core 0.7.4; no Editor launched |
+| Compatibility | Installed `valtrion doctor --project integrations/unity/UnityProject --json`: `project.status=ok`, package 0.7.1 / Core 0.7.4; no Editor launched |
 | Unity execution | BLOCKED: unrelated batchmode test Editors occupied the machine test slot at initial inspection and repeated checks. None was stopped; no Editor was launched by this task |
 | Unity CLI | Installed 1.0.0-beta.15; latest-version check could not resolve Unity CDN; no update performed |
 | Unity guide / agent steps | Source walkthrough checked manifest/testables, smoke assembly references, plan and PlanTest bridge; runtime walkthrough remains unverified |

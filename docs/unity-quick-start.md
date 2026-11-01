@@ -45,7 +45,7 @@ In the Unity project, merge the following into `Packages/manifest.json`. Preserv
 ```json
 {
   "dependencies": {
-    "com.goryned.valtrion.unity": "file:/absolute/path/to/Valtrion/unity/com.goryned.valtrion.unity",
+    "com.goryned.valtrion.unity": "file:/absolute/path/to/Valtrion/integrations/unity/com.goryned.valtrion.unity",
     "com.unity.test-framework": "1.8.0"
   },
   "testables": ["com.goryned.valtrion.unity"]
@@ -55,7 +55,7 @@ In the Unity project, merge the following into `Packages/manifest.json`. Preserv
 Replace the example path with your checkout path, using forward slashes (`file:C:/...` on Windows). Keep an existing compatible Test Framework version; 1.8.0 is the repository's tested version. `testables` is required for the test helper used below. Local paths are convenient for trying Valtrion; do not commit your absolute path. For a shared project, pin the package's Git URL to the full reviewed commit from the same checkout:
 
 ```text
-https://github.com/GORYNED/Valtrion.git?path=unity/com.goryned.valtrion.unity#<full-reviewed-commit-sha>
+https://github.com/GORYNED/Valtrion.git?path=integrations/unity/com.goryned.valtrion.unity#<full-reviewed-commit-sha>
 ```
 
 This is a URL template: replace the SHA. Private repository credentials must come from your normal Git credential manager, never the manifest. Core and Unity versions are different; their compatibility is recorded in [compat.json](../compat.json).
@@ -120,4 +120,4 @@ After Unity resolves the package, run `valtrion doctor --project <absolute-proje
 
 ## Next steps
 
-Add steps that exercise your app and assert its behavior. See the [Unity guide](../unity/com.goryned.valtrion.unity/Documentation~/index.md) for custom steps and the [providers guide](providers.md) for project build methods, the Editor provider's runner interface, device runs and profiles. The direct test above does not set up a provider runner or player build pipeline. Do not use the larger [example checks map](../examples/checks.json) unchanged: its build methods, runners and app scenarios are placeholders for a project's own integration.
+Add steps that exercise your app and assert its behavior. See the [Unity guide](../integrations/unity/com.goryned.valtrion.unity/Documentation~/index.md) for custom steps and the [providers guide](providers.md) for project build methods, the Editor provider's runner interface, device runs and profiles. The direct test above does not set up a provider runner or player build pipeline. Do not use the larger [example checks map](../examples/checks.json) unchanged: its build methods, runners and app scenarios are placeholders for a project's own integration.

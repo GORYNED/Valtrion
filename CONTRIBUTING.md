@@ -32,7 +32,7 @@ python -m unittest discover -s tests -t .
 
 CI configures Core tests on Windows, macOS and Linux with Python 3.10 through 3.13, plus contract/source checks, an offline checkout installation, a source-archive-to-wheel installation, and a run without Unity or mobile tooling. These tests validate Core behavior with fakes; they do not prove a real device build or Unity compilation. Hosted results and current blockers are recorded in [release readiness](docs/release-readiness.md).
 
-For Unity changes, use the Editor specified in `unity/TestProject/ProjectSettings/ProjectVersion.txt` and run both EditMode and PlayMode tests in `unity/TestProject`. Use batch mode and retain the logs and test XML. A skipped test or a missing Editor is unverified, not a pass. For provider changes, also test the affected platform when tools and a target are available. State every missing check in the pull request.
+For Unity changes, use the Editor specified in `integrations/unity/UnityProject/ProjectSettings/ProjectVersion.txt` and run both EditMode and PlayMode tests in `integrations/unity/UnityProject`. Use batch mode and retain the logs and test XML. A skipped test or a missing Editor is unverified, not a pass. For provider changes, also test the affected platform when tools and a target are available. State every missing check in the pull request.
 
 ## Preserve compatibility
 

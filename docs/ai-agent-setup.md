@@ -59,7 +59,8 @@ Unity path: discover and pin
    the user-specified ref when provided; otherwise use main and record its SHA.
    Do not apply new installer flags to an older checkout. Read
    README.md, docs/unity-quick-start.md, docs/install.md, docs/providers.md,
-   docs/trust-model.md and the Unity package Documentation~/index.md there.
+   docs/trust-model.md and
+   integrations/unity/com.goryned.valtrion.unity/Documentation~/index.md there.
    Inspect source and current CLI --help before choosing commands. Record the full
    commit SHA. Pin Core and the Unity package to that reviewed checkout; consult
    compat.json instead of assuming their version numbers must match.
@@ -70,7 +71,7 @@ Install and integrate
    path and use it explicitly. Verify --version, schemas and validation of
    examples/smoke.plan.json. No package-index publication is required.
 4. Merge the Unity package into Packages/manifest.json. Prefer a full commit-pinned
-   Git URL using ?path=unity/com.goryned.valtrion.unity#<full SHA> for a shared
+   Git URL using ?path=integrations/unity/com.goryned.valtrion.unity#<full SHA> for a shared
    project. A local file: path is acceptable for a disposable verification but do
    not commit an absolute path. Preserve existing dependencies and testables.
    Add com.goryned.valtrion.unity to testables for PlanTest; use the project's
