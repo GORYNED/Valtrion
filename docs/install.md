@@ -15,7 +15,7 @@ pipx upgrade valtrion              # update later
 valtrion --version
 ```
 
-Without pipx: `python -m venv <dir>` then `<dir>/bin/pip install valtrion` (`Scripts` on Windows). `pipx` puts `valtrion` on your PATH (`pipx ensurepath`). The package has no runtime dependencies. Releases are published by the manual [Release workflow](releasing.md) through PyPI Trusted Publishing; Core `0.7.4` is the first PyPI release, so these commands work once it has been published.
+Without pipx: `python -m venv <dir>` then `<dir>/bin/pip install valtrion` (`Scripts` on Windows). `pipx` puts `valtrion` on your PATH (`pipx ensurepath`). The package has no runtime dependencies. Releases are published by the manual [Release workflow](releasing.md) through PyPI Trusted Publishing; Core `0.7.4` is the first PyPI release.
 
 ## Unity package (UPM, from Git)
 

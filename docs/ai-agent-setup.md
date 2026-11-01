@@ -1,142 +1,39 @@
-# AI-agent setup prompt
+# AI-agent setup
 
-Copy the prompt below into an agent working in your project. It first identifies the task and project type, then chooses a command check or the Unity integration. It works with an agent that has file and command access and needs no agent-specific plugin.
-
-Installation sources, best first: Core from PyPI (`pipx install valtrion`, pin `==<version>` for shared projects); the Unity package from a release tag, `https://github.com/GORYNED/Valtrion.git?path=integrations/unity/com.goryned.valtrion.unity#unity-v0.7.1` (replace the tag with the newest `unity-vX.Y.Z` that `compat.json` pairs with the installed Core); or a reviewed checkout of Valtrion's HTTPS repository URL. If `pipx install valtrion` reports no such package, Core is not yet published: use the checkout path. A public checkout needs no GitHub account or token. Private forks require existing repository access. A missing required tool or permission is a blocker to report. The [Quick Start](quick-start.md) covers command jobs; the [Unity Quick Start](unity-quick-start.md) covers Editor integration. The [readiness record](release-readiness.md) separates observed evidence from unverified work.
+Paste this prompt into Claude Code, Codex or any coding agent that can read files and run commands in your project. It works for any project and needs no plugin.
 
 ```text
-Use Valtrion for repeatable checks in this workspace, then prove the chosen path
-works. First identify my intended check, the project type and existing validation
-commands. Preserve files, dependencies, tests, pins and settings.
+Set up Valtrion in this project, then prove it works.
 
-Choose the path before installing an application integration
-- For an ordinary trusted command (tests, data validation or a build check), use
-  Core command jobs following docs/quick-start.md and examples/python-check.
-  Install Core with `pipx install valtrion` (record `valtrion --version`), or when
-  it is not on PyPI obtain https://github.com/GORYNED/Valtrion.git using existing
-  access, use the requested ref or main and record the resolved SHA. Read
-  README.md, docs/install.md and docs/trust-model.md and inspect installed CLI
-  --help before running work. Examples (examples/python-check) come from a checkout
-  or the release's source archive. Install Core only. Do not install Unity or add Unity configuration.
-  Run the real command through installed `valtrion job start -- ...` with --watch,
-  bounded --stall-sec and --timeout-sec, explicit --cwd and the actual --sha.
-  Inspect job.json, events.jsonl and console.log. Test a genuine failing check and
-  timeout in isolated data too. Record process evidence; do not invent a successful
-  gdv.result/1 or claim compare/report coverage from a command job.
-- For a Unity app check, follow the concrete Unity steps below. A Unity project
-  contains Assets, Packages and ProjectSettings. Do not upgrade or install an
-  Editor into an unrelated project.
-- For another application or engine needing in-app steps, explain that Unity is
-  the only ready integration. Offer an existing command check if it serves the
-  task; otherwise report the unsupported boundary. Do not invent profiles,
-  result adapters or engine support. The roadmap describes future integration work.
-- If the intended check cannot be inferred, ask what outcome should be verified
-  before changing the project. The boundaries and handover rules below apply to
-  both paths; Unity-specific steps apply only to a selected Unity project.
+Valtrion runs a command as a supervised job with a timeout, stall detection,
+a clear result and saved logs. Docs: https://github.com/GORYNED/Valtrion#readme
 
-Handover for either path
-- Inspect the complete diff. State changed files, source SHA, installed version,
-  exact commands, exit codes, evidence paths and limits. State PASS only for
-  observed evidence. Name missing tools or unavailable integration as BLOCKED.
-  For command jobs, inspect real check output as well as status and make clear
-  that --sha is a supplied label, not proof of a clean checkout. After this
-  handover, a command-only task is complete; do not continue into the Unity path.
+1. Read the project's AGENTS.md or contributing notes and run `git status`.
+   Find the check I most likely want repeated (usually the test command) and
+   how this project already runs it. If it is unclear, ask me before changing anything.
+2. Install Core: `pipx install valtrion`, then `valtrion --version`.
+   Needs Python 3.10+. If pipx is missing, use a virtual environment outside the repo.
+3. Run my real check as a job and read the output, not just the status:
+   valtrion job start --project <name> --sha <git sha> --label <label> --cwd . --timeout-sec <limit> --stall-sec <limit> --watch -- <my command>
+   Project name: the repo folder name. Limits: stall 120 s and timeout 900 s
+   unless the check needs different ones. The job directory it prints holds
+   job.json, events.jsonl and console.log.
+4. If this is a Unity project (Assets, Packages, ProjectSettings), also read
+   https://github.com/GORYNED/Valtrion/blob/main/docs/ai-agent-setup-detailed.md
+   and follow its Unity path. Pin the Unity package to a release tag, for example
+   https://github.com/GORYNED/Valtrion.git?path=integrations/unity/com.goryned.valtrion.unity#unity-v0.7.1
+   and check the pair with `valtrion doctor --project <Unity project>`.
+   For any other engine only command jobs are supported: do not invent an integration.
+5. Report: files changed, installed version, exact commands, exit codes, evidence
+   paths and anything you could not verify. Say PASS only for what you observed.
+   A command job's PASS means exit 0; it is not app or device evidence.
 
-Boundaries
-- Follow this workspace's AGENTS.md and approval rules. Inspect Git status first.
-- Do not publish anything, change repository visibility, upload packages, create
-  releases or tags, merge, rewrite history, change signing/security settings, or
-  send logs to an external service.
-- Run only trusted project code. Keep credentials in the normal credential manager.
-  Never put tokens, personal paths or real device IDs in committed files or reports.
-- Use synthetic data and isolated output. Never delete app/user data or stop an
-  Editor/process that you did not start. Do not upgrade Unity to satisfy this task.
-
-Unity path: discover and pin
-1. Find the Unity project (Assets, Packages, ProjectSettings), its exact Editor
-   version, Git root, existing test assemblies and package manifest. Identify
-   existing project-specific validation before adding anything.
-2. Obtain https://github.com/GORYNED/Valtrion.git in a separate checkout outside
-   Assets, using existing access. If access is unavailable, report BLOCKED. Use
-   the user-specified ref when provided; otherwise use main and record its SHA.
-   Do not apply new installer flags to an older checkout. Read
-   README.md, docs/unity-quick-start.md, docs/install.md, docs/providers.md,
-   docs/trust-model.md and
-   integrations/unity/com.goryned.valtrion.unity/Documentation~/index.md there.
-   Inspect source and current CLI --help before choosing commands. Record the full
-   commit SHA. Pin Core and the Unity package to that reviewed checkout; consult
-   compat.json instead of assuming their version numbers must match.
-
-Install and integrate
-3. Install Core: `pipx install valtrion` (or `pipx install valtrion==<version>` to
-   pin), or, when it is not published, run `python tools/install.py --venv
-   --home .valtrion-home` from the Valtrion checkout (use the discovered Python
-   3.10+ command). Capture the printed CLI
-   path and use it explicitly. Verify --version, schemas and validation of
-   examples/smoke.plan.json. No package-index publication is required.
-   If venv/pip cannot access the sandbox's temporary folder, follow the approved
-   execution route or use a task-owned writable temp folder for this invocation
-   as described in docs/install.md. Do not change shared permissions.
-4. Merge the Unity package into Packages/manifest.json. Prefer a pinned Git URL for a shared
-   project: ?path=integrations/unity/com.goryned.valtrion.unity#unity-vX.Y.Z (a release
-   tag whose compat.json range includes the installed Core) or #<full SHA>. A local file: path is acceptable for a disposable verification but do
-   not commit an absolute path. Preserve existing dependencies and testables.
-   Add com.goryned.valtrion.unity to testables for PlanTest; use the project's
-   compatible Test Framework version (Valtrion's test project uses 1.8.0).
-5. Reuse suitable existing tests, or copy examples/unity-smoke into a dedicated
-   Assets/Validation test folder. Its assembly is Valtrion.SmokeTests. Copy
-   examples/smoke.plan.json to validation/smoke.plan.json. Avoid duplicate assembly
-   names. Add valtrion.json at the Git root with unityProject relative to that file
-   and checks pointing to a real checks map. Start with
-   examples/quick-start-checks.json, adjust its assembly name if needed, then run
-   `valtrion check-config --checks <actual checks path>` using the installed CLI.
-   Select target platforms that really exist; check selection is not execution.
-6. Add output/cache paths to the project's ignore rules. Keep Unity-generated
-   .meta files for the added assets; do not commit Library, Temp, credentials,
-   device inventory, output or personal paths. Preserve unrelated manifest data.
-
-Verify in Unity
-7. Locate the exact licensed Editor from ProjectVersion.txt. Check that this
-   project is not open elsewhere and that a test slot is available. Start a
-   background batchmode PlayMode test with -assemblyNames Valtrion.SmokeTests
-   (or the actual reused assembly), -testResults <absolute XML> and
-   -logFile <absolute log>. Set GDV_PLAN to the copied plan's absolute path,
-   GDV_OUT_ROOT to an ignored output folder, and GDV_RUN_ID to a fresh safe run ID.
-   Use the commands in the Unity Quick Start for the current shell. Do not add -quit.
-   Supervise the complete process tree: hard timeout, a no-progress limit,
-   periodic log/result checks. Stop only processes you started if it stalls.
-8. Read the Editor log and NUnit XML. Confirm a nonempty selected test set with
-   no failures or unexplained skips, not just process exit zero. Read and validate
-   <output>/<run ID>/result.json with `valtrion validate <file>`. Require PASS,
-   the intended plan ID, target.evidence=editor and expected steps. Report every
-   unverified field. This smoke proves wiring, not game correctness or physical
-   device performance. Run the project's relevant existing regression tests too.
-   With the package in testables, its deliberately malformed test.badsignature
-   fixture can also appear as an ignored registration warning under unverified.
-   Record that diagnostic and unknown candidate/host metadata explicitly; do not
-   hide them or treat unrelated warnings as expected. They do not replace the
-   required passing XML, intended plan, step statuses and smoke.complete mark.
-9. After package resolution, run `valtrion doctor --project <Unity project> --json`.
-   Require the project object's status=ok with the expected package/Core versions;
-   skipped is not proof of integration. Distinguish missing unrelated mobile
-   tools from the prerequisites of the Editor check. Never call an unavailable
-   platform validated.
-
-Project automation and handover
-10. Make this Editor smoke repeatable through the project's existing test command
-    or CI. If no command exists, add a documented, bounded project-specific runner
-    using the verified Unity invocation above. If integrating Valtrion's `run`
-    Editor provider, implement the exact runner interface in docs/providers.md:
-    Python runner accepting --editor, --output, --assemblies and --timeout, with
-    <output>/PlayMode.xml and forwarded logs. Configure profiles.json only after
-    that runner exists and has been tested. Do not invent a built-in init command
-    or call the placeholder build/install/launch commands. Device builds need
-    project-owned build methods and authorized real targets; configure and test
-    those only when available and within this task's authorization.
-11. Run check-config again, inspect the complete diff and ensure the shared
-    manifest uses a reproducible dependency pin. Summarize changed files, pinned
-    versions/commit, exact commands, exit codes, test counts, artifact locations,
-    limitations and the one command I should use next. State PASS only for
-    observed evidence. If anything prevents completion, report BLOCKED with the
-    precise cause and completed work. Do not claim future or unrun tests passed.
+Rules: run only trusted code. Do not publish, tag, release, merge or change
+settings, credentials or CI (the Valtrion package entry in Packages/manifest.json
+and the test files this task needs are the only exceptions). Do not configure SSH
+hosts or remote execution. Ask before installing global tools. Do not commit tokens, personal paths or device IDs.
+Do not delete data or stop processes you did not start. Report a missing tool or
+permission as BLOCKED instead of working around it.
 ```
+
+For the full step-by-step version, including a Unity Editor smoke test, use the [detailed guide](ai-agent-setup-detailed.md). The [Quick Start](quick-start.md) shows the same flow by hand.

@@ -1,63 +1,94 @@
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/valtrion-readme-dark.png">
+    <img src="docs/assets/valtrion-readme-light.png" alt="Valtrion: cross-platform device validation. Build, run, verify." width="100%">
+  </picture>
+</p>
+
 # Valtrion
 
-Run repeatable checks, stop hung work, and keep results and logs you can inspect.
+**Run a test or app check as a supervised job: with a time limit, hang detection, a clear result and saved logs.**
 
-Valtrion gives a test command or an application smoke check a managed run: a time limit, progress monitoring, an outcome and saved evidence. Use it when you need to repeat a check after a change and explain what actually ran.
+When a check hangs, fails halfway or runs on another machine, all you have is terminal scrollback. Valtrion runs the command for you, stops it when it takes too long or stops making progress, and keeps the status, events and console output so you can see what actually ran.
+
+It works with any command. For Unity apps it also runs test plans inside the app and collects screenshots and metrics.
 
 ## How it works
 
-1. Choose your check: an ordinary command, or a JSON plan for the Unity integration.
-2. Start it with the Python CLI on this machine or a configured SSH host.
-3. Valtrion supervises execution, stops a timeout or stall, and saves the outcome and logs.
-4. Inspect the evidence. Unity plan results can also include steps, screenshots and metrics for comparison with a compatible baseline.
+1. You give Valtrion a command: your tests, a data check, or a Unity plan.
+2. It runs the command on this machine or on an SSH host you configured, with limits you set.
+3. It ends the job with one result (`PASS`, `FAIL`, `TIMEOUT`, or `STALL` when there was no progress for too long) and writes `job.json`, `events.jsonl` and `console.log`.
 
-Your check supplies the assertions. A command job's PASS means exit zero; it saves job state, events and console output. It does not automatically produce an app-side `gdv.result/1` or device evidence.
-
-## Start here
-
-**No Unity needed:** follow the [Core Quick Start](docs/quick-start.md). It installs the CLI and runs a Python data check, including a real failure and timeout.
-
-**Checking a Unity app:** follow the [Unity Quick Start](docs/unity-quick-start.md). Unity is the first and currently only ready application integration. Its package executes plan steps inside the Editor or a development player.
+Your command supplies the assertions. For a plain command, `PASS` means it exited with code 0.
 
 ## Install
 
-Core (Python 3.10+, standard library only) from PyPI (available from the first release, Core 0.7.4; before that use the checkout installer in [installation](docs/install.md)):
+You need Python 3.10 or newer. The command-line tool ("Core") has no other dependencies.
 
 ```sh
 pipx install valtrion
 valtrion --version
 ```
 
-The Unity package is installed separately, with its own version, from Git. In Unity: Window → Package Manager → + → Add package from git URL, or add to `Packages/manifest.json`:
+No `pipx`? See [installation](docs/install.md) for a virtual-environment install.
 
-```json
-"com.goryned.valtrion.unity": "https://github.com/GORYNED/Valtrion.git?path=integrations/unity/com.goryned.valtrion.unity#unity-v0.7.1"
+Using Unity? Add the package from Git: Window → Package Manager → + → Add package from git URL:
+
+```text
+https://github.com/GORYNED/Valtrion.git?path=integrations/unity/com.goryned.valtrion.unity#unity-v0.7.1
 ```
 
-Update Core with `pipx upgrade valtrion` and the Unity package by changing the tag in that URL; `valtrion doctor --project <Unity project>` checks that the pair is compatible ([compat.json](compat.json)). See [installation](docs/install.md) (including installing from a checkout and SSH hosts), or give an agent the [setup prompt](docs/ai-agent-setup.md), which chooses the path for your project. Versions and how releases are made: [releasing](docs/releasing.md).
+The Unity package has its own version. [compat.json](compat.json) lists which Core versions it works with, and `valtrion doctor --project <Unity project>` checks the pair.
 
-## Available now
+## Try it in a minute
+
+A check that passes:
+
+```sh
+valtrion job start --project demo --label hello --timeout-sec 30 --stall-sec 10 --watch -- python -c "print('hello')"
+```
+
+The last line is `GDV-RESULT PASS job=...` and the exit code is 0. A command that hangs is stopped instead of waiting forever:
+
+```sh
+valtrion job start --project demo --label hang --timeout-sec 60 --stall-sec 5 --watch -- python -c "import time; time.sleep(600)"
+```
+
+The result is `STALL`: no progress for 5 seconds. The job directory printed at the start holds the evidence.
+
+More: the [Quick Start](docs/quick-start.md) covers a real failure, a timeout and how to read the results.
+
+## Update
+
+```sh
+pipx upgrade valtrion
+```
+
+For Unity, change the tag at the end of the Git URL in `Packages/manifest.json` to a newer `unity-vX.Y.Z`, then run `valtrion doctor`. Read the [Core](CHANGELOG.md) and [Unity](integrations/unity/com.goryned.valtrion.unity/CHANGELOG.md) changelogs first.
+
+## Let an AI agent set it up
+
+Copy the prompt from [AI-agent setup](docs/ai-agent-setup.md) into Claude Code, Codex or another coding agent. It picks the right path for your project and reports what it verified. The [detailed guide](docs/ai-agent-setup-detailed.md) is for agents that need the full steps.
+
+## What you get today
 
 | Area | What it provides |
 | --- | --- |
-| Core command jobs | Local or explicitly configured SSH execution, timeouts, stall detection, resource leases and retained logs/events |
-| Unity integration | Built-in and custom C# steps, heartbeat, structured results, metrics and screenshots |
-| App pipelines | Build, install, run and collect through Editor, Android, iOS, Windows and macOS providers, with project-supplied build/test entry points |
-| Reviewing a change | Check selection, app result reports and metric comparison with compatible baselines |
-
-Providers handle platform tools and lifecycle; they are not integrations for other engines. Core 0.7.4 and Unity package 0.7.1 have separate versions, paired by [compat.json](compat.json). The Unity package requires 6000.6 or newer; the verification project uses 6000.6.7f1.
+| Command jobs | Local or SSH execution, timeouts, stall detection, locks for shared devices, saved logs and events |
+| Unity integration | Plan steps inside the Editor or a development player: C# steps, heartbeat, results, metrics, screenshots |
+| App pipelines | Build, install, run and collect on the Editor, Android, iOS, Windows and macOS (see [providers](docs/providers.md)) (your project supplies the build and test entry points) |
+| Reviewing a change | Choosing which checks to run, and comparing metrics with a saved baseline |
 
 ## Status and limits
 
-Valtrion is pre-release software under the [MIT license](LICENSE). Releases are GitHub Pre-releases (Core also on PyPI); the CLI and API may change before a stable release. The [release-readiness record](docs/release-readiness.md) names tested environments, evidence and remaining gaps.
+Valtrion is pre-release software under the [MIT license](LICENSE). Core 0.7.4 and Unity package 0.7.1 are GitHub Pre-releases (Core is also on PyPI), and the CLI may change before a stable release. The [release-readiness record](docs/release-readiness.md) lists tested environments and known gaps.
 
-- Adding the Unity package does not create project build methods or an Editor provider runner. The Unity Quick Start first checks the package directly through Test Framework.
-- Project discovery, profiles and app metric comparison still have Unity assumptions. Other engines have no ready in-app runner; there is no Linux player provider.
-- Standalone `build`, `install`, `launch`, `push`, `pull`, `screenshot` and `logs` commands are placeholders. Use configured `run` or `pipeline` workflows for app checks.
-- Checks run trusted code with your permissions. Read the [trust model](docs/trust-model.md) before using a project or remote host.
+- Unity is the only application integration. Other engines can use command jobs only. The Unity package needs Unity 6000.6 or newer.
+- Standalone `build`, `install`, `launch`, `push`, `pull`, `screenshot` and `logs` commands are not implemented yet. Use `run` or `pipeline` workflows.
+- Checks run trusted code with your permissions. Read the [trust model](docs/trust-model.md) before using an unfamiliar project or remote host.
 
-## More detail
+## Learn more
 
-[Overview](docs/overview.md) · [CLI](docs/cli.md) · [Providers](docs/providers.md) · [Unity package](integrations/unity/com.goryned.valtrion.unity/Documentation~/index.md) · [Contracts](docs/contracts.md) · [Protocol](docs/protocol.md) · [Local files and jobs](docs/work-root.md) · [Architecture](docs/ARCHITECTURE.md) · [Roadmap](ROADMAP.md)
+[Quick Start](docs/quick-start.md) · [Unity Quick Start](docs/unity-quick-start.md) · [Installation](docs/install.md) · [CLI](docs/cli.md) · [Overview](docs/overview.md) · [Providers](docs/providers.md) · [Unity package](integrations/unity/com.goryned.valtrion.unity/Documentation~/index.md) · [Architecture](docs/ARCHITECTURE.md) · [Releasing](docs/releasing.md) · [Roadmap](ROADMAP.md)
 
-For development and test commands, see [CONTRIBUTING.md](CONTRIBUTING.md). Report vulnerabilities through [SECURITY.md](SECURITY.md).
+Development: [CONTRIBUTING.md](CONTRIBUTING.md). Vulnerabilities: [SECURITY.md](SECURITY.md).

@@ -6,37 +6,32 @@ You need Git, Python 3.10 or newer with `venv` and `pip`, and a licensed Unity E
 
 ## 1. Install the CLI
 
-Clone a checkout next to your Unity project, outside its `Assets` folder:
+Install Core from PyPI:
 
-Record the resolved commit with `git rev-parse HEAD` and use the same source for Core and the Unity package. Alternatively install Core with `pipx install valtrion` and the package from the release tag `https://github.com/GORYNED/Valtrion.git?path=integrations/unity/com.goryned.valtrion.unity#unity-v0.7.1`; check the pair with `valtrion doctor --project`.
+```sh
+pipx install valtrion
+valtrion --version
+```
+
+The smoke plan and test assets used below live in this repository, so clone it next to your Unity project, outside its `Assets` folder. Check out the release tag that matches the package you install, so the examples and package agree:
 
 ```sh
 git clone https://github.com/GORYNED/Valtrion.git
 cd Valtrion
-python tools/install.py --venv --home .valtrion-home
+git checkout unity-v0.7.1
 ```
 
-Use `python3` if that is your Python 3 command. The installer uses the checkout without downloading build tools or runtime dependencies. Its last line is the CLI path. `--home` keeps this installation under the checkout; omit it for the normal user installation. It does not change where CLI state is stored.
+Record the resolved commit with `git rev-parse HEAD`. To test unreleased code instead, install Core from the checkout with `python tools/install.py --venv --home .valtrion-home` (use `python3` if that is your Python 3 command; the last line it prints is the CLI path) and use that same checkout for the package.
 
-For this checkout's Core 0.7.4, check the installed command from the checkout root:
-
-```powershell
-# Windows PowerShell
-$valtrion = (Resolve-Path .valtrion-home/.valtrion/core/0.7.4/Scripts/valtrion.exe).Path
-& $valtrion --version
-& $valtrion validate examples/smoke.plan.json
-& $valtrion check-config --checks examples/quick-start-checks.json
-```
+With the PyPI install, check the command from the checkout root:
 
 ```sh
-# macOS / Linux
-VALTRION="$PWD/.valtrion-home/.valtrion/core/0.7.4/bin/valtrion"
-"$VALTRION" --version
-"$VALTRION" validate examples/smoke.plan.json
-"$VALTRION" check-config --checks examples/quick-start-checks.json
+valtrion --version
+valtrion validate examples/smoke.plan.json
+valtrion check-config --checks examples/quick-start-checks.json
 ```
 
-Expected: `valtrion 0.7.4 (contract 1)`, a valid `gdv.plan/1`, and a valid check map. Use the path printed by the installer if the version or installation location differs. You do not need to activate an environment or change `PATH`.
+Expected: `valtrion 0.7.4 (contract 1)` (or a newer version that [compat.json](../compat.json) pairs with the package), a valid `gdv.plan/1` and a valid check map. If you installed from the checkout, run the same commands with the CLI path the installer printed (no environment activation or `PATH` change needed).
 
 ## 2. Add the Unity package
 
@@ -45,14 +40,14 @@ In the Unity project, merge the following into `Packages/manifest.json`. Preserv
 ```json
 {
   "dependencies": {
-    "com.goryned.valtrion.unity": "file:/absolute/path/to/Valtrion/integrations/unity/com.goryned.valtrion.unity",
+    "com.goryned.valtrion.unity": "https://github.com/GORYNED/Valtrion.git?path=integrations/unity/com.goryned.valtrion.unity#unity-v0.7.1",
     "com.unity.test-framework": "1.8.0"
   },
   "testables": ["com.goryned.valtrion.unity"]
 }
 ```
 
-Replace the example path with your checkout path, using forward slashes (`file:C:/...` on Windows). Keep an existing compatible Test Framework version; 1.8.0 is the repository's tested version. `testables` is required for the test helper used below. Local paths are convenient for trying Valtrion; do not commit your absolute path. For a shared project, pin the package's Git URL to the full reviewed commit from the same checkout:
+The package version is pinned by the release tag, so the project stays reproducible. You can also add the same URL in Window → Package Manager → + → Add package from git URL, then add `testables` by hand. Keep an existing compatible Test Framework version; 1.8.0 is the repository's tested version. `testables` is required for the test helper used below. To try unreleased code, point to your checkout instead with `"file:/absolute/path/to/Valtrion/integrations/unity/com.goryned.valtrion.unity"` (forward slashes; `file:C:/...` on Windows) and do not commit that absolute path. To pin an exact commit instead of a tag, use its full SHA:
 
 ```text
 https://github.com/GORYNED/Valtrion.git?path=integrations/unity/com.goryned.valtrion.unity#<full-reviewed-commit-sha>
@@ -102,7 +97,7 @@ EDITOR='/Applications/Unity/Hub/Editor/6000.6.7f1/Unity.app/Contents/MacOS/Unity
 PROJECT="$PWD"
 OUT="$PROJECT/.valtrion-results"
 mkdir -p "$OUT"
-RUN_ID="$(python -c 'import uuid; print("smoke-" + uuid.uuid4().hex[:12])')"
+RUN_ID="$(python3 -c 'import uuid; print("smoke-" + uuid.uuid4().hex[:12])')"
 GDV_PLAN="$PROJECT/validation/smoke.plan.json" GDV_OUT_ROOT="$OUT" GDV_RUN_ID="$RUN_ID" \
   "$EDITOR" -batchmode -projectPath "$PROJECT" -runTests -testPlatform PlayMode \
   -assemblyNames Valtrion.SmokeTests -testResults "$OUT/$RUN_ID.xml" -logFile "$OUT/$RUN_ID.log"
