@@ -1,112 +1,75 @@
-# Quick Start: Core without Unity
+# Quick Start
 
-Run a real Python data check as a supervised job. Core retains the command's
-status, events and console output and enforces time and progress limits. You
-need Git and Python 3.10+ with `venv` and `pip`. No Unity Editor, package, project,
-device or third-party runtime dependency is needed.
+Install Valtrion and run your first supervised checks in about five minutes. No Unity, device or other dependency is needed. For a Unity project, continue with the [Unity Quick Start](unity-quick-start.md) afterwards.
 
-## Install from PyPI
+You need Python 3.10 or newer.
 
-If Core is published on PyPI, `pipx install valtrion` gives you the `valtrion` command; skip to the check below and use `valtrion` in place of `$valtrion`/`$VALTRION`, with the example files from a checkout of this repository. Otherwise, or to run exactly a checkout's code:
-
-## Install from this repository
-
-Public HTTPS cloning needs no GitHub account or token. Private forks require your existing Git access. From a new checkout:
+## 1. Install
 
 ```sh
-git clone https://github.com/GORYNED/Valtrion.git
-cd Valtrion
-git rev-parse HEAD
-python tools/install.py --venv --home .valtrion-home
+pipx install valtrion
+valtrion --version
 ```
 
-Record the resolved commit. Use `python3` if that is your Python 3 command. The
-installer works offline and prints the absolute CLI path. No environment
-activation is required. This checkout installs Core 0.7.4; use the printed path
-if the version or location differs.
+Expected: `valtrion 0.7.4 (contract 1)` (or a newer version). Without `pipx`, use a virtual environment: `python -m venv .venv`, then `.venv/bin/pip install valtrion` (`.venv\Scripts\pip` on Windows). Then run `.venv/bin/valtrion` (`.venv\Scripts\valtrion` on Windows) wherever this guide says `valtrion`, or activate the environment. To install from a checkout instead, see [installation](install.md).
 
-```powershell
-# Windows PowerShell, from the checkout root
-$valtrion = (Resolve-Path .valtrion-home/.valtrion/core/0.7.4/Scripts/valtrion.exe).Path
-& $valtrion --version
-& $valtrion job start --help
-```
+## 2. Run a check
+
+The commands below use Python so they work on every system. Replace the part after `--` with your own test or script.
 
 ```sh
-# macOS / Linux, from the checkout root
-VALTRION="$PWD/.valtrion-home/.valtrion/core/0.7.4/bin/valtrion"
-"$VALTRION" --version
-"$VALTRION" job start --help
+valtrion job start --project demo --label hello --timeout-sec 30 --stall-sec 10 --watch -- python -c "print('hello')"
 ```
 
-Expected version: `valtrion 0.7.4 (contract 1)`. The POSIX commands describe
-the implemented host path; see [release readiness](release-readiness.md) for
-the environments actually exercised in this preparation.
+Valtrion prints the job directory, follows the events and ends with:
 
-## Run a useful check
-
-From the checkout root, run the included catalog validator:
-
-```powershell
-$python = (Get-Command python).Source
-$root = (Get-Location).Path
-$sha = git rev-parse HEAD
-$env:VALTRION_HOME = Join-Path $root '.valtrion-home/demo-state'
-$env:GDV_WORK_ROOT = Join-Path $root '.valtrion-home/demo-work'
-& $valtrion job start --project python-check --sha $sha --label catalog --cwd $root --timeout-sec 30 --stall-sec 10 --watch -- $python examples/python-check/check_catalog.py examples/python-check/catalog.json
-$LASTEXITCODE
+```text
+GDV-RESULT PASS job=<id> offset=<n>
 ```
+
+The exit code is 0. The job directory contains `job.json` (state and result), `events.jsonl` (what happened and when) and `console.log` (the command's output). Keep them as evidence.
+
+On Windows, run these commands in PowerShell. Use `python3` instead of `python` if that is your command on macOS or Linux.
+
+## 3. See a failure and a hang
+
+A failing command ends as `FAIL`:
 
 ```sh
-PYTHON="$(python3 -c 'import sys; print(sys.executable)')"
-ROOT="$PWD"
-SHA="$(git rev-parse HEAD)"
-export VALTRION_HOME="$ROOT/.valtrion-home/demo-state"
-export GDV_WORK_ROOT="$ROOT/.valtrion-home/demo-work"
-"$VALTRION" job start --project python-check --sha "$SHA" --label catalog --cwd "$ROOT" --timeout-sec 30 --stall-sec 10 --watch -- "$PYTHON" examples/python-check/check_catalog.py examples/python-check/catalog.json
-echo "$?"
+valtrion job start --project demo --label failing --timeout-sec 30 --stall-sec 10 --watch -- python -c "raise SystemExit(1)"
 ```
 
-Expected: `GDV-RESULT PASS`, exit 0, and `Checked 2 products; inventory value
-2150 cents` in the run's `console.log`. `--cwd` makes the relative paths resolve
-in this checkout. The environment variables persist: use a separate shell or
-restore their previous values afterward. `--sha` is a supplied revision label,
-not an attestation that your checkout is clean.
+A command that stops making progress is stopped as `STALL`, after `--stall-sec` seconds without new output:
 
-Continue with [examples/python-check](../examples/python-check/README.md).
-It validates a small catalog's data, then demonstrates a genuinely
-invalid input and an intentionally slow process. All three use the installed
-CLI: expected outcomes are PASS (0), FAIL (1) and TIMEOUT (3).
+```sh
+valtrion job start --project demo --label hang --timeout-sec 60 --stall-sec 5 --watch -- python -c "import time; time.sleep(600)"
+```
 
-The example provides exact PowerShell and POSIX commands, isolated state paths,
-an explicit working directory and inspection commands. Keep the printed job IDs
-and run directories: inspect `job.json`, `events.jsonl` and `console.log` after
-each run. Status alone does not explain which assertion ran; the console and
-events carry that evidence. Apply the same interface to your own trusted test
-command, with appropriate limits.
+A command that keeps running past `--timeout-sec` ends as `TIMEOUT`. The `valtrion` exit code is 0 for `PASS`, 1 for `FAIL`, 2 for `BLOCKED` and 3 for `STALL` or `TIMEOUT`. To check a job later, use `valtrion job status <job id>` and `valtrion job tail <job id>`.
 
-## What this proves
+A command job's `PASS` means the process exited 0, so your command must assert what you care about. It does not produce an app-side `gdv.result/1`, device evidence or metric comparison; those come from the Unity integration.
 
-Core can manage useful checks without an application integration. A command job
-can also hold a named resource lease or execute on an explicitly configured SSH
-host; this example verifies local execution only. See the [CLI reference](cli.md)
-and [installation guide](install.md) before configuring a remote host.
+## 4. Use it on your project
 
-A command job's PASS means the process exited zero. It does not create a
-`gdv.result/1`, run JSON plan steps inside an application, provide device evidence,
-or feed app metric comparison and verification reports. The check itself must
-assert the behavior you care about. No successful app result is fabricated here.
+Run your real test command with sensible limits and the revision it checks (in PowerShell or a POSIX shell, inside a Git repository; otherwise pass your own label to `--sha`):
 
-## Application checks
+```sh
+valtrion job start --project my-app --sha "$(git rev-parse HEAD)" --label unit-tests --cwd . --timeout-sec 900 --stall-sec 120 --watch -- python -m pytest
+```
 
-Unity is the first and only ready application integration. Follow the separate
-[Unity Quick Start](unity-quick-start.md) to add the package and run a plan in the
-Editor. That guide includes full installation, smoke steps and evidence checks;
-its runtime verification status is recorded in [release readiness](release-readiness.md).
+`--sha` is a label you supply; it does not prove that the checkout is clean. A job can also hold a named resource lease (`--lease`) or run on a configured SSH host (`--host`); see the [CLI reference](cli.md) and the [trust model](trust-model.md) before using a remote host.
 
-Other engines and applications can use an existing external command check when
-that meets the task. They do not yet have a ready in-app integration. Project
-discovery, profiles and metric comparison still contain Unity assumptions; see
-[architecture](ARCHITECTURE.md) and [roadmap](../ROADMAP.md). The
-[AI-agent prompt](ai-agent-setup.md) chooses the appropriate path before changing
-a project.
+## 5. Update
+
+```sh
+pipx upgrade valtrion
+valtrion --version
+```
+
+Read the [changelog](../CHANGELOG.md) first. On SSH hosts run `valtrion hosts sync` so every host has the same version.
+
+## Next
+
+- A longer example with a catalog check, invalid input and a timeout: [examples/python-check](../examples/python-check/README.md) (needs a checkout of this repository).
+- Checking a Unity app: [Unity Quick Start](unity-quick-start.md). Unity is the only ready application integration. Other engines can use command jobs; see [architecture](ARCHITECTURE.md) and the [roadmap](../ROADMAP.md).
+- Let an AI agent do the setup: [AI-agent setup](ai-agent-setup.md).
