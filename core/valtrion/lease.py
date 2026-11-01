@@ -13,6 +13,7 @@ import os
 import re
 import threading
 import time
+import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -24,6 +25,8 @@ SCHEMA = "gdv.lease/1"
 #: A lock file that cannot be read (being written, or torn by a crash) is treated as held until it is this old.
 UNREADABLE_GRACE_SEC = 10.0
 _REPLACE_GUARD_MAX_AGE_SEC = 30.0
+#: Waiting lines live in `<leases>/queue/<resource>/`, one `.ticket` file per waiter (kept out of `list_all`, which reads `*.lock`).
+QUEUE_FOLDER = "queue"
 
 
 @dataclass(frozen=True)
@@ -350,15 +353,14 @@ class LeaseManager:
         """Take the lease, waiting at most `wait_sec`. Never takes a live lease; returns BLOCKED naming the holder instead.
         `on_wait(reason, waited_seconds)` is called while waiting: after the first failed attempt, then at most every
         `WAIT_NOTICE_SEC` seconds."""
-        started = self._monotonic()
-        deadline = started + max(0.0, wait_sec)
-        notice = _WaitNotifier(on_wait, started)
-        while True:
-            result = self.try_acquire(resource, owner, session, ttl_sec, purpose, pid, worktree)
-            if result.acquired or self._monotonic() >= deadline:
-                return result
-            notice.tick(result.reason or f"{resource} is held", self._monotonic())
-            self._sleep(min(poll_sec, max(0.0, deadline - self._monotonic())))
+        holder_pid = os.getpid() if pid is None else pid
+
+        def holds() -> bool:
+            record, _ = self._read(self.path_for(resource))
+            return record is not None and record.same_holder(owner, session, holder_pid)
+
+        return self._queued(resource, lambda: self.try_acquire(resource, owner, session, ttl_sec, purpose, pid, worktree), holds,
+                            owner, session, holder_pid, ttl_sec, wait_sec, poll_sec, on_wait)
 
     def acquire_slot(self, name: str, slots: int, owner: str, session: str, ttl_sec: int, purpose: str = "", pid: int | None = None,
                      worktree: str = "", wait_sec: float = 0.0, poll_sec: float = 1.0, on_wait: WaitNotice | None = None) -> AcquireResult:
@@ -367,26 +369,120 @@ class LeaseManager:
         if slots < 1:
             raise ValueError("a counted resource needs at least one slot")
         holder_pid = os.getpid() if pid is None else pid
-        started = self._monotonic()
-        deadline = started + max(0.0, wait_sec)
-        notice = _WaitNotifier(on_wait, started)
-        while True:
+
+        def owned_slot() -> int | None:
             # A holder that already owns a slot keeps that one, even when a lower slot has been freed since.
             for slot in range(1, slots + 1):
                 record, _ = self._read(self.path_for(slot_resource(name, slot)))
                 if record is not None and record.same_holder(owner, session, holder_pid):
-                    return self.try_acquire(slot_resource(name, slot), owner, session, ttl_sec, purpose, holder_pid, worktree)
+                    return slot
+            return None
+
+        def attempt() -> AcquireResult:
+            slot = owned_slot()
+            if slot is not None:
+                return self.try_acquire(slot_resource(name, slot), owner, session, ttl_sec, purpose, holder_pid, worktree)
             reasons = []
             for slot in range(1, slots + 1):
                 result = self.try_acquire(slot_resource(name, slot), owner, session, ttl_sec, purpose, holder_pid, worktree)
                 if result.acquired:
                     return result
                 reasons.append(result.reason or f"{slot_resource(name, slot)} is held")
-            reason = f"all {slots} slots of {name} are leased: " + "; ".join(reasons)
-            if self._monotonic() >= deadline:
-                return AcquireResult(False, None, None, None, reason)
-            notice.tick(reason, self._monotonic())
-            self._sleep(min(poll_sec, max(0.0, deadline - self._monotonic())))
+            return AcquireResult(False, None, None, None, f"all {slots} slots of {name} are leased: " + "; ".join(reasons))
+
+        return self._queued(name, attempt, lambda: owned_slot() is not None, owner, session, holder_pid, ttl_sec, wait_sec, poll_sec, on_wait)
+
+    # -- the waiting line ----------------------------------------------------------------------------------------------
+
+    def _queue_directory(self, name: str) -> Path:
+        return self.directory / QUEUE_FOLDER / lease_file_name(name)[: -len(".lock")]
+
+    def _enqueue(self, name: str, owner: str, session: str, pid: int, ttl_sec: int) -> Path:
+        """Join the waiting line of a resource. Tickets sort by the time they were made, so the longest waiter is first."""
+        directory = self._queue_directory(name)
+        directory.mkdir(parents=True, exist_ok=True)
+        ticket = directory / f"{int(self._clock().timestamp() * 1_000_000):020d}-{os.getpid()}-{uuid.uuid4().hex[:8]}.ticket"
+        self._write_ticket(ticket, owner, session, pid, ttl_sec, core.format_utc(self._clock()))
+        return ticket
+
+    def _write_ticket(self, ticket: Path, owner: str, session: str, pid: int, ttl_sec: int, enqueued: str) -> None:
+        core.atomic_write_json(ticket, {"owner": owner, "session": session, "pid": pid, "ttlSec": ttl_sec, "enqueuedUtc": enqueued,
+                                        "renewedUtc": core.format_utc(self._clock())})
+
+    def _renew_ticket(self, ticket: Path) -> None:
+        try:
+            document = core.read_json(ticket, attempts=2)
+            self._write_ticket(ticket, document["owner"], document["session"], int(document["pid"]), int(document["ttlSec"]),
+                               document["enqueuedUtc"])
+        except (OSError, ValueError, KeyError, TypeError):
+            pass  # a waiter whose ticket is gone is simply not in line any more; it joins again on the next failed attempt
+
+    def _ticket_is_stale(self, ticket: Path) -> bool:
+        """Same rule as a lease: the waiter's process is dead AND its renewal is older than the TTL (an unreadable ticket: old)."""
+        try:
+            document = core.read_json(ticket, attempts=2)
+            expired = self._clock() - core.parse_utc(document["renewedUtc"]) > timedelta(seconds=int(document["ttlSec"]))
+            return expired and not self._is_alive(int(document["pid"]))
+        except FileNotFoundError:
+            return False
+        except (OSError, ValueError, KeyError, TypeError):
+            return self._unreadable_is_stale(ticket)
+
+    def _ahead(self, name: str, mine: Path | None) -> str | None:
+        """Who is in line before `mine` (or, without a ticket, before a newcomer): a description, or None when the caller is first.
+        Tickets of dead waiters are removed on the way."""
+        directory = self._queue_directory(name)
+        try:
+            tickets = sorted(directory.glob("*.ticket"))
+        except OSError:
+            return None
+        for ticket in tickets:
+            if mine is not None and ticket == mine:
+                return None
+            if self._ticket_is_stale(ticket):
+                try:
+                    ticket.unlink()
+                except OSError:
+                    pass
+                continue
+            if not ticket.exists():
+                continue
+            try:
+                waiter = core.read_json(ticket, attempts=2)
+                who = f"{waiter['owner']} (session {waiter['session']}, queued {waiter['enqueuedUtc']})"
+            except (OSError, ValueError, KeyError, TypeError):
+                who = "another waiter"
+            return who
+        return None
+
+    def _queued(self, name: str, attempt: Callable[[], AcquireResult], holds: Callable[[], bool], owner: str, session: str, pid: int,
+                ttl_sec: int, wait_sec: float, poll_sec: float, on_wait: WaitNotice | None) -> AcquireResult:
+        """Run `attempt` until it succeeds or `wait_sec` ends, but only when the caller is first in the resource's waiting line, so the
+        longest waiter gets the resource and a later one cannot overtake it. A caller that does not wait (`wait_sec` 0) gets no
+        ticket but still does not overtake live waiters. A caller that already holds the resource is not delayed."""
+        started = self._monotonic()
+        deadline = started + max(0.0, wait_sec)
+        notice = _WaitNotifier(on_wait, started)
+        ticket: Path | None = None
+        try:
+            while True:
+                ahead = None if holds() else self._ahead(name, ticket)
+                result = attempt() if ahead is None else AcquireResult(False, None, None, None,
+                                                                       f"{name} is next for {ahead}, who has waited longer")
+                if result.acquired or self._monotonic() >= deadline:
+                    return result
+                if ticket is None or not ticket.exists():
+                    ticket = self._enqueue(name, owner, session, pid, ttl_sec)
+                else:
+                    self._renew_ticket(ticket)
+                notice.tick(result.reason or f"{name} is held", self._monotonic())
+                self._sleep(min(poll_sec, max(0.0, deadline - self._monotonic())))
+        finally:
+            if ticket is not None:
+                try:
+                    ticket.unlink()
+                except OSError:
+                    pass
 
     # -- renewing and releasing ----------------------------------------------------------------------------------------
 

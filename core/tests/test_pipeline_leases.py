@@ -483,6 +483,58 @@ class ScopedLeaseTests(unittest.TestCase):
         self.assertNotIn("build", self.result_of(store))
 
 
+class FairQueueTests(unittest.TestCase):
+    def setUp(self):
+        folder = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        self.addCleanup(folder.cleanup)
+        self.home = Path(folder.name)
+        self.manager = LeaseManager(self.home)
+
+    def test_waiters_get_the_resource_strictly_in_the_order_they_started_waiting(self):
+        self.assertTrue(self.manager.acquire("device:x", "me", "holder", 60, "t", os.getpid()).acquired)
+        order, lock = [], threading.Lock()
+
+        def waiter(number):
+            manager = LeaseManager(self.home)
+            result = manager.acquire("device:x", f"w{number}", f"s{number}", 60, "t", os.getpid(), wait_sec=30, poll_sec=0.02)
+            self.assertTrue(result.acquired, number)
+            with lock:
+                order.append(number)
+            time.sleep(0.05)
+            manager.release("device:x", f"s{number}", os.getpid())
+
+        threads = []
+        for number in (1, 2, 3):
+            thread = threading.Thread(target=waiter, args=(number,), daemon=True)
+            thread.start()
+            threads.append(thread)
+            time.sleep(0.4)  # each one is in line before the next starts
+        self.manager.release("device:x", "holder", os.getpid())
+        for thread in threads:
+            thread.join(30)
+        self.assertEqual([1, 2, 3], order)
+        self.assertEqual([], list((self.home / "leases" / "queue" / "device%3Ax").glob("*.ticket")), "every ticket is gone")
+
+    def test_a_dead_waiters_ticket_does_not_block_the_line_and_a_live_one_is_not_overtaken(self):
+        manager = LeaseManager(self.home, is_alive=lambda pid: pid != 999999)
+        queue = self.home / "leases" / "queue" / "device%3Ay"
+        queue.mkdir(parents=True)
+        old = core.format_utc(core.now().replace(year=2020))
+        dead = queue / "00000000000000000001-1-aaaaaaaa.ticket"
+        core.atomic_write_json(dead, {"owner": "ghost", "session": "g", "pid": 999999, "ttlSec": 1, "enqueuedUtc": old, "renewedUtc": old})
+        result = manager.acquire("device:y", "me", "s1", 60, "t", os.getpid(), wait_sec=5, poll_sec=0.02)
+        self.assertTrue(result.acquired)
+        self.assertFalse(dead.exists(), "the dead ticket was removed")
+        manager.release("device:y", "s1", os.getpid())
+        live = queue / "00000000000000000002-2-bbbbbbbb.ticket"
+        now = core.utc_now()
+        core.atomic_write_json(live, {"owner": "early", "session": "e", "pid": os.getpid(), "ttlSec": 60, "enqueuedUtc": now, "renewedUtc": now})
+        blocked = manager.acquire("device:y", "late", "s2", 60, "t", os.getpid())
+        self.assertFalse(blocked.acquired, "a newcomer does not take the resource ahead of a live waiter")
+        self.assertIn("early", blocked.reason)
+        self.assertEqual("free", manager.status("device:y").state)
+
+
 class BuildCacheTests(unittest.TestCase):
     def setUp(self):
         folder = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
