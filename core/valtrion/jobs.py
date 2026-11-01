@@ -613,7 +613,7 @@ class _PipelineWatch:
             if now >= next_pulse:
                 next_pulse = now + tick
                 runner.last_progress = core.utc_now()
-                data = {"elapsedSec": round(now - started, 1), "workingSec": round(working, 1), "phase": runner.phase,
+                data = {"elapsedSec": round(now - started, 1), "workingSec": round(working, 1), "currentPhase": runner.phase,
                         "buildLogBytes": runner.build_log_bytes()}
                 runner.events.emit("progress", "pipeline running", data=data)
                 runner.flush(force=True)

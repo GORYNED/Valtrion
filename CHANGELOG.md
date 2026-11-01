@@ -10,7 +10,7 @@ Host disk: a build host no longer fills up silently while builds queue.
 - A published build that a still-active job depends on (it built or reused it and waits for the device, or installs it by key) is never removed by this cleanup, nor by `valtrion builds gc` / `valtrion gc` (the job records its key in its run folder). Other builds are removed by retention; they can be rebuilt.
 - **Fail fast.** If the volume is still below the minimum, the stage ends `BLOCKED` with the free space, the minimum and the largest consumers; no toolchain is started (instead of `No space left on device` inside xcodebuild).
 - **Early release.** The build output (and the folders the build registered as temporary) is removed from the job's work folder as soon as the build is published, or, when it could not be published, when the last stage is done (a player may run from its artifact). This applies to every host. A reused build needs no space.
-- The periodic `progress` event of a running pipeline job (every `tickSec`, 15 s; it was already there and refreshes `lastProgressUtc`) now carries `phase` and `buildLogBytes` (the size of the build logs, which grows while Unity or xcodebuild work), so a watcher can tell a quiet build from a stuck one.
+- The periodic `progress` event of a running pipeline job (every `tickSec`, 15 s; it was already there and refreshes `lastProgressUtc`) now carries `currentPhase` and `buildLogBytes` (the size of the build logs, which grows while Unity or xcodebuild work), so a watcher can tell a quiet build from a stuck one.
 - `valtrion doctor --json` has `storage`: free bytes, the sizes of the work root, the run folders and the build cache, `minFreeGiB` and `belowMinimum`.
 
 ## 0.8.1

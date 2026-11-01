@@ -369,7 +369,7 @@ class ScopedLeaseTests(unittest.TestCase):
         _, store = self.run_job("A", self.document())
         self.assertEqual("PASS", store.read_job()["status"], store.read_job()["reason"])
         pulses = [e["data"] for e in self.events_of(store) if e["type"] == "progress" and e.get("message") == "pipeline running"]
-        building = [d for d in pulses if d.get("phase") == "building"]
+        building = [d for d in pulses if d.get("currentPhase") == "building"]
         self.assertTrue(building, pulses)
         self.assertTrue(all(d["buildLogBytes"] >= 500 for d in building), building)
 
