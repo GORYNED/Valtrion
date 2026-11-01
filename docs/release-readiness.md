@@ -37,10 +37,10 @@ they do not constitute a factory-clean operating system or uncached network.
 | Repository EditMode | 107 tests passed, zero failed/skipped/inconclusive; nonempty NUnit XML and Editor log inspected |
 | Repository PlayMode | 7 tests passed, zero failed/skipped/inconclusive; nonempty NUnit XML and Editor log inspected |
 | Independent clean consumer | A fresh agent with no chat/product history followed the AI prompt, generated a new project with the Editor, and installed the real Git UPM URL pinned to `c492c31fb97acb4abf57526841c1a8ca1209ca9b`; lock source/hash and package cache inspected |
-| Consumer smoke | First install and repeatable runner each selected one test: one passed, zero failed/skipped/inconclusive; valid `gdv.result/1`, PASS, intended plan, editor evidence, idle/wait/mark PASS and `smoke.complete` confirmed |
+| Consumer smoke | First install and repeatable runner each selected one test: one passed, zero failed/skipped/inconclusive; valid `gdv.result/1`, PASS, intended plan, editor evidence, idle/wait/mark PASS and `smoke.complete` confirmed. A final revision recheck pinned UPM to `07d68371fa435c32d259a89030e5228bbf8054b3`, freshly reinstalled Core, and passed the same evidence gate |
 | Consumer compatibility | Installed CLI doctor reported `project.status=ok`, package 0.7.1 / Core 0.7.4; generated project settings stayed unchanged across repeated smoke runs |
-| Core example | On `c492c31`, fresh installed CLI produced real PASS/0, duplicate-SKU FAIL/1 and TIMEOUT/3, with checked console output and timeout event; all six job/event validations and `pip check` passed |
-| Packaging | On `c492c31`, offline clean-archive installation, direct wheel and sdist → wheel → fresh install passed; runtime dependencies absent, full MIT notices checked. Repeat after the current Core change is pending |
+| Core example | On `07d68371`, fresh installed CLI produced real PASS/0, duplicate-SKU FAIL/1 and TIMEOUT/3, with checked console output and timeout event; all six job/event validations and `pip check` passed |
+| Packaging | On `07d68371`, offline clean-archive installation, direct wheel and sdist → wheel → fresh install passed; version/schema/plan/check-map checks and `pip check` passed, runtime dependencies absent, full MIT notices checked |
 | Paths/docs | All 115 integration files moved; all 48 `.meta` files preserved. Manifest/lock sibling package paths resolve. Local Markdown targets and diff whitespace checks passed |
 
 The Unity package code at the tested pin is unchanged by the current Core fixes.
@@ -51,6 +51,11 @@ agent created and exercised a project-owned runner as instructed. This establish
 installation and integration wiring, not game correctness, player builds or device
 performance. Unity processes ran sequentially after the machine slot became free;
 none belonging to another task was stopped.
+
+The final revision recheck reused that consumer's established Library; only the
+initial creation/import is described as pristine. Installed Core's changed
+`lease.py` matched the final source hash. The repository Unity package C#/assembly
+inputs are unchanged between the original Unity checks and the final Core fix.
 
 The Editor emitted the existing `UAC0005` and empty Editor assembly warnings.
 Direct smoke results retain unknown candidate/host metadata and the intentionally
@@ -65,8 +70,13 @@ not passing results.
 
 ## CURRENT — GitHub CI
 
-GitHub Actions is enabled and executes real steps. Run `41288397435` for `c492c31`
-had eight successful jobs and seven failing matrix jobs. Its logs identified:
+GitHub Actions is enabled and executes real steps. [Run 41289633850](https://github.com/GORYNED/Valtrion/actions/runs/41289633850)
+for `07d68371` completed successfully: **all 15 jobs passed**, including the full
+Windows/macOS/Linux × Python 3.10–3.13 matrix, source/offline-install checks,
+contracts and a Core job without Unity/mobile tooling.
+
+The earlier run `41288397435` for `c492c31` had eight successful jobs and seven
+failing matrix jobs. Its logs identified the issues fixed in the passing candidate:
 
 - Windows: a test compared the short TEMP path with Git's expanded path as text.
   The assertion now compares resolved filesystem locations.
@@ -78,14 +88,16 @@ had eight successful jobs and seven failing matrix jobs. Its logs identified:
   fails on the old code and passes with the fix.
 
 No workflow, Actions setting or billing configuration was changed. These are code
-and test fixes, not CI restoration. New-head hosted results are pending; do not
-describe the older failing run as green or as a billing failure.
+and test fixes, not CI restoration. The older failing run is retained as failed;
+it was not a billing failure. Credential-pattern checks on all 15 passing job logs
+found no recognized token, private-key or credential-URL matches.
 
 ## CURRENT — public-file and history audit
 
-The audit at `c492c31` covered seven local refs, all three reachable commits,
-359 Git objects, 304 unique UTF-8 blobs (2,017,346 bytes) and 277 tracked files,
-plus PR #1's body and available discussion timeline. Pattern/entropy scanning and
+The final source audit at `07d68371` covered seven local refs, all four reachable
+commits, 375 Git objects, 314 unique UTF-8 blobs (2,155,889 bytes) and 277 tracked
+files. PR #1's earlier body and available discussion timeline were also examined;
+the final description records the new results. Pattern/entropy scanning and
 manual triage found no confirmed credential, real personal path, unrelated private
 project reference or external private dependency. All commit identities use GitHub
 noreply. Core has no runtime dependencies; build tools, Unity modules and Test
@@ -99,8 +111,10 @@ unrelated private-project disclosure. No history rewrite was performed.
 
 This is a heuristic audit, not proof against every encoded or unfamiliar secret.
 Ignored diagnostics, hidden server caches and external copies are outside the
-publication candidate and the confirmed audit scope. Final added files and history
-must be checked with the final candidate.
+publication candidate and the confirmed audit scope. The evidence-only readiness
+update and final PR text receive a separate final consistency check. Git and
+Python pattern/entropy checks were used; dedicated secret scanners were not
+available. No claim of a hidden-server-cache or external-copy audit is made.
 
 ## CURRENT — private vulnerability reporting and owner action
 
@@ -114,12 +128,20 @@ Advanced Security → Private vulnerability reporting → Enable**, confirm **Se
 A tested separate private contact is an alternative. No visibility change is
 authorized here. See [SECURITY.md](../SECURITY.md) for the reporting policy.
 
-## KNOWN GAPS — final decision
+## CURRENT — final decision
 
-**NO-GO pending final candidate checks:** the new-head CI result, repeated packaging
-after the Core fix, final added-file/history audit and independent review remain
-to be recorded. The previous Unity resource blocker has been resolved.
+**GO for the public pre-release source candidate.** Fresh Core, Unity EditMode,
+PlayMode, actual Git UPM import and independent clean-project onboarding checks
+passed. Packaging and the full hosted CI matrix passed on the final code revision.
+The independent native review of `07d68371` against the initial base found no
+actionable findings; its focused tests, old-code regression probe and retained
+evidence inspection are recorded in PR #1. The earlier Unity-slot blocker is resolved.
+
+This GO is not authorization to merge, publish or change visibility. The owner
+still decides the public launch and must complete the reporting setup above.
 
 Other engines, player/device targets and real application behavior are not newly
 validated. There is no stable-release support/upgrade promise. Publication and the
-security-reporting launch step remain the owner's separate decision.
+security-reporting launch step remain the owner's separate decision. A later
+evidence-only documentation commit does not change the tested code; its exact
+head and review confirmation are recorded in PR #1.
