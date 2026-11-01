@@ -438,7 +438,18 @@ class LeaseKeeper:
 
     def add(self, resource: str) -> None:
         with self._lock:
-            self._resources.append(resource)
+            if resource not in self._resources:
+                self._resources.append(resource)
+
+    def release_one(self, resource: str) -> bool | None:
+        """Stop renewing one lease and release it now, while the others stay held. Returns whether the release succeeded, or None
+        when the keeper does not hold it (already released, or never taken)."""
+        with self._lock:
+            if resource not in self._resources:
+                return None
+            self._resources.remove(resource)
+            self.lost = [r for r in self.lost if r != resource]
+            return self._manager.release(resource, self._session, self._pid)
 
     def replace(self, lost: str, taken: str) -> None:
         """A lost lease was taken again (possibly as another slot of the same counted resource): keep renewing the new one."""

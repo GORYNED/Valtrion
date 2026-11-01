@@ -6,11 +6,12 @@ This page describes the components of Valtrion, the boundaries between them and 
 
 ### Core (`core/`)
 
-The `valtrion` CLI and library, distribution `valtrion` 0.7.4, Python 3.10 or newer, standard library only. It is delivered in this repository. It provides:
+The `valtrion` CLI and library, distribution `valtrion` 0.8.0, Python 3.10 or newer, standard library only. It is delivered in this repository. It provides:
 
 - Host inventory and selection: this machine first, then SSH hosts by capability, or a pinned host.
 - Detached, supervised jobs with hard timeouts, stall detection and process-tree kill.
-- Exclusive resource leases (devices, Unity Editor slots) with explicit release, expiry and recovery.
+- Exclusive resource leases (devices, Unity Editor slots) with explicit release, expiry and recovery. A pipeline holds the build resources only during its `build` stage and the device only during its device stages, so builds overlap device runs; see [cli.md](cli.md#leases-by-stage-build-reuse).
+- A host-local cache of published builds (`<home>/builds`), reused by commit, profile and toolchain.
 - Build, install, launch, collect and cleanup through platform providers: `ios`, `android`, `windows`, `macos`, `editor`.
 - Result validation, baselines and comparison, check selection for a change, and a work root outside protected folders.
 

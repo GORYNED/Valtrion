@@ -51,6 +51,14 @@ GDV-RESULT <STATUS> run=<id>
 
 `valtrion job watch` prints a line of the same shape for jobs: `GDV-RESULT <status> job=<id> offset=<n>`.
 
+## Host-side additions (not seen by the app)
+
+The app never sees these; they are listed because they extend documents that watchers and result readers parse. All are optional additions to `gdv.*/1`, so a reader that ignores unknown fields keeps working.
+
+- `job.json` (`gdv.job/1`): `phase` is `waiting-build`, `building`, `waiting-device` or `on-device` while a pipeline job runs that stage, and absent otherwise. Each change is also a `progress` event whose `data.phase` is the new phase (`null` when cleared).
+- `lease.acquired` / `lease.released` events now occur per stage: the `unity-project` and `unity-editor` leases around the `build` stage, the `device:<id>` lease around the device stages. See [cli.md](cli.md#leases-by-stage-build-reuse) for the order and why it cannot deadlock.
+- `result.json` (`gdv.result/1`): `build` describes the build artifact the run used: `path`, `sha256` (of the file, or over the sorted relative paths and file hashes of a folder), `sizeBytes`, `candidateSha`, `dirty`, `profile`, and `key`, `kind`, `platform`, `toolchain`, `reused`, `builtByJob`. A `progress` event with `data.build` carries the same object when the artifact is published or reused.
+
 ## Environment variables passed to tools
 
 For the Editor runner the host sets `GDV_PLAN`, `GDV_OUT_ROOT`, `GDV_RUN_ID` and `GDV_EVIDENCE=editor`. A job started with a work root also receives the variables listed in [work-root.md](work-root.md).

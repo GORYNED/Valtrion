@@ -1,7 +1,10 @@
 """Pipeline orchestration: build, install, run series, collect, compare, calling `PlatformAdapter` methods.
 
 The pipeline runs inside a job on the host that owns the resources. It selects a device from the adapter's own discovery, takes
-the leases it needs (`unity-editor` slot for builds, `device:<id>` for the device), and treats every stage as a bounded step. A
+the leases each stage needs and only for that stage (`unity-project` and a `unity-editor` slot for the build, released right after
+it; `device:<id>` from the first install/run to the last install/run/collect), and treats every stage as a bounded step. A job
+never waits for one kind of resource while holding the other, so no wait cycle exists and a build overlaps another job's device run.
+A build is published outside the work folder and, for a clean tree, reused by key (see `buildcache`). A
 failed build is never installed. A run on the device is watched through the `gdv.heartbeat/1` file the harness writes: its `seq`
 must advance, otherwise the run is a STALL; the hard budget of the plan is the TIMEOUT. The result is a `gdv.result/1` document that is
 validated before it is written. Everything the run registered as temporary is removed afterwards (see `artifacts`).
@@ -18,7 +21,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
-from . import artifacts, compare, constants, core, gitstate, lease, providers, supervise
+from . import artifacts, buildcache, compare, constants, core, gitstate, lease, providers, supervise
 from .adapter import DeviceHealth, DeviceInfo, PlatformAdapter, StepOutcome
 from .jobs import JobContext
 from .schema import Validator, validate_document
@@ -28,6 +31,9 @@ DEVICE_INBOX = "gdv/inbox/plan.json"
 DEFAULT_DEVICE_POLL_SEC = 3.0
 #: A build stage without its own timeout: a Unity export plus a native build is long, and an adapter ends its own build inside it.
 BUILD_STAGE_DEFAULT_SEC = 14400.0
+#: Stages that take the device lease, and the stages the device lease spans (up to the last of them it is held, then released).
+DEVICE_CLAIM_STAGES = ("install", "run")
+DEVICE_STAGES = ("install", "run", "collect")
 _PERFORMANCE_EVIDENCE = (constants.EVIDENCE_PHYSICAL,)
 #: Capability an adapter gives a device that is attached but waits for an owner action (see `select_device`).
 NEEDS_PERMISSION_CAPABILITY = "needs-permission"
@@ -97,6 +103,16 @@ class GuardedAdapter:
     @property
     def startup_allowance_sec(self) -> float:
         return float(getattr(self._adapter, "startup_allowance_sec", 0.0))
+
+    @property
+    def signs_for_device(self) -> bool:
+        """Whether the build is signed for one device, which then belongs to the build cache key."""
+        return bool(getattr(self._adapter, "signs_for_device", False))
+
+    def toolchain(self) -> Mapping[str, str]:
+        """Optional adapter hook: the tool versions that change a build (for example the Xcode version), part of the cache key."""
+        hook = getattr(self._adapter, "toolchain", None)
+        return dict(hook()) if hook is not None else {}
 
     def discover(self) -> Sequence[DeviceInfo]:
         ok, value, reason, _ = self._call("discover")
@@ -462,8 +478,9 @@ def run_on_device(
 def assemble_result(
         run_id: str, outcome: DeviceRun, pipeline: Mapping[str, Any], plan: Mapping[str, Any], plan_sha256: str,
         device: DeviceInfo | None, host: Mapping[str, Any], unity: str, dirty: bool, extra_layers: Mapping[str, str],
-        extra_unverified: Sequence[str] = ()) -> dict:
-    """Build the `gdv.result/1` of one run from what the host observed and what the harness reported."""
+        extra_unverified: Sequence[str] = (), build: Mapping[str, Any] | None = None) -> dict:
+    """Build the `gdv.result/1` of one run from what the host observed and what the harness reported. `build` is the published
+    (or reused) build artifact of the job, when it has one."""
     candidate = pipeline["candidate"]
     device_result = outcome.device_result or {}
     status, reason = outcome.status, outcome.reason
@@ -491,6 +508,8 @@ def assemble_result(
         "startedUtc": outcome.started, "finishedUtc": outcome.finished, "layers": layers,
         "steps": [s for s in device_result.get("steps", []) if isinstance(s, dict)], "metrics": metrics, "artifacts": [],
         "unverified": [*device_result.get("unverified", []), *outcome.unverified, *extra_unverified]}
+    if build:
+        document["build"] = dict(build)
     return document
 
 
@@ -594,20 +613,40 @@ def execute(pipeline: Mapping[str, Any], pipeline_path: Path | None, ctx: JobCon
                                + (f" ({providers.load_errors().get(platform)})" if providers.load_errors().get(platform) else ""))
 
     device: DeviceInfo | None = None
+    device_leased = False
     artifact: Path | None = None
     build_outcome: StepOutcome | None = None
+    build_info: dict[str, Any] | None = None  # the published build (or the reused one), recorded in every result of the job
     extra_layers: dict[str, str] = {}
     stage_results: list[dict] = []
     series_plans: dict[str, dict] = {}  # runId of a run stage's result -> the plan document it ran
     overall = PipelineOutcome(constants.PASS, None)
+    stages = pipeline["stages"]
+    #: Stages that need the device: its lease is held from the first `install`/`run` to the last `install`/`run`/`collect`.
+    last_device_index = max((i for i, s in enumerate(stages) if s["stage"] in DEVICE_STAGES), default=-1)
+    lease_wait = float(ctx.spec.get("leaseWaitSec", 0))
+    runs_a_plan = any(s["stage"] == "run" for s in stages)
+
+    def early(status: str, reason: str, on: DeviceInfo | None = None) -> dict:
+        return _early_result(ctx, pipeline, plans, load_plan, first_plan, on or device, host, unity, dirty, extra_layers, status, reason,
+                             head_note, build_info)
+
+    def release_device() -> None:
+        nonlocal device_leased
+        if device_leased and device is not None:
+            device_leased = False
+            ctx.release({"resource": f"device:{device.id}"})
+            ctx.set_phase(None)
 
     def conclude() -> PipelineOutcome:
         """Write the job-level result: the first non-passing stage result, otherwise the last one. Runs on every way out, so a
         pipeline that stopped early (a failed build, a busy device) still leaves a result that says why."""
-        if not stage_results and overall.status != constants.PASS:
-            # Stopped before any stage produced a result (a timeout or cancel while building, a missing project): still say why.
-            stage_results.append(_early_result(ctx, pipeline, plans, load_plan, first_plan, device, host, unity, dirty, extra_layers,
-                                               overall.status, overall.reason or f"the pipeline ended {overall.status}", head_note))
+        release_device()
+        if not stage_results and (overall.status != constants.PASS or not runs_a_plan):
+            # Stopped before any stage produced a result (a timeout or cancel while building, a missing project), or a pipeline
+            # with no run stage (build only, install only): still say what happened.
+            stage_results.append(early(overall.status, overall.reason or f"the pipeline ended {overall.status}") if overall.status != constants.PASS
+                                 else early(constants.PASS, ""))
         if not stage_results:
             return overall
         if pipeline.get("compare"):
@@ -627,8 +666,9 @@ def execute(pipeline: Mapping[str, Any], pipeline_path: Path | None, ctx: JobCon
         overall.status, overall.reason = status, reason
         return conclude()
 
-    def claim_device(name: str) -> PipelineOutcome | None:
-        """Select the device from discovery and take its lease; a PipelineOutcome (already concluded) when that is not possible."""
+    def select(name: str) -> PipelineOutcome | None:
+        """Choose the device from discovery, without taking its lease; a concluded PipelineOutcome (BLOCKED) when none can serve the
+        pipeline. This is the fast failure for a device that cannot be served at all (unknown, offline, wrong class)."""
         nonlocal device
         if device is not None:
             return None
@@ -639,20 +679,67 @@ def execute(pipeline: Mapping[str, Any], pipeline_path: Path | None, ctx: JobCon
             found, why = None, f"device discovery failed: {type(error).__name__}: {error}"
         if found is None:
             events.emit("step.finished", why, step=name, status=constants.BLOCKED)
-            stage_results.append(_early_result(ctx, pipeline, plans, load_plan, first_plan, None, host, unity, dirty, extra_layers,
-                                               constants.BLOCKED, why, head_note))
+            stage_results.append(early(constants.BLOCKED, why or "no device", None))
             return fail(constants.BLOCKED, why or "no device")
-        reason = ctx.acquire({"resource": f"device:{found.id}"})
-        if reason:
-            events.emit("step.finished", reason, step=name, status=constants.BLOCKED)
-            stage_results.append(_early_result(ctx, pipeline, plans, load_plan, first_plan, found, host, unity, dirty, extra_layers,
-                                               constants.BLOCKED, reason, head_note))
-            return fail(constants.BLOCKED, reason)
         device = found
         adapter.bind_device(found)
         return None
 
-    for index, stage in enumerate(pipeline["stages"]):
+    def preselect_device(name: str) -> PipelineOutcome | None:
+        """Before a build that is followed by device stages: pick the device and, when the job does not wait for leases, refuse at once
+        if someone holds it, so the request fails before the build and not after it. Nothing is leased here."""
+        blocked = select(name)
+        if blocked is not None:
+            return blocked
+        assert device is not None
+        if lease_wait <= 0:
+            held = ctx.probe(f"device:{device.id}")
+            if held:
+                events.emit("step.finished", held, step=name, status=constants.BLOCKED)
+                stage_results.append(early(constants.BLOCKED, held))
+                return fail(constants.BLOCKED, held)
+        return None
+
+    def claim_device(name: str) -> PipelineOutcome | None:
+        """Take the device lease for the device stages (`install`, `run`, `collect`); a concluded PipelineOutcome when that is not
+        possible. The lease is taken only here, never while the job holds the project or the editor slot (see the build stage)."""
+        nonlocal device_leased
+        if device_leased:
+            return None
+        blocked = select(name)
+        if blocked is not None:
+            return blocked
+        assert device is not None
+        ctx.set_phase("waiting-device")
+        reason = ctx.acquire({"resource": f"device:{device.id}"})
+        if reason:
+            events.emit("step.finished", reason, step=name, status=constants.BLOCKED)
+            stage_results.append(early(constants.BLOCKED, reason))
+            return fail(constants.BLOCKED, reason)
+        device_leased = True
+        ctx.set_phase("on-device")
+        return None
+
+    def reuse_or_none(stage_args: Mapping[str, Any]) -> tuple[buildcache.Entry | None, str | None, Mapping[str, str]]:
+        """(cached build or None, cache key or None, toolchain) for the build stage. No key means the build cannot be cached."""
+        toolchain: dict[str, str] = {"unity": unity}
+        try:
+            toolchain.update(adapter.toolchain())
+        except Exception as error:  # noqa: BLE001 - adapter code; without its toolchain the build is not cached
+            head_note.append(f"the build cannot be cached: the adapter toolchain is unknown ({type(error).__name__}: {error})")
+            return None, None, toolchain
+        assert project_dir is not None
+        if dirty or candidate_sha in (None, NO_SHA):
+            return None, buildcache.dirty_key(ctx.job_id), toolchain
+        key = buildcache.compute_key(
+            pipeline["candidate"]["repo"], platform, candidate_sha, pipeline["candidate"]["profile"], toolchain,
+            buildcache.profile_config_hash(project_dir, pipeline["candidate"]["profile"]),
+            device.id if device is not None and adapter.signs_for_device else None)
+        if stage_args.get("reuse") is False:
+            return None, key, toolchain
+        return buildcache.lookup(buildcache.builds_root(ctx.home), key), key, toolchain
+
+    for index, stage in enumerate(stages):
         if ctx.cancelled():
             overall.cancelled = True
             return fail(constants.BLOCKED, "cancelled by request")
@@ -660,39 +747,63 @@ def execute(pipeline: Mapping[str, Any], pipeline_path: Path | None, ctx: JobCon
         events.emit("step.started", name, step=name)
         ctx.flush()
         kind = stage["stage"]
+        if device_leased and (index > last_device_index or kind == "build"):
+            release_device()  # the device is given back right after the last device stage, and never held into a build
         if kind == "build":
-            if any(later["stage"] in ("install", "run") for later in pipeline["stages"][index + 1:]):
-                # The device is claimed before the long build, always before the editor slot (one order, so two requests never
-                # deadlock), so a second request for a busy device is BLOCKED at once instead of after a build.
-                blocked = claim_device(name)
+            if any(later["stage"] in DEVICE_CLAIM_STAGES for later in stages[index + 1:]):
+                blocked = preselect_device(name)
                 if blocked is not None:
                     return blocked
-            # A platform with nothing to build in the Editor (the Editor target itself) takes its slot where it launches. Both take
-            # the same leases in the same order (device, project, slot) and count the slots of the host, not of the platform.
-            reason = None
-            lost_before = set(ctx.lost_leases())  # `lost_leases` is cumulative: only losses after this point concern this build
-            if adapter.build_uses_editor:
-                try:
-                    capacity = lease.unity_editor_capacity(ctx.home)
-                except ValueError as error:
-                    reason = str(error)
-                else:
-                    if project_dir is not None:
-                        reason = ctx.acquire({"resource": lease.unity_project_resource(project_dir)})
-                    reason = reason or ctx.acquire({"resource": lease.UNITY_EDITOR_RESOURCE, "slots": capacity})
-            if reason:
-                events.emit("step.finished", reason, step=name, status=constants.BLOCKED)
-                return fail(constants.BLOCKED, reason)
-            # Build output goes to the work root (outside protected folders, removed with the job) when the job has one.
-            out = ctx.work.build if ctx.work is not None else directory / "build"
-            artifacts.register_temp(ctx.layout, out)
             if project_dir is None:
                 return fail(constants.BLOCKED, "a build stage needs --project-dir")
             profile = pipeline["candidate"]["profile"]
-            adapter.bind_temporary_registrar(lambda path: artifacts.register_temp(ctx.layout, path))
-            adapter.bind_build_budget(float(stage.get("timeoutSec") or BUILD_STAGE_DEFAULT_SEC))
-            build_outcome = _bounded(lambda: adapter.build(project_dir, profile, out), stage, adapter_name="build",
-                                   default_sec=BUILD_STAGE_DEFAULT_SEC)
+            cached, cache_key, toolchain = reuse_or_none(stage.get("args", {}))
+            if cached is not None:
+                buildcache.touch(cached)
+                artifact, build_outcome = cached.path, StepOutcome(constants.PASS)
+                build_info = {**cached.describe(), "reused": True, "builtByJob": cached.manifest.get("builtByJob", "unknown")}
+                head_note.append(f"the build was reused from the cache (key {cached.key}, built by job {build_info['builtByJob']}); "
+                                 "no build ran for this job")
+                events.emit("progress", f"build reused from cache {cached.key}", step=name, data={"build": build_info})
+                events.emit("step.finished", "reused from the build cache", step=name, status=constants.PASS)
+                continue
+            # The build holds the unity-project lease and an editor slot for this stage only; both are released as soon as it ends,
+            # so another job can build while this one is on the device, and no job holds them while it waits for a device. A
+            # platform with nothing to build in the Editor (the Editor target itself) takes its slot where it launches. The lease
+            # order inside the stage is always project, then slot, and the slots are the host's, not the platform's.
+            reason = None
+            taken: list[dict[str, Any]] = []
+            lost_before = set(ctx.lost_leases())  # `lost_leases` is cumulative: only losses after this point concern this build
+            ctx.set_phase("waiting-build")
+            try:
+                if adapter.build_uses_editor:
+                    try:
+                        capacity = lease.unity_editor_capacity(ctx.home)
+                    except ValueError as error:
+                        reason = str(error)
+                    else:
+                        for item in ({"resource": lease.unity_project_resource(project_dir)},
+                                     {"resource": lease.UNITY_EDITOR_RESOURCE, "slots": capacity}):
+                            reason = ctx.acquire(item)
+                            if reason:
+                                break
+                            taken.append(item)
+                if reason:
+                    events.emit("step.finished", reason, step=name, status=constants.BLOCKED)
+                    return fail(constants.BLOCKED, reason)
+                ctx.set_phase("building")
+                # Build output goes to the work root (outside protected folders, removed with the job) when the job has one.
+                out = ctx.work.build if ctx.work is not None else directory / "build"
+                artifacts.register_temp(ctx.layout, out)
+                adapter.bind_temporary_registrar(lambda path: artifacts.register_temp(ctx.layout, path))
+                adapter.bind_build_budget(float(stage.get("timeoutSec") or BUILD_STAGE_DEFAULT_SEC))
+                build_outcome = _bounded(lambda: adapter.build(project_dir, profile, out), stage, adapter_name="build",
+                                         default_sec=BUILD_STAGE_DEFAULT_SEC)
+                lost = [resource for resource in ctx.lost_leases() if resource not in lost_before]
+            finally:
+                for item in reversed(taken):
+                    ctx.release(item)
+                ctx.set_phase(None)
             for key, value in build_outcome.details.items():
                 if key.startswith("temp."):
                     artifacts.register_temp(ctx.layout, Path(value))
@@ -700,17 +811,28 @@ def execute(pipeline: Mapping[str, Any], pipeline_path: Path | None, ctx: JobCon
             if build_outcome.ok and build_outcome.artifacts:
                 artifact = build_outcome.artifacts[0]
             events.emit("step.finished", build_outcome.reason, step=name, status=build_outcome.status)
-            lost = [resource for resource in ctx.lost_leases() if resource not in lost_before]
             if build_outcome.ok and lost:
                 # The build ran without the capacity it reserved: its result cannot be trusted to have been exclusive.
                 reason = "a lease was lost while the build ran: " + ", ".join(lost)
-                stage_results.append(_early_result(ctx, pipeline, plans, load_plan, first_plan, device, host, unity, dirty, extra_layers,
-                                                   constants.BLOCKED, reason, head_note))
+                stage_results.append(early(constants.BLOCKED, reason))
                 return fail(constants.BLOCKED, reason)
             if not build_outcome.ok:
-                stage_results.append(_early_result(ctx, pipeline, plans, load_plan, first_plan, device, host, unity, dirty, extra_layers,
-                                                   build_outcome.status, f"build failed: {build_outcome.reason}", head_note))
+                stage_results.append(early(build_outcome.status, f"build failed: {build_outcome.reason}"))
                 return fail(build_outcome.status, f"build failed: {build_outcome.reason}")
+            if artifact is not None and cache_key is not None:
+                try:
+                    published = buildcache.publish(
+                        buildcache.builds_root(ctx.home), cache_key, artifact, project=pipeline["candidate"]["repo"], platform=platform,
+                        sha=candidate_sha, profile=profile, dirty=dirty, toolchain=toolchain, job_id=ctx.job_id,
+                        cacheable=not cache_key.startswith("dirty-"),
+                        config_hash=buildcache.profile_config_hash(project_dir, profile))
+                except (OSError, ValueError) as error:
+                    head_note.append(f"the build artifact could not be published outside the work folder: {error}")
+                else:
+                    artifact = published.path
+                    build_info = {**published.describe(), "reused": False, "builtByJob": ctx.job_id}
+                    events.emit("progress", f"build published {published.key}", step=name, data={"build": build_info})
+                    _collect_build_cache(ctx, published.key)
             continue
         if kind in ("install", "run"):
             blocked = claim_device(name)
@@ -719,16 +841,28 @@ def execute(pipeline: Mapping[str, Any], pipeline_path: Path | None, ctx: JobCon
         if kind == "install":
             if build_outcome is not None and not build_outcome.ok:
                 return fail(constants.BLOCKED, "install refused: the build did not pass")  # defensive; the build failure returned above
-            chosen = artifact or (Path(stage.get("args", {}).get("artifact", "")) if stage.get("args", {}).get("artifact") else None)
+            args = stage.get("args", {})
+            chosen = artifact
+            if chosen is None and args.get("artifactKey"):
+                entry = buildcache.find(buildcache.builds_root(ctx.home), str(args["artifactKey"]))
+                if entry is None:
+                    events.emit("step.finished", "unknown build", step=name, status=constants.BLOCKED)
+                    return fail(constants.BLOCKED, f"install: no published build with key {args['artifactKey']} (see `valtrion builds list`)")
+                buildcache.touch(entry)
+                chosen = entry.path
+                build_info = {**entry.describe(), "reused": True, "builtByJob": entry.manifest.get("builtByJob", "unknown")}
+                head_note.append(f"installed the published build {entry.key} (candidate {entry.manifest['sha'][:12]}, "
+                                 f"{'dirty' if entry.manifest['dirty'] else 'clean'}); this job did not build it")
+            if chosen is None and args.get("artifact"):
+                chosen = Path(args["artifact"])
             if chosen is None:
                 events.emit("step.finished", "no artifact", step=name, status=constants.BLOCKED)
-                return fail(constants.BLOCKED, "install needs the artifact of a build stage or stage.args.artifact")
+                return fail(constants.BLOCKED, "install needs the artifact of a build stage, stage.args.artifactKey or stage.args.artifact")
             installed = _bounded(lambda: adapter.install(device, chosen), stage, adapter_name="install")
             extra_layers["install"] = installed.status
             events.emit("step.finished", installed.reason, step=name, status=installed.status)
             if not installed.ok:
-                stage_results.append(_early_result(ctx, pipeline, plans, load_plan, first_plan, device, host, unity, dirty, extra_layers,
-                                                   installed.status, f"install failed: {installed.reason}", head_note))
+                stage_results.append(early(installed.status, f"install failed: {installed.reason}"))
                 return fail(installed.status, f"install failed: {installed.reason}")
             continue
         if kind == "run":
@@ -742,7 +876,8 @@ def execute(pipeline: Mapping[str, Any], pipeline_path: Path | None, ctx: JobCon
                 run_id = core.safe_identifier(f"{ctx.job_id}-{index + 1}-{attempt}")
                 run_directory = directory / "runs" / f"{index + 1:02d}-{core.safe_segment(plan['id'], 'plan', 40)}-{attempt}"
                 outcome = run_on_device(adapter, device, plan_path, plan, stage, run_directory, options, ctx.cancelled)
-                document = assemble_result(run_id, outcome, pipeline, plan, plan_sha, device, host, unity, dirty, extra_layers, head_note)
+                document = assemble_result(run_id, outcome, pipeline, plan, plan_sha, device, host, unity, dirty, extra_layers, head_note,
+                                           build_info)
                 runs.append(finalize_result(document, run_directory, run_directory / "result.json", include_top=True))
                 events.emit("progress", f"run {attempt}/{repeats} {outcome.status}", step=name, data={"run": attempt, "status": outcome.status})
                 ctx.flush()
@@ -848,9 +983,20 @@ def _merge_runs(runs: list[dict], plan: Mapping[str, Any], plan_sha: str) -> dic
     return base
 
 
+def _collect_build_cache(ctx: JobContext, keep_key: str) -> None:
+    """Retention of the published builds, applied after each publish (the new build is never removed by it)."""
+    try:
+        report = buildcache.gc(buildcache.builds_root(ctx.home), protect=[keep_key])
+    except (OSError, ValueError):
+        return
+    if report.removed:
+        ctx.events.emit("log", "build cache: removed " + ", ".join(report.removed), data={"removed": list(report.removed)})
+
+
 def _early_result(ctx, pipeline, plans, load_plan, first_plan, device, host, unity, dirty, extra_layers, status, reason,
-                  head_note: Sequence[str] = ()) -> dict:
-    """The result of a pipeline that stopped before any run (a failed build, no device): no metrics, a clear reason."""
+                  head_note: Sequence[str] = (), build: Mapping[str, Any] | None = None) -> dict:
+    """The result of a pipeline that stopped before any run (a failed build, no device) or has no run stage (build only,
+    install only): no metrics, a clear reason."""
     plan_id, plan_sha = "unknown", core.sha256_bytes(b"")
     if first_plan:
         try:
@@ -861,7 +1007,7 @@ def _early_result(ctx, pipeline, plans, load_plan, first_plan, device, host, uni
     stamp = core.utc_now()
     outcome = DeviceRun(status, reason, None, {}, ctx.store.directory, stamp, stamp, [])
     return assemble_result(core.safe_identifier(ctx.job_id), outcome, pipeline, {"id": plan_id, "metrics": {}}, plan_sha, device, host,
-                           unity, dirty, extra_layers, ["no run was started on a device", *head_note])
+                           unity, dirty, extra_layers, ["no run was started on a device", *head_note], build)
 
 
 def baseline_folders(baselines: str, pipeline_dir: Path, project_dir: Path | None) -> list[Path]:

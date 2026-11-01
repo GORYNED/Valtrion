@@ -89,7 +89,6 @@ def _version(_: argparse.Namespace) -> int:
 
 
 _STUB_OWNERS = {
-    "build": "platform adapters",
     "install": "platform adapters",
     "launch": "platform adapters",
     "push": "platform adapters",

@@ -17,6 +17,12 @@
     { "name": "stopToReadyMs", "unit": "ms", "samples": [14620, 14810, 14700], "stats": { "n": 3, "median": 14700, "p90": 14810, "max": 14810, "stdev": 95.4 } }
   ],
   "comparison": { "baseline": "baselines/example.perf.open-playback/ipad-a14.json", "verdict": "PASS", "details": ["stopToReadyMs within 10%"] },
+  "build": {
+    "key": "3f2a9c1b7d4e5f60a1b2c3d4e5f60718", "path": "builds/3f2a9c1b7d4e5f60a1b2c3d4e5f60718/artifact/Example.app", "kind": "directory",
+    "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", "sizeBytes": 184320000,
+    "candidateSha": "0123456789abcdef0123456789abcdef01234567", "dirty": false, "profile": "Internal", "platform": "ios",
+    "toolchain": { "unity": "6000.6.7f1", "xcode": "Xcode 27.1" }, "reused": true, "builtByJob": "job-20261029T1400Z-1"
+  },
   "artifacts": [
     { "kind": "console", "path": "console.log", "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" }
   ],

@@ -113,6 +113,26 @@
         "details": { "$ref": "common.schema.json#/$defs/stringList" }
       }
     },
+    "build": {
+      "description": "The build artifact the run was made with, published outside the job's work folder: either built by this job or reused from the build cache / installed by key. Absent for a pipeline without a build.",
+      "type": "object",
+      "required": ["path", "sha256", "sizeBytes", "candidateSha", "dirty", "profile", "reused"],
+      "additionalProperties": false,
+      "properties": {
+        "key": { "type": "string", "minLength": 1, "description": "Cache key; `valtrion pipeline` installs the build with stage.args.artifactKey." },
+        "path": { "type": "string", "minLength": 1 },
+        "kind": { "enum": ["file", "directory"] },
+        "sha256": { "$ref": "common.schema.json#/$defs/sha256", "description": "Hash of the file, or over the sorted relative paths and file hashes of a folder." },
+        "sizeBytes": { "type": "integer", "minimum": 0 },
+        "candidateSha": { "$ref": "common.schema.json#/$defs/gitSha" },
+        "dirty": { "type": "boolean" },
+        "profile": { "$ref": "common.schema.json#/$defs/identifier" },
+        "platform": { "type": "string", "minLength": 1 },
+        "toolchain": { "type": "object", "additionalProperties": { "type": "string" } },
+        "reused": { "type": "boolean", "description": "True when this job did not build it (cache hit, or install by key)." },
+        "builtByJob": { "type": "string", "minLength": 1 }
+      }
+    },
     "artifacts": {
       "type": "array",
       "items": {
