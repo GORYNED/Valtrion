@@ -781,6 +781,7 @@ def execute(pipeline: Mapping[str, Any], pipeline_path: Path | None, ctx: JobCon
             taken: list[dict[str, Any]] = []
             lost_before = set(ctx.lost_leases())  # `lost_leases` is cumulative: only losses after this point concern this build
             ctx.set_phase("waiting-build")
+            build_outcome = None  # this stage's outcome only (the finally below reads it)
             try:
                 if adapter.build_uses_editor:
                     try:
@@ -807,8 +808,10 @@ def execute(pipeline: Mapping[str, Any], pipeline_path: Path | None, ctx: JobCon
                                          default_sec=BUILD_STAGE_DEFAULT_SEC)
                 lost = [resource for resource in ctx.lost_leases() if resource not in lost_before]
             finally:
-                for item in reversed(taken):
-                    ctx.release(item)
+                # A build that timed out may still be running in its thread or process: its leases stay until the job ends.
+                if not (build_outcome is not None and build_outcome.status == constants.TIMEOUT):
+                    for item in reversed(taken):
+                        ctx.release(item)
                 ctx.set_phase(None)
             for key, value in build_outcome.details.items():
                 if key.startswith("temp."):
@@ -854,6 +857,9 @@ def execute(pipeline: Mapping[str, Any], pipeline_path: Path | None, ctx: JobCon
                 if entry is None:
                     events.emit("step.finished", "unknown build", step=name, status=constants.BLOCKED)
                     return fail(constants.BLOCKED, f"install: no published build with key {args['artifactKey']} (see `valtrion builds list`)")
+                if not buildcache.is_intact(entry):
+                    events.emit("step.finished", "damaged build", step=name, status=constants.BLOCKED)
+                    return fail(constants.BLOCKED, f"install: the published build {entry.key} is damaged (its files differ in size from the record)")
                 if entry.manifest["platform"] != platform:
                     events.emit("step.finished", "wrong platform", step=name, status=constants.BLOCKED)
                     return fail(constants.BLOCKED, f"install: the published build {entry.key} is for {entry.manifest['platform']}, not {platform}")

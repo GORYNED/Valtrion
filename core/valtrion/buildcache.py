@@ -137,12 +137,12 @@ def lookup(root: Path, key: str) -> Entry | None:
     """A reusable build for a cache key: published from a clean tree and still intact (the total size of the files is
     compared with the one recorded; a truncated or extended build is not trusted, a same-size edit is not detected)."""
     entry = find(root, key)
-    if entry is None or not entry.cacheable or not _intact(entry):
+    if entry is None or not entry.cacheable or not is_intact(entry):
         return None
     return entry
 
 
-def _intact(entry: Entry) -> bool:
+def is_intact(entry: Entry) -> bool:
     try:
         _, size, _ = _quick_shape(entry.item)
     except OSError:
@@ -185,7 +185,7 @@ def publish(root: Path, key: str, artifact: Path, *, out: Path, project: str, pl
     final = root / key
     if final.exists():
         existing = _read_entry(final)
-        if existing is not None and cacheable and not replace and _intact(existing):
+        if existing is not None and cacheable and not replace and is_intact(existing):
             return existing
         shutil.rmtree(final, ignore_errors=True)  # a broken, rejected, forced or one-off entry in the way (publishing is an atomic rename)
     incoming = Path(tempfile.mkdtemp(prefix=_INCOMING, dir=root))

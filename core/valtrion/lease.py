@@ -421,8 +421,10 @@ class LeaseManager:
         """Same rule as a lease: the waiter's process is dead AND its renewal is older than the TTL (an unreadable ticket: old)."""
         try:
             document = core.read_json(ticket, attempts=2)
-            expired = self._clock() - core.parse_utc(document["renewedUtc"]) > timedelta(seconds=int(document["ttlSec"]))
-            return expired and not self._is_alive(int(document["pid"]))
+            idle = self._clock() - core.parse_utc(document["renewedUtc"])
+            ttl = timedelta(seconds=int(document["ttlSec"]))
+            # A waiter renews at every poll, so one that has not for twice its TTL is gone even if its pid was reused or is shared.
+            return (idle > ttl and not self._is_alive(int(document["pid"]))) or idle > 2 * ttl
         except FileNotFoundError:
             return False
         except (OSError, ValueError, KeyError, TypeError):
@@ -440,10 +442,7 @@ class LeaseManager:
             if mine is not None and ticket == mine:
                 return None
             if self._ticket_is_stale(ticket):
-                try:
-                    ticket.unlink()
-                except OSError:
-                    pass
+                self._remove_ticket(ticket)
                 continue
             if not ticket.exists():
                 continue
@@ -479,10 +478,18 @@ class LeaseManager:
                 self._sleep(min(poll_sec, max(0.0, deadline - self._monotonic())))
         finally:
             if ticket is not None:
-                try:
-                    ticket.unlink()
-                except OSError:
-                    pass
+                self._remove_ticket(ticket)
+
+    def _remove_ticket(self, ticket: Path) -> None:
+        """Delete a ticket; a reader that has it open (Windows) makes the delete fail for a moment, so it is retried."""
+        for _ in range(20):
+            try:
+                ticket.unlink()
+                return
+            except FileNotFoundError:
+                return
+            except OSError:
+                time.sleep(0.02)  # real time: a reader holds the file only for the instant it takes to read it
 
     # -- renewing and releasing ----------------------------------------------------------------------------------------
 

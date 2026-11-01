@@ -526,6 +526,11 @@ class FairQueueTests(unittest.TestCase):
         self.assertTrue(result.acquired)
         self.assertFalse(dead.exists(), "the dead ticket was removed")
         manager.release("device:y", "s1", os.getpid())
+        forgotten = queue / "00000000000000000003-3-cccccccc.ticket"  # its pid is alive but it has not renewed for far more than 2 x ttl
+        core.atomic_write_json(forgotten, {"owner": "x", "session": "x", "pid": os.getpid(), "ttlSec": 1, "enqueuedUtc": old, "renewedUtc": old})
+        self.assertTrue(manager.acquire("device:y", "me", "s1", 60, "t", os.getpid(), wait_sec=5, poll_sec=0.02).acquired)
+        self.assertFalse(forgotten.exists())
+        manager.release("device:y", "s1", os.getpid())
         live = queue / "00000000000000000002-2-bbbbbbbb.ticket"
         now = core.utc_now()
         core.atomic_write_json(live, {"owner": "early", "session": "e", "pid": os.getpid(), "ttlSec": 60, "enqueuedUtc": now, "renewedUtc": now})
