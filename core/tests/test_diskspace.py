@@ -111,6 +111,14 @@ class DiskTests(unittest.TestCase):
         self.assertIn("6.0 GiB free", outcome.reason)
         self.assertIn("largest:", outcome.reason)
 
+    def test_a_locked_file_does_not_stop_the_other_cleanup_steps_or_crash_the_stage(self):
+        expired = self.run_folder("20261031T000000Z-expired", 4, age_days=3)
+        with mock.patch.object(workroot, "sweep", side_effect=PermissionError("file is locked")):
+            outcome = diskspace.ensure_free(self.settings, self.home, free=self.volume)
+        self.assertFalse(expired.exists(), "the run folders were still cleaned")
+        self.assertFalse(outcome.ok)
+        self.assertIn("cleanup problems: abandoned job folders: PermissionError", outcome.reason)
+
     def test_the_build_cache_retention_runs_too(self):
         root = buildcache.builds_root(self.home)
         source = self.base / "out" / "app.apk"
@@ -237,7 +245,7 @@ class PipelineDiskTests(unittest.TestCase):
         events = [json.loads(line) for line in store.events.read_text(encoding="utf-8").splitlines()]
         self.assertTrue(any(e["type"] == "log" and "of build output from the job work folder" in e.get("message", "") for e in events), "reported")
 
-    def test_an_unpublished_build_is_released_after_the_install_not_before(self):
+    def test_an_unpublished_build_is_kept_until_the_last_stage_and_released_then(self):
         observed = {}
         original = adapter_class(self.world)
         work = self.work
@@ -261,7 +269,10 @@ class PipelineDiskTests(unittest.TestCase):
             store = self.run_job(stages)
         self.assertEqual("PASS", store.read_job()["status"], store.read_job()["reason"])
         self.assertTrue(observed["before"], "the install still had its artifact")
-        self.assertEqual([], [p for p in (work / "jobs").glob("*/build") if p.exists()], "released once installed")
+        self.assertEqual([], [p for p in (work / "jobs").glob("*/build") if p.exists()], "released at the end")
+        events = [json.loads(line) for line in store.events.read_text(encoding="utf-8").splitlines()]
+        self.assertTrue(any(e["type"] == "log" and "of build output from the job work folder" in e.get("message", "") for e in events),
+                        "released by the pipeline itself, not only by the job cleanup")
 
 
 if __name__ == "__main__":

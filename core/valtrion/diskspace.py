@@ -78,22 +78,38 @@ def ensure_free(settings: config.HostSettings, home: Path | None, protected: Seq
         return Outcome(True)
     free = free or free_bytes
     need = settings.min_free_gib * GIB
-    before = free(settings.work_root)
+    try:
+        before = free(settings.work_root)
+    except OSError:
+        return Outcome(True)  # the free space cannot be read: do not stop a build over a check that cannot be made
     if before >= need:
         return Outcome(True, free_before=before, free_after=before)
     removed: list[str] = []
+    errors: list[str] = []
     protected_paths = [Path(item) for item in protected]
     active = jobs.active_job_ids(home)
-    removed.extend(workroot.sweep(settings.roots, active, PRESSURE_STALE_SEC, keep=lambda job_id: jobs.kept_work_reason(job_id, home)))
-    removed.extend(artifacts.gc(settings.artifacts_root, settings.keep_days_under_pressure, protected=protected_paths).removed)
-    removed.extend(buildcache.gc(buildcache.builds_root(home)).removed)
-    after = free(settings.work_root)
+    steps: list[tuple[str, Callable[[], Iterable[str]]]] = [
+        ("abandoned job folders", lambda: workroot.sweep(settings.roots, active, PRESSURE_STALE_SEC,
+                                                         keep=lambda job_id: jobs.kept_work_reason(job_id, home))),
+        ("expired run folders", lambda: artifacts.gc(settings.artifacts_root, settings.keep_days_under_pressure,
+                                                    protected=protected_paths).removed),
+        ("expired builds", lambda: buildcache.gc(buildcache.builds_root(home)).removed)]
+    for name, step in steps:
+        try:  # a locked file (Windows) or a folder that vanished meanwhile must not stop the others, nor fail the stage
+            removed.extend(step())
+        except (OSError, ValueError) as error:
+            errors.append(f"{name}: {type(error).__name__}: {error}")
+    try:
+        after = free(settings.work_root)
+    except OSError:
+        after = before
     if after >= need:
         return Outcome(True, removed=tuple(removed), free_before=before, free_after=after)
     consumers = "; ".join(f"{path}: {_gib(size)}" for path, size in largest_consumers(settings, home))
+    problems = f"; cleanup problems: {'; '.join(errors)}" if errors else ""
     return Outcome(False, f"only {_gib(after)} free on the volume of {settings.work_root}, below the {settings.min_free_gib:g} GiB "
                           f"minimum (host.json disk.minFreeGiB) after removing {len(removed)} abandoned or expired item(s); "
-                          f"largest: {consumers}", tuple(removed), before, after)
+                          f"largest: {consumers}{problems}", tuple(removed), before, after)
 
 
 def release_paths(paths: Iterable[Path]) -> tuple[int, list[str]]:

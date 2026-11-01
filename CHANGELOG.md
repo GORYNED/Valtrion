@@ -8,7 +8,7 @@ Host disk: a build host no longer fills up silently while builds queue.
 
 - **Cleanup before a build (opt-in).** With `disk.minFreeGiB` in `host.json`, a `build` stage that finds less free space on the work root's volume first removes abandoned job folders (idle for an hour; running, retained and protected ones are never touched), run folders older than `disk.keepDaysUnderPressure` (default 2 days; active, retained and `--protect`ed runs are kept) and published builds beyond the cache retention.
 - **Fail fast.** If the volume is still below the minimum, the stage ends `BLOCKED` with the free space, the minimum and the largest consumers; no toolchain is started (instead of `No space left on device` inside xcodebuild).
-- **Early release.** The build output (and the folders the build registered as temporary) is removed from the job's work folder as soon as the build is published, or after the install when it could not be published. This applies to every host. A reused build needs no space.
+- **Early release.** The build output (and the folders the build registered as temporary) is removed from the job's work folder as soon as the build is published, or, when it could not be published, when the last stage is done (a player may run from its artifact). This applies to every host. A reused build needs no space.
 - `valtrion doctor --json` has `storage`: free bytes, the sizes of the work root, the run folders and the build cache, `minFreeGiB` and `belowMinimum`.
 
 ## 0.8.1

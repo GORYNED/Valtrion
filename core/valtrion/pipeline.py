@@ -644,6 +644,12 @@ def execute(pipeline: Mapping[str, Any], pipeline_path: Path | None, ctx: JobCon
         """Write the job-level result: the first non-passing stage result, otherwise the last one. Runs on every way out, so a
         pipeline that stopped early (a failed build, a busy device) still leaves a result that says why."""
         release_device()
+        nonlocal build_pending_release
+        if build_pending_release:
+            # A build that could not be published may be run from its artifact (a Windows player, a macOS app): its output is
+            # released when the last stage is done, not after the install.
+            build_pending_release = False
+            release_build_output()
         if not stage_results and (overall.status != constants.PASS or not runs_a_plan):
             # Stopped before any stage produced a result (a timeout or cancel while building, a missing project), or a pipeline
             # with no run stage (build only, install only): still say what happened.
@@ -927,9 +933,6 @@ def execute(pipeline: Mapping[str, Any], pipeline_path: Path | None, ctx: JobCon
             if not installed.ok:
                 stage_results.append(early(installed.status, f"install failed: {installed.reason}"))
                 return fail(installed.status, f"install failed: {installed.reason}")
-            if build_pending_release and not any(later["stage"] == "install" for later in stages[index + 1:]):
-                build_pending_release = False
-                release_build_output()  # installed: the copy in the work folder is no longer needed
             continue
         if kind == "run":
             assert device is not None
