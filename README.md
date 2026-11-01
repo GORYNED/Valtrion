@@ -19,13 +19,22 @@ Your check supplies the assertions. A command job's PASS means exit zero; it sav
 
 **Checking a Unity app:** follow the [Unity Quick Start](docs/unity-quick-start.md). Unity is the first and currently only ready application integration. Its package executes plan steps inside the Editor or a development player.
 
-From a checkout, install Core with Python 3.10+ and Git:
+## Install
+
+Core (Python 3.10+, standard library only) from PyPI:
 
 ```sh
-python tools/install.py --venv
+pipx install valtrion
+valtrion --version
 ```
 
-Use the absolute `valtrion` command path printed by the installer. Core uses only Python's standard library. See [installation](docs/install.md) for installation locations and SSH hosts, or give an agent the [setup prompt](docs/ai-agent-setup.md), which chooses the path for your project.
+The Unity package is installed separately, with its own version, from Git. In Unity: Window → Package Manager → + → Add package from git URL, or add to `Packages/manifest.json`:
+
+```json
+"com.goryned.valtrion.unity": "https://github.com/GORYNED/Valtrion.git?path=integrations/unity/com.goryned.valtrion.unity#unity-v0.7.1"
+```
+
+Update Core with `pipx upgrade valtrion` and the Unity package by changing the tag in that URL; `valtrion doctor --project <Unity project>` checks that the pair is compatible ([compat.json](compat.json)). See [installation](docs/install.md) (including installing from a checkout and SSH hosts), or give an agent the [setup prompt](docs/ai-agent-setup.md), which chooses the path for your project. Versions and how releases are made: [releasing](docs/releasing.md).
 
 ## Available now
 
@@ -40,7 +49,7 @@ Providers handle platform tools and lifecycle; they are not integrations for oth
 
 ## Status and limits
 
-Valtrion is pre-release software under the [MIT license](LICENSE). Install from a checkout; the CLI and API may change before a stable release. The [release-readiness record](docs/release-readiness.md) names tested environments, evidence and remaining gaps.
+Valtrion is pre-release software under the [MIT license](LICENSE). Releases are GitHub Pre-releases (Core also on PyPI); the CLI and API may change before a stable release. The [release-readiness record](docs/release-readiness.md) names tested environments, evidence and remaining gaps.
 
 - Adding the Unity package does not create project build methods or an Editor provider runner. The Unity Quick Start first checks the package directly through Test Framework.
 - Project discovery, profiles and app metric comparison still have Unity assumptions. Other engines have no ready in-app runner; there is no Linux player provider.

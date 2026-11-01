@@ -3,7 +3,9 @@
 This is the verification record for PR #1, prepared while the repository was
 private. The owner subsequently authorized its squash merge and public launch as
 an open-source pre-release. Merge/publication/security-setting results are recorded
-in PR #1. Packages and a stable 1.0 release are outside this launch. Exact tested
+in PR #1. Packages and a stable 1.0 release were outside that launch; the process for
+PyPI and GitHub pre-releases is now described in [releasing](releasing.md) (no release
+has been published by the preparing change). Exact tested
 revisions and the final review are recorded in the PR; earlier results are
 identified below. Actions settings and billing are not changed by this launch.
 

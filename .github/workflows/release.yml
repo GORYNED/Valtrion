@@ -1,0 +1,220 @@
+name: release
+
+# Manual only: never runs on push or pull request. See docs/releasing.md.
+on:
+  workflow_dispatch:
+    inputs:
+      component:
+        description: "What to release"
+        type: choice
+        options: [core, unity]
+        default: core
+      version:
+        description: "Version to release (X.Y.Z); must equal the version in the source"
+        type: string
+        required: true
+      dry_run:
+        description: "Dry run: verify and build only; publish nothing"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+env:
+  COMPONENT: ${{ inputs.component }}
+  VERSION: ${{ inputs.version }}
+  DRY_RUN: ${{ inputs.dry_run }}
+
+jobs:
+  verify:
+    name: verify and build
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.guard.outputs.tag }}
+      mode: ${{ steps.state.outputs.mode }}
+    steps:
+      - name: Releases run only from main
+        run: |
+          if [ "$GITHUB_REF" != "refs/heads/main" ]; then echo "Run this workflow on the main branch, not $GITHUB_REF"; exit 1; fi
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12"
+      - name: Check the requested version against the source
+        id: guard
+        run: |
+          python tools/release_guard.py check --component "$COMPONENT" --version "$VERSION" > guard.txt || { cat guard.txt; exit 1; }
+          cat guard.txt
+          grep '^tag=' guard.txt >> "$GITHUB_OUTPUT"
+      - name: Check contracts, licenses, examples and compatibility
+        run: |
+          python tools/check_contracts.py
+          python tools/check_release.py
+      - name: Core tests
+        if: ${{ inputs.component == 'core' }}
+        working-directory: core
+        run: python -m unittest discover -s tests -t .
+      - name: Build and inspect the distributions
+        if: ${{ inputs.component == 'core' }}
+        run: |
+          python -m pip install build==1.2.2.post1 twine==6.1.0
+          python -m build core --outdir dist
+          python -m twine check --strict dist/*
+          python -m venv .venv/verify
+          .venv/verify/bin/python -m pip install --no-index --no-deps dist/*.whl
+          .venv/verify/bin/python -m valtrion --version
+          .venv/verify/bin/python -m valtrion validate examples/smoke.plan.json
+          .venv/verify/bin/python -m pip check
+          ls dist
+      - name: Read the existing release state
+        id: state
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="${{ steps.guard.outputs.tag }}"
+          if [ -n "$(git tag --list "$tag")" ]; then tag_exists=yes; else tag_exists=no; fi
+          gh api "repos/$GITHUB_REPOSITORY/releases" --paginate --jq ".[] | select(.tag_name == \"$tag\") | .draft" > releases.txt
+          if grep -qx false releases.txt; then release=published; elif grep -qx true releases.txt; then release=draft; else release=none; fi
+          if [ "$COMPONENT" = core ]; then
+            pypi="$(python tools/release_guard.py pypi-state --version "$VERSION")"
+            python tools/release_guard.py decide --pypi "$pypi" --tag "$tag_exists" --release "$release" > decision.txt || { cat decision.txt; exit 1; }
+          else
+            if [ "$tag_exists" = no ] && [ "$release" = none ]; then echo "mode=full" > decision.txt; else echo "Unity $VERSION is already tagged or released"; exit 1; fi
+          fi
+          cat decision.txt
+          cat decision.txt >> "$GITHUB_OUTPUT"
+          echo "state: pypi=${pypi:-n/a} tag=$tag_exists release=$release"
+      - name: Keep the exact files for publishing
+        if: ${{ inputs.component == 'core' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+      - name: Summary
+        run: |
+          {
+            echo "### Release check passed"
+            echo "- component: $COMPONENT, version: $VERSION, tag: ${{ steps.guard.outputs.tag }}"
+            echo "- commit: $GITHUB_SHA"
+            echo "- mode: ${{ steps.state.outputs.mode }}, dry run: $DRY_RUN"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  draft:
+    name: draft GitHub pre-release (core)
+    needs: verify
+    if: ${{ inputs.component == 'core' && !inputs.dry_run && needs.verify.outputs.mode == 'full' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: dist
+          path: dist
+      - name: Replace any stale draft and create a fresh draft with the exact files
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.verify.outputs.tag }}
+        run: |
+          for id in $(gh api "repos/$GITHUB_REPOSITORY/releases" --paginate --jq ".[] | select(.tag_name == \"$TAG\" and .draft) | .id"); do
+            gh api -X DELETE "repos/$GITHUB_REPOSITORY/releases/$id"
+          done
+          cat > notes.md <<NOTES
+          Valtrion Core $VERSION (pre-release).
+
+          Install: \`pipx install valtrion==$VERSION\`
+
+          Unity package: independent version; see docs/install.md. Compatible pairs are in compat.json.
+          Changelog: https://github.com/$GITHUB_REPOSITORY/blob/$GITHUB_SHA/CHANGELOG.md
+          NOTES
+          gh release create "$TAG" dist/* --repo "$GITHUB_REPOSITORY" --draft --prerelease --target "$GITHUB_SHA" \
+            --title "Valtrion Core $VERSION" --notes-file notes.md
+
+  pypi:
+    name: publish to PyPI
+    needs: [verify, draft]
+    if: ${{ inputs.component == 'core' && !inputs.dry_run && needs.verify.outputs.mode == 'full' }}
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/project/valtrion/${{ inputs.version }}/
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: dist
+          path: dist
+      - name: Publish with Trusted Publishing (OIDC, no token)
+        uses: pypa/gh-action-pypi-publish@76f52bc884231f62b9a034ebfe128415bbaabdfc # v1.12.4
+        with:
+          packages-dir: dist/
+          skip-existing: false
+
+  finalize:
+    name: publish the GitHub pre-release (core)
+    needs: [verify, draft, pypi]
+    # Runs after a successful publish, or alone in "finalize" mode (PyPI has the version, only the Release is missing).
+    if: ${{ always() && inputs.component == 'core' && !inputs.dry_run && (needs.pypi.result == 'success' || (needs.verify.result == 'success' && needs.verify.outputs.mode == 'finalize')) }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12"
+      - name: Download the draft's files and prove they are what PyPI holds
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.verify.outputs.tag }}
+        run: |
+          id="$(gh api "repos/$GITHUB_REPOSITORY/releases" --paginate --jq ".[] | select(.tag_name == \"$TAG\" and .draft) | .id" | head -n 1)"
+          test -n "$id"
+          mkdir held
+          gh api "repos/$GITHUB_REPOSITORY/releases/$id" --jq '.assets[] | "\(.id) \(.name)"' > assets.txt
+          while read -r asset_id name; do
+            gh api -H "Accept: application/octet-stream" "repos/$GITHUB_REPOSITORY/releases/assets/$asset_id" > "held/$name"
+          done < assets.txt
+          python tools/release_guard.py verify-pypi --version "$VERSION" --dir held
+          echo "release_id=$id" >> "$GITHUB_ENV"
+      - name: Publish the Release (creates the tag at the commit stored in the draft)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh api -X PATCH "repos/$GITHUB_REPOSITORY/releases/$release_id" -F draft=false -F prerelease=true -f make_latest=false
+
+  unity:
+    name: tag and publish Unity pre-release
+    needs: verify
+    if: ${{ inputs.component == 'unity' && !inputs.dry_run }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Create the tag and pre-release at the verified commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.verify.outputs.tag }}
+        run: |
+          cat > notes.md <<NOTES
+          Valtrion Unity package $VERSION (pre-release), versioned independently of Core.
+
+          Unity Package Manager Git URL:
+          \`https://github.com/$GITHUB_REPOSITORY.git?path=integrations/unity/com.goryned.valtrion.unity#$TAG\`
+
+          Compatible Core versions are listed in compat.json. Changelog:
+          https://github.com/$GITHUB_REPOSITORY/blob/$GITHUB_SHA/integrations/unity/com.goryned.valtrion.unity/CHANGELOG.md
+          NOTES
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --prerelease --target "$GITHUB_SHA" \
+            --title "Valtrion Unity $VERSION" --notes-file notes.md

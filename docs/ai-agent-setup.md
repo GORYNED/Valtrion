@@ -2,7 +2,7 @@
 
 Copy the prompt below into an agent working in your project. It first identifies the task and project type, then chooses a command check or the Unity integration. It works with an agent that has file and command access and needs no agent-specific plugin.
 
-Use Valtrion's HTTPS repository URL; a public checkout needs no GitHub account or token. Private forks require existing repository access. A missing required tool or permission is a blocker to report. The [Quick Start](quick-start.md) covers command jobs; the [Unity Quick Start](unity-quick-start.md) covers Editor integration. The [readiness record](release-readiness.md) separates observed evidence from unverified work.
+Installation sources, best first: Core from PyPI (`pipx install valtrion`, pin `==<version>` for shared projects); the Unity package from a release tag, `https://github.com/GORYNED/Valtrion.git?path=integrations/unity/com.goryned.valtrion.unity#unity-v0.7.1` (replace the tag with the newest `unity-vX.Y.Z` that `compat.json` pairs with the installed Core); or a reviewed checkout of Valtrion's HTTPS repository URL. If `pipx install valtrion` reports no such package, Core is not yet published: use the checkout path. A public checkout needs no GitHub account or token. Private forks require existing repository access. A missing required tool or permission is a blocker to report. The [Quick Start](quick-start.md) covers command jobs; the [Unity Quick Start](unity-quick-start.md) covers Editor integration. The [readiness record](release-readiness.md) separates observed evidence from unverified work.
 
 ```text
 Use Valtrion for repeatable checks in this workspace, then prove the chosen path
@@ -12,10 +12,12 @@ commands. Preserve files, dependencies, tests, pins and settings.
 Choose the path before installing an application integration
 - For an ordinary trusted command (tests, data validation or a build check), use
   Core command jobs following docs/quick-start.md and examples/python-check.
-  Obtain https://github.com/GORYNED/Valtrion.git using existing access, use the
-  requested ref or main, read README.md, docs/install.md and docs/trust-model.md,
-  record the resolved SHA and inspect installed CLI --help before running work.
-  Install Core only. Do not install Unity or add Unity configuration.
+  Install Core with `pipx install valtrion` (record `valtrion --version`), or when
+  it is not on PyPI obtain https://github.com/GORYNED/Valtrion.git using existing
+  access, use the requested ref or main and record the resolved SHA. Read
+  README.md, docs/install.md and docs/trust-model.md and inspect installed CLI
+  --help before running work. Examples (examples/python-check) come from a checkout
+  or the release's source archive. Install Core only. Do not install Unity or add Unity configuration.
   Run the real command through installed `valtrion job start -- ...` with --watch,
   bounded --stall-sec and --timeout-sec, explicit --cwd and the actual --sha.
   Inspect job.json, events.jsonl and console.log. Test a genuine failing check and
@@ -66,16 +68,18 @@ Unity path: discover and pin
    compat.json instead of assuming their version numbers must match.
 
 Install and integrate
-3. Run `python tools/install.py --venv --home .valtrion-home` from the Valtrion
-   checkout (use the discovered Python 3.10+ command). Capture the printed CLI
+3. Install Core: `pipx install valtrion` (or `pipx install valtrion==<version>` to
+   pin), or, when it is not published, run `python tools/install.py --venv
+   --home .valtrion-home` from the Valtrion checkout (use the discovered Python
+   3.10+ command). Capture the printed CLI
    path and use it explicitly. Verify --version, schemas and validation of
    examples/smoke.plan.json. No package-index publication is required.
    If venv/pip cannot access the sandbox's temporary folder, follow the approved
    execution route or use a task-owned writable temp folder for this invocation
    as described in docs/install.md. Do not change shared permissions.
-4. Merge the Unity package into Packages/manifest.json. Prefer a full commit-pinned
-   Git URL using ?path=integrations/unity/com.goryned.valtrion.unity#<full SHA> for a shared
-   project. A local file: path is acceptable for a disposable verification but do
+4. Merge the Unity package into Packages/manifest.json. Prefer a pinned Git URL for a shared
+   project: ?path=integrations/unity/com.goryned.valtrion.unity#unity-vX.Y.Z (a release
+   tag whose compat.json range includes the installed Core) or #<full SHA>. A local file: path is acceptable for a disposable verification but do
    not commit an absolute path. Preserve existing dependencies and testables.
    Add com.goryned.valtrion.unity to testables for PlanTest; use the project's
    compatible Test Framework version (Valtrion's test project uses 1.8.0).
