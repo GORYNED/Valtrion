@@ -11,6 +11,7 @@
   "pid": 4242,
   "command": ["valtrion", "pipeline", "pipelines/series-1.json"],
   "resultPath": "result.json",
+  "phase": "on-device",
   "watchdog": { "stallSec": 600, "timeoutSec": 7200, "lastProgressUtc": "2026-10-29T15:31:24Z" },
   "eventsOffset": 1024
 }

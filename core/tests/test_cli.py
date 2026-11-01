@@ -7,7 +7,7 @@ from valtrion import adapter, cli, constants
 
 CORE_ROOT = Path(__file__).resolve().parent.parent
 CONTRACTS = CORE_ROOT.parent / "contracts"
-RESERVED = ("build", "install", "launch", "push", "pull", "screenshot", "logs")
+RESERVED = ("install", "launch", "push", "pull", "screenshot", "logs")
 
 
 def run(*argv: str) -> tuple[int, str, str]:
@@ -26,7 +26,7 @@ class CliTests(unittest.TestCase):
                 self.assertIn("not implemented", err)
 
     def test_reserved_commands_accept_arbitrary_arguments(self):
-        for arguments in (("build", "plan.json", "--device", "x"), ("install", "--plan", "x"), ("launch", "acquire", "-h")):
+        for arguments in (("install", "--plan", "x"), ("launch", "acquire", "-h")):
             with self.subTest(arguments):
                 code, _, err = run(*arguments)
                 self.assertEqual(2, code)

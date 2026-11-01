@@ -16,7 +16,7 @@ import tempfile
 from pathlib import Path
 from typing import Any, Callable, Sequence
 
-from . import artifacts, compare as comparing, config, constants, core, doctor, hostsync, jobs, lease, project, providers, remote, submit, supervise, wheel, workroot
+from . import artifacts, buildcache, compare as comparing, config, constants, core, doctor, hostsync, jobs, lease, project, providers, remote, submit, supervise, wheel, workroot
 from . import __version__
 from .adapter import DeviceInfo
 from .cli import Command, register
@@ -779,10 +779,84 @@ def _pipeline(arguments: argparse.Namespace) -> int:
         document["candidate"]["sha"] = arguments.sha
         payload["inline"] = document  # the pipeline as run: the file with the commit named on the command line
         payload["shaPinned"] = True
+    elif getattr(arguments, "generated", False):
+        payload["inline"] = document  # `valtrion build`: the file is a temporary copy, the job reads the pipeline itself
     try:
         return _start_pipeline(arguments, document, payload, arguments.pipeline.resolve().parent, project_dir, document["id"])
     except (jobs.JobError, config.ConfigError, ValueError) as error:
         return _blocked("pipeline", str(error))
+
+
+def _configure_build(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--repo", required=True)
+    parser.add_argument("--sha", help="full commit under test; must be the commit that is checked out (default: the checkout's commit)")
+    parser.add_argument("--profile", default="Internal")
+    parser.add_argument("--platform", "--target", dest="platform", required=True, choices=("ios", "android", "windows", "macos", "editor"))
+    parser.add_argument("--device-class", help="iOS signs for one device: the class to build for")
+    parser.add_argument("--device-id", help="iOS signs for one device: the device to build for")
+    parser.add_argument("--no-reuse", action="store_true", help="build even when a clean build of this commit, profile and toolchain is cached")
+    _common_run_options(parser)
+
+
+def _build(arguments: argparse.Namespace) -> int:
+    """Build-only pipeline: one `build` stage, no device. The artifact is published (path, hash, key in `result.json`) and a later
+    `valtrion pipeline` / `valtrion run --artifact-key KEY` installs it without building."""
+    device = {k: v for k, v in (("class", arguments.device_class), ("id", arguments.device_id), ("platform", arguments.platform)) if v}
+    stage: dict = {"stage": "build"}
+    if arguments.no_reuse:
+        stage["args"] = {"reuse": False}
+    document = {"schema": "gdv.pipeline/1", "id": core.safe_identifier(f"build-{arguments.repo}-{arguments.profile}"),
+                "candidate": {"repo": arguments.repo, "profile": arguments.profile}, "device": device, "stages": [stage]}
+    _, errors = validate_document(document)
+    if errors:
+        return _blocked("build", "; ".join(errors))
+    own = ("--repo", "--profile", "--platform", "--target", "--device-class", "--device-id")
+    forwarded = [item for item in arguments.raw_argv[1:] if item != "--no-reuse"]
+    for option in own:
+        forwarded = submit.drop_option(forwarded, option)
+    with tempfile.TemporaryDirectory(prefix="valtrion-build-") as staging:
+        staged = Path(staging) / f"{document['id']}.pipeline.json"
+        core.atomic_write_json(staged, document)
+        arguments.command, arguments.pipeline, arguments.inbox, arguments.generated = "pipeline", staged, arguments.inbox, True
+        arguments.raw_argv = ["pipeline", str(staged), *forwarded]
+        return _pipeline(arguments)
+
+
+def _configure_builds(parser: argparse.ArgumentParser) -> None:
+    sub = parser.add_subparsers(dest="action", required=True)
+    sub.add_parser("list", help="the published builds of this host")
+    show = sub.add_parser("show", help="one published build")
+    show.add_argument("key")
+    collect = sub.add_parser("gc", help="remove published builds that were not used for a while")
+    collect.add_argument("--keep-days", type=float, default=buildcache.DEFAULT_KEEP_DAYS)
+    collect.add_argument("--dirty-keep-days", type=float, default=buildcache.DEFAULT_DIRTY_KEEP_DAYS)
+    collect.add_argument("--max-entries", type=int, default=buildcache.DEFAULT_MAX_ENTRIES)
+    collect.add_argument("--dry-run", action="store_true")
+    collect.add_argument("--protect", action="append", default=[], help="a build key that must stay (repeatable)")
+
+
+def _builds(arguments: argparse.Namespace) -> int:
+    root = buildcache.builds_root()
+    if arguments.action == "list":
+        _out(buildcache.describe_all(root))
+        return constants.EXIT_PASS
+    if arguments.action == "show":
+        entry = buildcache.find(root, arguments.key)
+        if entry is None:
+            return _blocked("builds", f"no published build with key {arguments.key}")
+        _out({**entry.describe(), "manifest": entry.manifest})
+        return constants.EXIT_PASS
+    try:
+        report = buildcache.gc(root, arguments.keep_days, arguments.dirty_keep_days, arguments.max_entries, arguments.dry_run, arguments.protect)
+    except ValueError as error:
+        return _blocked("builds", str(error))
+    verb = "would remove" if arguments.dry_run else "removed"
+    for item in report.removed:
+        print(f"{verb} {item}")
+    for key, reason in report.kept:
+        print(f"kept {key}: {reason}")
+    print(f"{verb} {len(report.removed)} build(s) from {root}")
+    return constants.EXIT_PASS
 
 
 def _configure_run(parser: argparse.ArgumentParser) -> None:
@@ -796,6 +870,7 @@ def _configure_run(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--platform", "--target", dest="platform", choices=("ios", "android", "windows", "macos", "editor"),
                         help="platform to run on; the host is chosen by capability (this machine first)")
     parser.add_argument("--artifact", help="install this build artifact before the run")
+    parser.add_argument("--artifact-key", help="install the published build with this key (see `valtrion builds list`) before the run")
     parser.add_argument("--build", action="store_true", help="build the project first")
     parser.add_argument("--launch-arg", action="append", default=[])
     parser.add_argument("--prelaunch-file", action="append", default=[], metavar="LOCAL=REMOTE",
@@ -815,8 +890,12 @@ def _run(arguments: argparse.Namespace) -> int:
     stages: list[dict] = []
     if arguments.build:
         stages.append({"stage": "build"})
-    if arguments.build or arguments.artifact:
-        stages.append({"stage": "install", **({"args": {"artifact": arguments.artifact}} if arguments.artifact and not arguments.build else {})})
+    if arguments.artifact_key and (arguments.build or arguments.artifact):
+        return _blocked("run", "--artifact-key cannot be combined with --build or --artifact")
+    if arguments.build or arguments.artifact or arguments.artifact_key:
+        install_args = {"artifact": arguments.artifact} if arguments.artifact and not arguments.build else \
+            {"artifactKey": arguments.artifact_key} if arguments.artifact_key else {}
+        stages.append({"stage": "install", **({"args": install_args} if install_args else {})})
     run_stage: dict = {"stage": "run", "plan": str(plan_path), "args": {"app": arguments.app, "launchArgs": arguments.launch_arg}}
     if arguments.prelaunch_file:
         pairs = [item.partition("=") for item in arguments.prelaunch_file]
@@ -945,6 +1024,9 @@ def _gc(arguments: argparse.Namespace) -> int:
     stale = workroot.sweep(settings.roots, jobs.active_job_ids(), dry_run=arguments.dry_run, keep=jobs.kept_work_reason)
     for path in stale:
         print(f"{verb} {path} (work root, abandoned by a runner that died)")
+    built = buildcache.gc(buildcache.builds_root(), dry_run=arguments.dry_run)
+    for item in built.removed:
+        print(f"{verb} build {item}")
     return constants.EXIT_PASS
 
 
@@ -1035,6 +1117,8 @@ def register_all() -> None:
         ("lease", "acquire, renew, release and inspect leases", _lease, _configure_lease),
         ("job", "start, watch, inspect and cancel detached jobs", _job, _configure_job),
         ("pipeline", "run a pipeline as a detached job on a host chosen by capability", _pipeline, _configure_pipeline),
+        ("build", "build the project without a device and publish the artifact", _build, _configure_build),
+        ("builds", "list, show and remove the published builds of this host", _builds, _configure_builds),
         ("run", "run one plan on a device as a detached job", _run, _configure_run),
         ("collect", "pull a remote job's artifacts into the local artifacts root", _collect, _configure_collect),
         ("compare", "compare a result with its baseline", _compare, _configure_compare),

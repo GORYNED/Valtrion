@@ -142,7 +142,7 @@ def new_job_id(label: str, sha8: str, moment: datetime | None = None) -> str:
 def job_document(
         job_id: str, kind: str, state: str, status: str | None, reason: str | None, created: str, updated: str, host: str,
         command: Sequence[str], stall_sec: float, timeout_sec: float, last_progress: str, events_offset: int, pid: int | None = None,
-        result_path: str | None = None) -> dict:
+        result_path: str | None = None, phase: str | None = None) -> dict:
     document: dict[str, Any] = {
         "schema": "gdv.job/1", "jobId": job_id, "kind": kind, "state": state, "status": status, "reason": reason,
         "createdUtc": created, "updatedUtc": updated, "host": host, "command": [part for part in command if part] or ["-"],
@@ -152,6 +152,8 @@ def job_document(
         document["pid"] = pid
     if result_path:
         document["resultPath"] = result_path
+    if phase:
+        document["phase"] = phase
     return document
 
 
@@ -289,6 +291,13 @@ class JobContext:
     work: workroot.JobDirs | None = None  # the job's disposable directories under the work root, when it has one
     #: Leases the job took and could no longer renew (taken over, or removed by hand). Work that needed them must not continue.
     lost_leases: Callable[[], list[str]] = field(default=lambda: [])
+    #: Give back one lease taken with `acquire` (`{resource}` as it was named there); returns whether it was held and released.
+    release: Callable[[Mapping[str, Any]], bool] = field(default=lambda item: False)
+    #: The reason a resource is held by someone else right now (a live lease), or None when it is free; takes nothing.
+    probe: Callable[[str], "str | None"] = field(default=lambda resource: None)
+    #: Record what the job is doing (`waiting-build`, `building`, `waiting-device`, `on-device`) in job.json and as an event;
+    #: None clears it.
+    set_phase: Callable[["str | None"], None] = field(default=lambda phase: None)
 
 
 class _Runner:
@@ -307,6 +316,20 @@ class _Runner:
         self.state, self.status, self.reason = "running", None, None
         self._flushed = 0.0
         self.keeper: lease.LeaseKeeper | None = None
+        self.phase: str | None = None
+        #: The lease each `acquire_one` resource name resolved to (a counted resource becomes one of its slots), for `release_one`.
+        self.taken: dict[str, str] = {}
+        #: Resources the job was started with (`spec.leases`): held for the whole job, never released by a stage.
+        self.pinned: set[str] = set()
+
+    def set_phase(self, phase: str | None) -> None:
+        """What the job is doing now, in job.json (`phase`) and as a `progress` event with `data.phase`. Cleared with None."""
+        if phase == self.phase:
+            return
+        self.phase = phase
+        self.last_progress = core.utc_now()
+        self.events.emit("progress", f"phase: {phase}" if phase else "phase cleared", data={"phase": phase})
+        self.flush(force=True)
 
     def command_environment(self) -> dict | None:
         """The payload's own `env` (which replaces the environment, as before) or, for a job with a work root, this process's
@@ -329,7 +352,7 @@ class _Runner:
         core.atomic_write_json(self.store.job_json, job_document(
             self.job_id, self.spec["kind"], self.state, self.status, self.reason, self.created, core.utc_now(),
             self.spec["host"]["id"], self.command(), self.stall_sec, self.timeout_sec, self.last_progress, self.events.offset,
-            os.getpid(), result))
+            os.getpid(), result, self.phase if self.state == "running" else None))
 
     def on_supervise_event(self, event_type: str, message: str, data: dict) -> None:
         if event_type in ("progress", "log"):
@@ -343,6 +366,7 @@ class _Runner:
             reason = self.acquire_one(item)
             if reason:
                 return f"BLOCKED: {reason}"
+            self.pinned.add(item["resource"])
         return None
 
     def acquire_one(self, item: Mapping[str, Any]) -> str | None:
@@ -372,9 +396,31 @@ class _Runner:
         if not outcome.acquired:
             return outcome.reason
         self.keeper.add(outcome.lease.resource)
+        self.taken[resource] = outcome.lease.resource
         self.events.emit("lease.acquired", outcome.lease.resource, data={
             "resource": outcome.lease.resource, "reclaimedStale": outcome.reclaimed.describe() if outcome.reclaimed else None})
         return None
+
+    def release_one(self, item: Mapping[str, Any]) -> bool:
+        """Give back one lease taken with `acquire_one` (named as there) before the job ends, so the next job can take it. The
+        others stay held. Returns False when this job does not hold it."""
+        if item["resource"] in self.pinned:
+            return False  # requested for the whole job (`--lease`): the stage does not give it back
+        actual = self.taken.pop(item["resource"], None)
+        if actual is None or self.keeper is None:
+            return False
+        released = self.keeper.release_one(actual)
+        if released is None:
+            return False
+        self.events.emit("lease.released", actual, data={"resource": actual, "ok": bool(released)})
+        return bool(released)
+
+    def probe_lease(self, resource: str) -> str | None:
+        """Why `resource` cannot be taken right now (a live holder other than this job), or None. Takes nothing."""
+        status = self.leases.status(resource)
+        if status.state != "held" or status.record is None:
+            return None
+        return None if status.record.session == self.job_id else f"{resource} is {status.record.describe()}"
 
     def lost_leases(self) -> list[str]:
         return list(self.keeper.lost) if self.keeper is not None else []
@@ -416,7 +462,8 @@ class _Runner:
             context = JobContext(
                 self.store, self.events, self.spec, self.job_id, self.flush, lambda: self.store.cancel.exists(),
                 RunLayout(Path(self.spec["artifactsRoot"]), self.spec["project"], self.spec["sha8"], self.job_id), self.acquire_one,
-                self.home, work=self.work_dirs(), lost_leases=self.lost_leases)
+                self.home, work=self.work_dirs(), lost_leases=self.lost_leases, release=self.release_one, probe=self.probe_lease,
+                set_phase=self.set_phase)
             with _PipelineWatch(self) as guard:
                 outcome = pipeline.run_pipeline_job(context)
             if guard.timed_out:

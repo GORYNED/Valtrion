@@ -208,6 +208,8 @@ class IosAdapter(PlatformAdapter):
     platform = PLATFORM
     #: Signing needs the login keychain of the GUI session (`valtrion run` starts the job in the `gui` launchd domain).
     launchd_domain = "gui"
+    #: The build is signed for the device the pipeline selected, so a cached build is only reused for that device.
+    signs_for_device = True
 
     def __init__(self, run: Runner | None = None, spawn: Callable[..., Any] | None = None, sleep: Callable[[float], None] = time.sleep,
                  os_name: str | None = None, home: Path | None = None) -> None:
@@ -246,6 +248,16 @@ class IosAdapter(PlatformAdapter):
 
     def _require_app(self) -> str | None:
         return self._app
+
+    def toolchain(self) -> dict[str, str]:
+        """The Xcode version, part of the build cache key; raises when it cannot be read (the build is then not cached)."""
+        xcodebuild = shutil.which("xcodebuild", path=TOOL_PATH)
+        if xcodebuild is None:
+            raise RuntimeError("xcodebuild is not installed")
+        version = self._run([xcodebuild, "-version"], 30, env=_tool_env())
+        if not version.ok or not version.output.strip():
+            raise RuntimeError(f"xcodebuild -version failed: {(version.reason or version.output).strip()[:160]}")
+        return {"xcode": " ".join(version.output.split())}
 
     # -- probe and discovery -------------------------------------------------------------------------------------------------
 
