@@ -21,7 +21,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
-from . import artifacts, buildcache, compare, constants, core, gitstate, lease, providers, supervise
+from . import artifacts, buildcache, compare, config, constants, core, diskspace, gitstate, lease, providers, supervise
 from .adapter import DeviceHealth, DeviceInfo, PlatformAdapter, StepOutcome
 from .jobs import JobContext
 from .schema import Validator, validate_document
@@ -617,6 +617,7 @@ def execute(pipeline: Mapping[str, Any], pipeline_path: Path | None, ctx: JobCon
     artifact: Path | None = None
     build_outcome: StepOutcome | None = None
     build_info: dict[str, Any] | None = None  # the published build (or the reused one), recorded in every result of the job
+    build_pending_release = False  # a build whose output is still in the work folder (not published): released after the install
     used_entry: buildcache.Entry | None = None  # touched again before the install, so a long wait for the device does not let gc take it
     extra_layers: dict[str, str] = {}
     stage_results: list[dict] = []
@@ -722,6 +723,43 @@ def execute(pipeline: Mapping[str, Any], pipeline_path: Path | None, ctx: JobCon
         ctx.set_phase("on-device")
         return None
 
+    def check_disk(name: str) -> PipelineOutcome | None:
+        """Before the build starts: with `disk.minFreeGiB` set, clean up when the work root's volume is low on space, and end the
+        stage BLOCKED (no toolchain started) when it still is. Without the setting nothing happens."""
+        try:
+            settings = config.load_host_settings(ctx.home)
+        except config.ConfigError as error:
+            head_note.append(f"the free-space check was skipped: {error}")
+            return None
+        if not settings.min_free_gib:
+            return None
+        outcome = diskspace.ensure_free(settings, ctx.home, ctx.spec.get("protectedPaths", []))
+        if outcome.removed:
+            events.emit("log", f"low disk space ({outcome.free_before / diskspace.GIB:.1f} GiB free): removed {len(outcome.removed)} "
+                        f"abandoned or expired item(s), {outcome.free_after / diskspace.GIB:.1f} GiB free now",
+                        data={"removed": list(outcome.removed)})
+        if outcome.ok:
+            return None
+        events.emit("step.finished", outcome.reason, step=name, status=constants.BLOCKED)
+        stage_results.append(early(constants.BLOCKED, outcome.reason or "low disk space"))
+        return fail(constants.BLOCKED, outcome.reason or "low disk space")
+
+    def release_build_output() -> None:
+        """The build output in the job's work folder is not needed once it is published or installed: remove it now instead of at
+        the end of the job (several finished builds that wait for the device would otherwise hold several GiB each)."""
+        try:
+            listed = [Path(item) for item in core.read_json(directory / artifacts.TEMP_REGISTRY)]
+        except (OSError, ValueError):
+            listed = []
+        base = ctx.work.base.resolve() if ctx.work is not None else None
+        scratch = (directory / "build").resolve()
+        targets = [path for path in listed if (base is not None and path.resolve() != base and artifacts._is_within(path.resolve(), base))  # noqa: SLF001
+                   or path.resolve() == scratch]
+        freed, errors = diskspace.release_paths(targets)
+        if freed or errors:
+            events.emit("log", f"released {freed / (1 << 20):.0f} MiB of build output from the job work folder"
+                        + (f"; could not remove: {'; '.join(errors)}" if errors else ""), data={"freedBytes": freed})
+
     def reuse_or_none(stage_args: Mapping[str, Any]) -> tuple[buildcache.Entry | None, str | None, Mapping[str, str]]:
         """(cached build or None, cache key or None, toolchain) for the build stage. No key means the build cannot be cached."""
         toolchain: dict[str, str] = {"unity": unity}
@@ -798,6 +836,9 @@ def execute(pipeline: Mapping[str, Any], pipeline_path: Path | None, ctx: JobCon
                 if reason:
                     events.emit("step.finished", reason, step=name, status=constants.BLOCKED)
                     return fail(constants.BLOCKED, reason)
+                low = check_disk(name)
+                if low is not None:
+                    return low
                 ctx.set_phase("building")
                 # Build output goes to the work root (outside protected folders, removed with the job) when the job has one.
                 out = ctx.work.build if ctx.work is not None else directory / "build"
@@ -842,6 +883,10 @@ def execute(pipeline: Mapping[str, Any], pipeline_path: Path | None, ctx: JobCon
                     build_info = {**published.describe(), "reused": False, "builtByJob": ctx.job_id}
                     events.emit("progress", f"build published {published.key}", step=name, data={"build": build_info})
                     _collect_build_cache(ctx, published.key)
+                    release_build_output()
+                    build_pending_release = False
+                    continue
+            build_pending_release = True  # not published (no key, or it failed): the output is released after the install
             continue
         if kind in ("install", "run"):
             blocked = claim_device(name)
@@ -882,6 +927,9 @@ def execute(pipeline: Mapping[str, Any], pipeline_path: Path | None, ctx: JobCon
             if not installed.ok:
                 stage_results.append(early(installed.status, f"install failed: {installed.reason}"))
                 return fail(installed.status, f"install failed: {installed.reason}")
+            if build_pending_release and not any(later["stage"] == "install" for later in stages[index + 1:]):
+                build_pending_release = False
+                release_build_output()  # installed: the copy in the work folder is no longer needed
             continue
         if kind == "run":
             assert device is not None

@@ -225,7 +225,7 @@ def apply_adapter_capabilities(report: dict, timeout_sec: float = 60.0) -> None:
 
 def local_report(with_devices: bool, home: Path | None = None) -> dict:
     settings = config.load_host_settings(home)
-    report = doctor.probe_local(artifacts_root=settings.artifacts_root, work_root=settings.work_root)
+    report = doctor.probe_local(artifacts_root=settings.artifacts_root, work_root=settings.work_root, min_free_gib=settings.min_free_gib)
     registry = config.load_registry(home)
     if with_devices:
         devices, errors, done = discover_all()
