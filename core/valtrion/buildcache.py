@@ -137,15 +137,17 @@ def lookup(root: Path, key: str) -> Entry | None:
     """A reusable build for a cache key: published from a clean tree and still intact (the total size of the files is
     compared with the one recorded; a truncated or extended build is not trusted, a same-size edit is not detected)."""
     entry = find(root, key)
-    if entry is None or not entry.cacheable:
+    if entry is None or not entry.cacheable or not _intact(entry):
         return None
+    return entry
+
+
+def _intact(entry: Entry) -> bool:
     try:
         _, size, _ = _quick_shape(entry.item)
     except OSError:
-        return None
-    if size != entry.manifest.get("itemSizeBytes", entry.manifest["sizeBytes"]):
-        return None
-    return entry
+        return False
+    return size == entry.manifest.get("itemSizeBytes", entry.manifest["sizeBytes"])
 
 
 def _quick_shape(path: Path) -> tuple[str, int, str]:
@@ -164,7 +166,7 @@ def touch(entry: Entry, clock: Callable[[], str] = core.utc_now) -> None:
 
 
 def publish(root: Path, key: str, artifact: Path, *, out: Path, project: str, platform: str, sha: str, profile: str, dirty: bool,
-            toolchain: Mapping[str, str], config_hash: str, job_id: str, cacheable: bool) -> Entry:
+            toolchain: Mapping[str, str], config_hash: str, job_id: str, cacheable: bool, replace: bool = False) -> Entry:
     """Move the build output that holds `artifact` to `<root>/<key>/artifact/` and write its manifest. `artifact` must lie inside
     `out`, the job's build output folder: a path outside it (the Editor platform's artifact is the project itself) is never moved.
     A file artifact takes its whole folder along (a Windows player needs its `_Data` folder beside the exe); a folder artifact
@@ -183,9 +185,9 @@ def publish(root: Path, key: str, artifact: Path, *, out: Path, project: str, pl
     final = root / key
     if final.exists():
         existing = _read_entry(final)
-        if existing is not None and cacheable:
+        if existing is not None and cacheable and not replace and _intact(existing):
             return existing
-        shutil.rmtree(final, ignore_errors=True)  # a broken or a one-off entry in the way (publishing is an atomic rename)
+        shutil.rmtree(final, ignore_errors=True)  # a broken, rejected, forced or one-off entry in the way (publishing is an atomic rename)
     incoming = Path(tempfile.mkdtemp(prefix=_INCOMING, dir=root))
     moved = incoming / ARTIFACT_FOLDER / item.name
     original = item
@@ -218,7 +220,8 @@ def publish(root: Path, key: str, artifact: Path, *, out: Path, project: str, pl
                     shutil.move(str(moved), str(original))  # give the build output back to the job
                 except OSError:
                     pass
-            shutil.rmtree(incoming, ignore_errors=True)
+            if not moved.exists():  # a copy that could not be given back stays (swept by `gc` after a day) rather than being lost
+                shutil.rmtree(incoming, ignore_errors=True)
     published = _read_entry(final)
     if published is None:
         raise OSError(f"the published build {final} cannot be read back")
@@ -296,7 +299,9 @@ def gc(root: Path, keep_days: float = DEFAULT_KEEP_DAYS, dirty_keep_days: float 
         surplus -= 1
     if not dry_run and root.is_dir():
         cutoff = time.time() - 86400
-        for folder in root.glob(_INCOMING + "*"):
+        readable = {entry.directory for entry in entries(root)}
+        broken = [p for p in root.iterdir() if p.is_dir() and not p.name.startswith(_INCOMING) and p not in readable]
+        for folder in [*root.glob(_INCOMING + "*"), *broken]:  # also entries without a readable manifest or artifact
             try:
                 if folder.is_dir() and folder.stat().st_mtime < cutoff:
                     shutil.rmtree(folder, ignore_errors=True)

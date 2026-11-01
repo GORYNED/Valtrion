@@ -540,6 +540,27 @@ class BuildCacheTests(unittest.TestCase):
         self.assertEqual(b"apk", source.read_bytes())
         self.assertEqual([], [p for p in self.root.iterdir()])
 
+    def test_a_truncated_entry_and_a_forced_rebuild_are_replaced_by_the_new_build(self):
+        first = self.publish("k1", b"abc")
+        first.path.write_bytes(b"ab")  # truncated since it was published
+        self.assertIsNone(buildcache.lookup(self.root, "k1"))
+        self.assertEqual(b"new!", self.publish("k1", b"new!").path.read_bytes(), "the rejected entry did not win")
+        source = self.base / "forced" / "app.apk"
+        source.parent.mkdir()
+        source.write_bytes(b"forced")
+        again = buildcache.publish(self.root, "k1", source, out=source.parent, project="P", platform="android", sha="a" * 40, profile="Prof",
+                                   dirty=False, toolchain={}, config_hash="none", job_id="j", cacheable=True, replace=True)
+        self.assertEqual(b"forced", again.path.read_bytes())
+
+    def test_gc_sweeps_entries_without_a_readable_manifest_after_a_day(self):
+        broken = self.root / "orphan"
+        broken.mkdir(parents=True)
+        (broken / "junk").write_text("x", encoding="utf-8")
+        old = time.time() - 2 * 86400
+        os.utime(broken, (old, old))
+        buildcache.gc(self.root)
+        self.assertFalse(broken.exists())
+
     def test_a_broken_entry_in_the_way_is_replaced(self):
         (self.root / "k1").mkdir(parents=True)
         (self.root / "k1" / buildcache.MANIFEST).write_text("{broken", encoding="utf-8")
