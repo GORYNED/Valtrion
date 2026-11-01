@@ -118,6 +118,8 @@ Verify all three pieces of evidence:
 
 After Unity resolves the package, run `valtrion doctor --project <absolute-project-path> --json`. Inspect the `project` object: its `status` must be `ok` with Unity package 0.7.1 and Core 0.7.4. `skipped` does not confirm integration. Doctor also checks tools for other platforms; unrelated missing prerequisites need not prevent this Editor smoke.
 
+With the package in `testables`, the direct smoke can list its intentionally malformed `test.badsignature` test fixture as an ignored registration warning under `unverified`, alongside unknown candidate/host metadata. Preserve those diagnostics. The passing XML, expected plan, all three passing steps and `smoke.complete` mark are still required; other warnings need investigation. This does not establish game behavior or device performance.
+
 ## Next steps
 
 Add steps that exercise your app and assert its behavior. See the [Unity guide](../integrations/unity/com.goryned.valtrion.unity/Documentation~/index.md) for custom steps and the [providers guide](providers.md) for project build methods, the Editor provider's runner interface, device runs and profiles. The direct test above does not set up a provider runner or player build pipeline. Do not use the larger [example checks map](../examples/checks.json) unchanged: its build methods, runners and app scenarios are placeholders for a project's own integration.

@@ -26,6 +26,8 @@ The offline installer is the simplest route. Standard Python builds use Hatchlin
 
 On macOS, install into a folder that is not protected (not under Documents, Desktop, Downloads or cloud storage): background jobs run the interpreter that runs `valtrion` and are refused otherwise. See [work-root.md](work-root.md).
 
+If an agent sandbox reports a temporary-directory permission error during `venv` or `pip`, use its approved execution mechanism or a private writable temporary directory for that invocation (`TEMP`/`TMP` on Windows, `TMPDIR` on POSIX). Keep normal system paths unchanged and retain the failed diagnostic. A sandbox permission failure does not establish an installer defect; do not bypass approvals or change shared permissions.
+
 ## Several hosts
 
 Work can run on other machines over SSH. The command on each host must be the same version as the one you run.

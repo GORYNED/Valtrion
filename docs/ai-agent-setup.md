@@ -70,6 +70,9 @@ Install and integrate
    checkout (use the discovered Python 3.10+ command). Capture the printed CLI
    path and use it explicitly. Verify --version, schemas and validation of
    examples/smoke.plan.json. No package-index publication is required.
+   If venv/pip cannot access the sandbox's temporary folder, follow the approved
+   execution route or use a task-owned writable temp folder for this invocation
+   as described in docs/install.md. Do not change shared permissions.
 4. Merge the Unity package into Packages/manifest.json. Prefer a full commit-pinned
    Git URL using ?path=integrations/unity/com.goryned.valtrion.unity#<full SHA> for a shared
    project. A local file: path is acceptable for a disposable verification but do
@@ -104,6 +107,11 @@ Verify in Unity
    the intended plan ID, target.evidence=editor and expected steps. Report every
    unverified field. This smoke proves wiring, not game correctness or physical
    device performance. Run the project's relevant existing regression tests too.
+   With the package in testables, its deliberately malformed test.badsignature
+   fixture can also appear as an ignored registration warning under unverified.
+   Record that diagnostic and unknown candidate/host metadata explicitly; do not
+   hide them or treat unrelated warnings as expected. They do not replace the
+   required passing XML, intended plan, step statuses and smoke.complete mark.
 9. After package resolution, run `valtrion doctor --project <Unity project> --json`.
    Require the project object's status=ok with the expected package/Core versions;
    skipped is not proof of integration. Distinguish missing unrelated mobile

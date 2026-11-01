@@ -51,14 +51,21 @@ class SuperviseTests(unittest.TestCase):
         self.assertEqual(constants.BLOCKED, result.status)
         self.assertIn("cannot start", result.reason)
 
-    def test_injected_hang_is_a_stall_within_the_window_plus_minus_ten_percent(self):
+    def test_injected_hang_is_a_stall_at_the_clock_deadline(self):
         window = 2.0
+        now = 0.0
+
+        def advance(seconds):
+            nonlocal now
+            now += seconds
+
         events = []
         result = run_supervised(
-            HANG, Watchdog(timeout_sec=60, stall_sec=window, poll_sec=0.05), self.log, on_event=lambda *event: events.append(event))
+            HANG, Watchdog(timeout_sec=60, stall_sec=window, poll_sec=0.05), self.log,
+            on_event=lambda *event: events.append(event), monotonic=lambda: now, sleep=advance)
         self.assertEqual(constants.STALL, result.status)
         self.assertGreaterEqual(result.idle_sec, window)
-        self.assertLessEqual(result.idle_sec, window * 1.10)
+        self.assertLessEqual(result.idle_sec, window + 0.05)
         self.assertEqual(constants.EXIT_STALL, result.exit_code)
         self.assertIn("stall.detected", [event[0] for event in events])
 

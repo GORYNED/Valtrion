@@ -6,7 +6,11 @@ Report vulnerabilities privately and keep credentials, personal information and 
 
 Use this repository's **Security → Report a vulnerability** option when it is available. Do not disclose a vulnerability in a public issue or pull request.
 
+GitHub's Private Vulnerability Reporting feature is available for public repositories. While this repository is private, an unavailable reporting button or a 404 from its reporting-status API does not establish a configuration defect. See [GitHub's setup instructions](https://docs.github.com/en/code-security/how-tos/report-and-fix-vulnerabilities/configure-vulnerability-reporting/configure-for-a-repository).
+
 If private reporting is unavailable, contact the maintainer through a private channel you already use. If you have no private contact, open an issue asking only for a private security contact; omit the vulnerability details. A dedicated reporting channel and response-time commitment have not been established.
+
+For maintainers: as part of an explicitly authorized public launch, open **Settings → Advanced Security → Private vulnerability reporting → Enable**, then check that **Security → Advisories → Report a vulnerability** is visible. Enable security-alert notifications for the people who will handle reports. Keep the repository private until the owner approves publication; setup preparation does not authorize changing its visibility. If using a separate private reporting contact instead, document and test that contact before launch.
 
 Include the version (`valtrion --version`) or commit, host operating system, expected behavior, observed behavior and the smallest reproduction. Use synthetic identifiers and redact credentials, signing identities, user names, internal paths and device identifiers from logs.
 

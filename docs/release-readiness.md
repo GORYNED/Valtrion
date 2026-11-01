@@ -1,91 +1,125 @@
 # Release readiness
 
-This record separates current evidence from earlier verification. Repository
-visibility remains **private**. This preparation does not publish packages,
-releases or tags, merge changes, restore GitHub CI or change billing.
+This is the evidence record for draft PR #1. The repository remains **private**.
+No merge, package upload, release, tag, visibility change or billing change is
+part of this preparation. Exact tested revisions and the final review are recorded
+in the PR; a result for an earlier revision is identified below.
 
-## CURRENT — repository and scope
+## CURRENT — product and repository
 
-The current repository is `GORYNED/Valtrion`, GitHub ID `1441424538`.
-The verified origin is `https://github.com/GORYNED/Valtrion.git`. Preparation began
-from a clean worktree at the sole initial commit
-`a1ff1d226a6f1bd6570127b19d0164027ef652cb`; fetched `main` matched it.
-The GitHub repository API confirmed private visibility during this session.
+Valtrion manages repeatable checks and retains execution evidence. Core can
+supervise ordinary commands without Unity. Unity is the first and only ready
+application integration; platform providers are lifecycle/transport mechanisms,
+not support for other engines. Project discovery, profiles and app comparison
+metadata still contain Unity assumptions.
 
-The owner recreated the repository from the sanitized snapshot. Old PRs,
-discussions and historical rewrite instructions do not describe this repository.
-No old working directory or backup was consulted. Earlier remote-erasure checks
-are owner-provided history, not a new server-wide cache audit.
+Repository: `GORYNED/Valtrion`, ID `1441424538`, origin
+`https://github.com/GORYNED/Valtrion.git`. Preparation started from the sole initial
+commit `a1ff1d226a6f1bd6570127b19d0164027ef652cb`. Work stays in the same PR #1.
+No old working directory or backup was consulted.
 
-Valtrion Core can supervise ordinary commands without Unity. The Python catalog
-example uses the installed CLI to check real data, propagate a failure and
-enforce a timeout. Its evidence is job state, events and console output, not a
-fabricated app result. Unity is the only ready app integration. Project discovery,
-profiles and comparison metadata retain Unity-specific assumptions.
+The Unity package is `integrations/unity/com.goryned.valtrion.unity`; the repository
+verification project is `integrations/unity/UnityProject`. Core 0.7.4 / Unity
+package 0.7.1 are paired by `compat.json`. Package identity, APIs, CLI, wire formats,
+launch arguments, `gdv.*`, `GDV_*` and Unity GUIDs are preserved.
 
-The Unity integration lives under `integrations/unity/`: the unchanged UPM package
-is `com.goryned.valtrion.unity`, and its test project is `UnityProject/`.
-Use the new subdirectory in local package paths and commit-pinned UPM Git URLs.
-The source move does not rename public APIs, CLI commands, contracts or versions.
+## CURRENT — fresh local verification
 
-## HISTORICAL EVIDENCE — supplied from earlier preparation
+Environment: Windows / Python 3.14.4 / licensed Unity 6000.6.7f1, revision
+`b22767f04f04`, with a real Direct3D graphics device. Unity CLI 1.0.0-beta.15 was
+confirmed current by its update check. Fresh environments isolate dependencies;
+they do not constitute a factory-clean operating system or uncached network.
 
-The owner reported Windows / Python 3.14.4: 799 Core tests (793 passed, six
-platform skips), 12 valid schemas, release checks, offline clean installation,
-wheel and source archive rebuilding, and Unity 6000.6.7f1 EditMode with 107 passed.
-Those observations apply to the snapshot transferred into the initial commit.
-They are not fresh checks of this PR. The previous source/history audit reported
-no confirmed credential and preserved MIT notices and technical contracts.
-
-## CURRENT — verification of this preparation
-
-See the PR's Local verification and independent-review record for the exact
-candidate commit, commands and final counts. Raw local diagnostics stay ignored
-under `.verification/`; they can contain machine paths and must be redacted
-before sharing. A clean virtual environment is dependency isolation, not a
-factory-clean operating system.
-
-The first full Core run after resolving sandbox TEMP permissions exposed a torn
-JSON read in the Android fake-tool fixture. Its two state writers now publish
-atomically using Core's existing helper. A deterministic concurrent-reader test
-fails with the old writers and passes with the fix. No Android provider behavior
-was changed. Earlier failed attempts remain in local diagnostics rather than
-being counted as passes.
-
-| Check | Current observation |
+| Check | Observed evidence |
 | --- | --- |
-| Repository identity | Correct origin and initial history; GitHub ID and private visibility confirmed |
-| Remote refs | `git ls-remote origin` returned only HEAD and `refs/heads/main`, both at the initial commit, before this task branch was pushed |
-| Core example | Fresh offline CLI installation; catalog PASS/0, duplicate SKU FAIL/1, delayed process TIMEOUT/3; actual console/status/timeout event checked; six job/event validations and `pip check` passed |
-| Core suite | Windows / Python 3.14.4: `cd core` then `python -m unittest discover -s tests -t . -v`: 803 tests, 797 passed, six platform skips, zero failures/errors after the fixture fix and integration move |
-| Integration layout | All 115 moved files present; all 48 `.meta` files preserved byte for byte; manifest/lock local package paths still resolve; new release-checker tests pass |
-| Contracts / source / docs | `python tools/check_contracts.py`: 12 schemas, zero problems; `python tools/check_release.py`: zero problems; local Markdown targets and `git diff --check` passed |
-| Packaging | Direct wheel and sdist → wheel → fresh offline installation passed; installed version/schema/example checks and `pip check` passed; runtime dependencies empty; MIT payloads inspected |
-| Unity preflight | Required 6000.6.7f1 installed; package declares minimum 6000.6; test project pins 6000.6.7f1 |
-| Compatibility | Installed `valtrion doctor --project integrations/unity/UnityProject --json`: `project.status=ok`, package 0.7.1 / Core 0.7.4; no Editor launched |
-| Unity execution | BLOCKED: unrelated batchmode test Editors occupied the machine test slot at initial inspection and repeated checks. None was stopped; no Editor was launched by this task |
-| Unity CLI | Installed 1.0.0-beta.15; latest-version check could not resolve Unity CDN; no update performed |
-| Unity guide / agent steps | Source walkthrough checked manifest/testables, smoke assembly references, plan and PlanTest bridge; runtime walkthrough remains unverified |
-| Hosted CI | Intentionally not restored or required for this task; no billing changes |
-| Other platforms/devices | No fresh real-device or macOS/Linux execution evidence; provider unit tests with fakes do not establish it |
+| Core | `cd core` then `python -m unittest discover -s tests -t . -v`: 804 tests, 798 passed, six platform skips, zero failures/errors after the current CI fixes |
+| Contracts/source | `python tools/check_contracts.py`: 12 schemas, zero problems; `python tools/check_release.py`: zero problems |
+| Repository EditMode | 107 tests passed, zero failed/skipped/inconclusive; nonempty NUnit XML and Editor log inspected |
+| Repository PlayMode | 7 tests passed, zero failed/skipped/inconclusive; nonempty NUnit XML and Editor log inspected |
+| Independent clean consumer | A fresh agent with no chat/product history followed the AI prompt, generated a new project with the Editor, and installed the real Git UPM URL pinned to `c492c31fb97acb4abf57526841c1a8ca1209ca9b`; lock source/hash and package cache inspected |
+| Consumer smoke | First install and repeatable runner each selected one test: one passed, zero failed/skipped/inconclusive; valid `gdv.result/1`, PASS, intended plan, editor evidence, idle/wait/mark PASS and `smoke.complete` confirmed |
+| Consumer compatibility | Installed CLI doctor reported `project.status=ok`, package 0.7.1 / Core 0.7.4; generated project settings stayed unchanged across repeated smoke runs |
+| Core example | On `c492c31`, fresh installed CLI produced real PASS/0, duplicate-SKU FAIL/1 and TIMEOUT/3, with checked console output and timeout event; all six job/event validations and `pip check` passed |
+| Packaging | On `c492c31`, offline clean-archive installation, direct wheel and sdist → wheel → fresh install passed; runtime dependencies absent, full MIT notices checked. Repeat after the current Core change is pending |
+| Paths/docs | All 115 integration files moved; all 48 `.meta` files preserved. Manifest/lock sibling package paths resolve. Local Markdown targets and diff whitespace checks passed |
 
-## KNOWN GAPS — decision before publication
+The Unity package code at the tested pin is unchanged by the current Core fixes.
+The independent agent used the public instructions, not an unpublished runner or
+copied test project. Its consumer began with empty Assets and Editor-generated
+settings/manifest; no repository Library or project settings were copied. The
+agent created and exercised a project-owned runner as instructed. This establishes
+installation and integration wiring, not game correctness, player builds or device
+performance. Unity processes ran sequentially after the machine slot became free;
+none belonging to another task was stopped.
 
-**NO-GO for public release at this point.** Repository PlayMode tests and the full
-smoke in a clean consumer Unity project remain unverified because the shared test
-resource is busy. The Unity Quick Start is a complete procedure, not a claim of a
-passed runtime walkthrough. Run it when the slot is free, inspect nonempty NUnit
-XML, logs, marker and validated app result, then update this record.
+The Editor emitted the existing `UAC0005` and empty Editor assembly warnings.
+Direct smoke results retain unknown candidate/host metadata and the intentionally
+malformed `test.badsignature` fixture registration diagnostic under `unverified`.
+The guides now explain these observations; runs are not described as warning-free.
 
-An operational private security-reporting channel is also not confirmed. The
-read-only GitHub API probe returned HTTP 404, which does not establish an enabled
-channel. The policy explains the fallback, but a dedicated public reporting contact or enabled
-private vulnerability reporting needs a maintainer decision before publication.
-No response-time commitment is promised.
+Raw diagnostics remain ignored under `.verification/`, including
+`unity-final-20261101-082429/`, `prompt-trial/`, `release-final-core/` and
+`lease-release-fix/`. They contain machine paths and must be redacted before sharing.
+The earlier sandbox TEMP failures and fixture-race failure remain diagnostics,
+not passing results.
 
-## INTENDED — next gate
+## CURRENT — GitHub CI
 
-Keep the repository private. Resolve the Unity evidence gap and security contact,
-record a clean independent review, and let the owner decide publication separately.
-Preserve `gdv.*`, `GDV_*`, launch arguments, result formats, license notices and
-Core 0.7.4 / Unity package 0.7.1 compatibility through `compat.json`.
+GitHub Actions is enabled and executes real steps. Run `41288397435` for `c492c31`
+had eight successful jobs and seven failing matrix jobs. Its logs identified:
+
+- Windows: a test compared the short TEMP path with Git's expanded path as text.
+  The assertion now compares resolved filesystem locations.
+- macOS: a real-clock test required stall cleanup to finish within a 10% margin.
+  The deadline assertion now uses the supervisor's injected clock; separate real
+  process-tree tests still cover termination.
+- macOS: an in-flight lease renewal could recreate a released file. Keeper
+  publication and release now share the ownership lock. An event-barrier regression
+  fails on the old code and passes with the fix.
+
+No workflow, Actions setting or billing configuration was changed. These are code
+and test fixes, not CI restoration. New-head hosted results are pending; do not
+describe the older failing run as green or as a billing failure.
+
+## CURRENT — public-file and history audit
+
+The audit at `c492c31` covered seven local refs, all three reachable commits,
+359 Git objects, 304 unique UTF-8 blobs (2,017,346 bytes) and 277 tracked files,
+plus PR #1's body and available discussion timeline. Pattern/entropy scanning and
+manual triage found no confirmed credential, real personal path, unrelated private
+project reference or external private dependency. All commit identities use GitHub
+noreply. Core has no runtime dependencies; build tools, Unity modules and Test
+Framework are public dependencies. License notices are included.
+
+Unity's public sample/default-like project setting was reviewed rather than
+misclassified as a live secret. Synthetic fixture identifiers and technical
+contracts remain. The initial commit still contains obsolete audit/cleanup notes
+and old discussion numbers; they were examined and contain no confirmed secret or
+unrelated private-project disclosure. No history rewrite was performed.
+
+This is a heuristic audit, not proof against every encoded or unfamiliar secret.
+Ignored diagnostics, hidden server caches and external copies are outside the
+publication candidate and the confirmed audit scope. Final added files and history
+must be checked with the final candidate.
+
+## CURRENT — private vulnerability reporting and owner action
+
+The repository's reporting-status API returned 404. GitHub documents Private
+Vulnerability Reporting for **public repositories**; this response while private
+does not prove a settings defect. See [GitHub's instructions](https://docs.github.com/en/code-security/how-tos/report-and-fix-vulnerabilities/configure-vulnerability-reporting/configure-for-a-repository).
+
+At an explicitly authorized public launch, the owner must enable **Settings →
+Advanced Security → Private vulnerability reporting → Enable**, confirm **Security
+→ Advisories → Report a vulnerability**, and enable security-alert notifications.
+A tested separate private contact is an alternative. No visibility change is
+authorized here. See [SECURITY.md](../SECURITY.md) for the reporting policy.
+
+## KNOWN GAPS — final decision
+
+**NO-GO pending final candidate checks:** the new-head CI result, repeated packaging
+after the Core fix, final added-file/history audit and independent review remain
+to be recorded. The previous Unity resource blocker has been resolved.
+
+Other engines, player/device targets and real application behavior are not newly
+validated. There is no stable-release support/upgrade promise. Publication and the
+security-reporting launch step remain the owner's separate decision.

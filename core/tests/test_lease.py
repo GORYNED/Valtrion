@@ -3,8 +3,10 @@ import os
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
+from unittest import mock
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -242,6 +244,71 @@ class LeaseTests(unittest.TestCase):
         self.assertEqual([], keeper.release_all())
         keeper.stop()
         self.assertEqual("free", real.status("device:real").state)
+
+    def test_release_waits_for_a_pending_renewal_before_removing_the_lease(self):
+        manager = lease.LeaseManager(Path(self._folder.name), "h")
+        resource = "device:pending"
+        self.assertTrue(manager.acquire(resource, "me", "job", 60, "x", os.getpid()).acquired)
+        keeper = lease.LeaseKeeper(manager, "job", os.getpid(), 0.01, "me")
+        keeper.add(resource)
+        pending = threading.Event()
+        publish = threading.Event()
+        release_decided = threading.Event()
+        original_write = core.atomic_write_json
+        original_release = manager.release
+        errors, released = [], []
+
+        class ObservedLock:
+            def __init__(self):
+                self.lock = threading.Lock()
+
+            def __enter__(self):
+                if not self.lock.acquire(blocking=False):
+                    if threading.current_thread() is releaser:
+                        release_decided.set()  # Release is waiting for the in-flight renewal.
+                    self.lock.acquire()
+
+            def __exit__(self, *args):
+                self.lock.release()
+
+        def paused_write(*args, **kwargs):
+            pending.set()  # renew() has read the holder, but has not published its replacement.
+            if not publish.wait(5):
+                raise TimeoutError("test did not permit renewal publication")
+            return original_write(*args, **kwargs)
+
+        def observed_release(*args, **kwargs):
+            try:
+                return original_release(*args, **kwargs)
+            finally:
+                release_decided.set()  # The old implementation removes the file before publication.
+
+        def release():
+            try:
+                released.extend(keeper.release_all())
+            except Exception as error:
+                errors.append(error)
+
+        releaser = threading.Thread(target=release, name="test-lease-release")
+        keeper._lock = ObservedLock()
+        with mock.patch.object(core, "atomic_write_json", side_effect=paused_write), \
+                mock.patch.object(manager, "release", side_effect=observed_release):
+            keeper.start()
+            try:
+                self.assertTrue(pending.wait(5), "renewal reached its publication barrier")
+                releaser.start()
+                self.assertTrue(release_decided.wait(5), "release either waits for renewal or removes its file")
+            finally:
+                publish.set()
+                if releaser.ident is not None:
+                    releaser.join(5)
+                keeper.stop()
+        self.assertFalse(releaser.is_alive(), "release completed")
+        self.assertEqual([], errors)
+        self.assertEqual([], released)
+        self.assertEqual([], keeper.held())
+        self.assertEqual([], keeper.lost)
+        self.assertEqual("free", manager.status(resource).state)
 
     def test_real_killed_holder_blocks_then_is_reclaimed_after_the_ttl(self):
         manager = lease.LeaseManager(Path(self._folder.name), "h")

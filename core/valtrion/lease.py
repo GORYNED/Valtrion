@@ -459,14 +459,14 @@ class LeaseKeeper:
     def _run(self) -> None:
         while not self._stop.wait(self._interval):
             with self._lock:
-                resources = list(self._resources)
-            for resource in resources:
-                try:
-                    renewed = self._manager.renew(resource, self._session, self._pid, self._owner)
-                except Exception:  # noqa: BLE001 - a failed renewal must be recorded, never end the thread silently
-                    renewed = False
-                if not renewed and resource not in self.lost:
-                    self.lost.append(resource)
+                # Keep publication inside the ownership lock: release/replace must wait for an in-flight renewal.
+                for resource in self._resources:
+                    try:
+                        renewed = self._manager.renew(resource, self._session, self._pid, self._owner)
+                    except Exception:  # noqa: BLE001 - a failed renewal must be recorded, never end the thread silently
+                        renewed = False
+                    if not renewed and resource not in self.lost:
+                        self.lost.append(resource)
 
     def stop(self) -> None:
         self._stop.set()
@@ -478,4 +478,4 @@ class LeaseKeeper:
         with self._lock:
             resources = list(self._resources)
             self._resources.clear()
-        return [resource for resource in resources if not self._manager.release(resource, self._session, self._pid)]
+            return [resource for resource in resources if not self._manager.release(resource, self._session, self._pid)]
