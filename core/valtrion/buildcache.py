@@ -93,6 +93,11 @@ class Entry:
 
     @property
     def path(self) -> Path:
+        return self.item / self.manifest["entry"] if self.manifest.get("entry") else self.item
+
+    @property
+    def item(self) -> Path:
+        """The moved build output (the artifact itself, or the folder that holds it)."""
         return self.directory / ARTIFACT_FOLDER / self.manifest["name"]
 
     @property
@@ -129,16 +134,16 @@ def find(root: Path, key: str) -> Entry | None:
 
 
 def lookup(root: Path, key: str) -> Entry | None:
-    """A reusable build for a cache key: published from a clean tree and still intact (its size and kind are checked; a build
-    that was altered or truncated is not trusted)."""
+    """A reusable build for a cache key: published from a clean tree and still intact (the total size of the files is
+    compared with the one recorded; a truncated or extended build is not trusted, a same-size edit is not detected)."""
     entry = find(root, key)
     if entry is None or not entry.cacheable:
         return None
     try:
-        _, size, kind = _quick_shape(entry.path)
+        _, size, _ = _quick_shape(entry.item)
     except OSError:
         return None
-    if kind != entry.manifest["kind"] or size != entry.manifest["sizeBytes"]:
+    if size != entry.manifest.get("itemSizeBytes", entry.manifest["sizeBytes"]):
         return None
     return entry
 
@@ -158,25 +163,44 @@ def touch(entry: Entry, clock: Callable[[], str] = core.utc_now) -> None:
         pass  # a failed bookkeeping write must not fail the run that uses the build
 
 
-def publish(root: Path, key: str, source: Path, *, project: str, platform: str, sha: str, profile: str, dirty: bool,
+def publish(root: Path, key: str, artifact: Path, *, out: Path, project: str, platform: str, sha: str, profile: str, dirty: bool,
             toolchain: Mapping[str, str], config_hash: str, job_id: str, cacheable: bool) -> Entry:
-    """Move `source` (a file or a folder inside the job's work folder) to `<root>/<key>/artifact/` and write its manifest.
-    Another job may have published the same key meanwhile: the first one stays and is returned, and `source` is left where it is."""
+    """Move the build output that holds `artifact` to `<root>/<key>/artifact/` and write its manifest. `artifact` must lie inside
+    `out`, the job's build output folder: a path outside it (the Editor platform's artifact is the project itself) is never moved.
+    A file artifact takes its whole folder along (a Windows player needs its `_Data` folder beside the exe); a folder artifact
+    (`.app`, `.xcarchive`) moves alone. If another job published the same key meanwhile, that build is returned. When publishing
+    fails the output is put back where it was."""
+    artifact, out = artifact.resolve(), out.resolve()
+    try:
+        artifact.relative_to(out)
+    except ValueError:
+        raise ValueError(f"the artifact {artifact} is not inside the build output {out}, so it is not moved") from None
+    if not artifact.exists():
+        raise ValueError(f"the artifact {artifact} does not exist")
+    item = artifact.parent if artifact.is_file() else artifact
+    entry_path = artifact.relative_to(item).as_posix() if artifact != item else ""
     root.mkdir(parents=True, exist_ok=True)
     final = root / key
-    existing = _read_entry(final)
-    if existing is not None and cacheable:
-        return existing
+    if final.exists():
+        existing = _read_entry(final)
+        if existing is not None and cacheable:
+            return existing
+        shutil.rmtree(final, ignore_errors=True)  # a broken or a one-off entry in the way (publishing is an atomic rename)
     incoming = Path(tempfile.mkdtemp(prefix=_INCOMING, dir=root))
+    moved = incoming / ARTIFACT_FOLDER / item.name
+    original = item
+    done = False
     try:
         (incoming / ARTIFACT_FOLDER).mkdir()
-        digest, size, kind = tree_digest(source)
-        shutil.move(str(source), str(incoming / ARTIFACT_FOLDER / source.name))
+        digest, size, kind = tree_digest(artifact)
+        _, item_size, _ = _quick_shape(item)
+        shutil.move(str(item), str(moved))
         stamp = core.utc_now()
         core.atomic_write_json(incoming / MANIFEST, {
-            "schema": SCHEMA, "key": key, "name": source.name, "kind": kind, "sha256": digest, "sizeBytes": size, "project": project,
-            "platform": platform, "sha": sha, "profile": profile, "dirty": dirty, "cacheable": cacheable,
-            "toolchain": dict(toolchain), "configHash": config_hash, "builtByJob": job_id, "publishedUtc": stamp, "lastUsedUtc": stamp})
+            "schema": SCHEMA, "key": key, "name": item.name, "entry": entry_path, "kind": kind, "sha256": digest, "sizeBytes": size,
+            "itemSizeBytes": item_size, "project": project, "platform": platform, "sha": sha, "profile": profile, "dirty": dirty,
+            "cacheable": cacheable, "toolchain": dict(toolchain), "configHash": config_hash, "builtByJob": job_id, "publishedUtc": stamp,
+            "lastUsedUtc": stamp})
         try:
             os.rename(incoming, final)
         except OSError:
@@ -184,10 +208,17 @@ def publish(root: Path, key: str, source: Path, *, project: str, platform: str, 
             if raced is None:
                 raise
             shutil.rmtree(incoming, ignore_errors=True)
+            done = True
             return raced
-    except BaseException:
-        shutil.rmtree(incoming, ignore_errors=True)
-        raise
+        done = True
+    finally:
+        if not done:
+            if moved.exists() and not original.exists():
+                try:
+                    shutil.move(str(moved), str(original))  # give the build output back to the job
+                except OSError:
+                    pass
+            shutil.rmtree(incoming, ignore_errors=True)
     published = _read_entry(final)
     if published is None:
         raise OSError(f"the published build {final} cannot be read back")

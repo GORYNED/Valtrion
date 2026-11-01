@@ -617,6 +617,7 @@ def execute(pipeline: Mapping[str, Any], pipeline_path: Path | None, ctx: JobCon
     artifact: Path | None = None
     build_outcome: StepOutcome | None = None
     build_info: dict[str, Any] | None = None  # the published build (or the reused one), recorded in every result of the job
+    used_entry: buildcache.Entry | None = None  # touched again before the install, so a long wait for the device does not let gc take it
     extra_layers: dict[str, str] = {}
     stage_results: list[dict] = []
     series_plans: dict[str, dict] = {}  # runId of a run stage's result -> the plan document it ran
@@ -713,6 +714,7 @@ def execute(pipeline: Mapping[str, Any], pipeline_path: Path | None, ctx: JobCon
         ctx.set_phase("waiting-device")
         reason = ctx.acquire({"resource": f"device:{device.id}"})
         if reason:
+            ctx.set_phase(None)
             events.emit("step.finished", reason, step=name, status=constants.BLOCKED)
             stage_results.append(early(constants.BLOCKED, reason))
             return fail(constants.BLOCKED, reason)
@@ -756,11 +758,15 @@ def execute(pipeline: Mapping[str, Any], pipeline_path: Path | None, ctx: JobCon
                     return blocked
             if project_dir is None:
                 return fail(constants.BLOCKED, "a build stage needs --project-dir")
+            if device is None and adapter.signs_for_device and (pipeline["device"].get("id") or pipeline["device"].get("class")):
+                blocked = select(name)  # a build-only pipeline that names the device it is signed for (nothing is leased)
+                if blocked is not None:
+                    return blocked
             profile = pipeline["candidate"]["profile"]
             cached, cache_key, toolchain = reuse_or_none(stage.get("args", {}))
             if cached is not None:
                 buildcache.touch(cached)
-                artifact, build_outcome = cached.path, StepOutcome(constants.PASS)
+                artifact, used_entry, build_outcome = cached.path, cached, StepOutcome(constants.PASS)
                 build_info = {**cached.describe(), "reused": True, "builtByJob": cached.manifest.get("builtByJob", "unknown")}
                 head_note.append(f"the build was reused from the cache (key {cached.key}, built by job {build_info['builtByJob']}); "
                                  "no build ran for this job")
@@ -822,14 +828,14 @@ def execute(pipeline: Mapping[str, Any], pipeline_path: Path | None, ctx: JobCon
             if artifact is not None and cache_key is not None:
                 try:
                     published = buildcache.publish(
-                        buildcache.builds_root(ctx.home), cache_key, artifact, project=pipeline["candidate"]["repo"], platform=platform,
+                        buildcache.builds_root(ctx.home), cache_key, artifact, out=out, project=pipeline["candidate"]["repo"], platform=platform,
                         sha=candidate_sha, profile=profile, dirty=dirty, toolchain=toolchain, job_id=ctx.job_id,
                         cacheable=not cache_key.startswith("dirty-"),
                         config_hash=buildcache.profile_config_hash(project_dir, profile))
                 except (OSError, ValueError) as error:
                     head_note.append(f"the build artifact could not be published outside the work folder: {error}")
                 else:
-                    artifact = published.path
+                    artifact, used_entry = published.path, published
                     build_info = {**published.describe(), "reused": False, "builtByJob": ctx.job_id}
                     events.emit("progress", f"build published {published.key}", step=name, data={"build": build_info})
                     _collect_build_cache(ctx, published.key)
@@ -848,7 +854,11 @@ def execute(pipeline: Mapping[str, Any], pipeline_path: Path | None, ctx: JobCon
                 if entry is None:
                     events.emit("step.finished", "unknown build", step=name, status=constants.BLOCKED)
                     return fail(constants.BLOCKED, f"install: no published build with key {args['artifactKey']} (see `valtrion builds list`)")
+                if entry.manifest["platform"] != platform:
+                    events.emit("step.finished", "wrong platform", step=name, status=constants.BLOCKED)
+                    return fail(constants.BLOCKED, f"install: the published build {entry.key} is for {entry.manifest['platform']}, not {platform}")
                 buildcache.touch(entry)
+                used_entry = entry
                 chosen = entry.path
                 build_info = {**entry.describe(), "reused": True, "builtByJob": entry.manifest.get("builtByJob", "unknown")}
                 head_note.append(f"installed the published build {entry.key} (candidate {entry.manifest['sha'][:12]}, "
@@ -858,6 +868,8 @@ def execute(pipeline: Mapping[str, Any], pipeline_path: Path | None, ctx: JobCon
             if chosen is None:
                 events.emit("step.finished", "no artifact", step=name, status=constants.BLOCKED)
                 return fail(constants.BLOCKED, "install needs the artifact of a build stage, stage.args.artifactKey or stage.args.artifact")
+            if used_entry is not None:
+                buildcache.touch(used_entry)
             installed = _bounded(lambda: adapter.install(device, chosen), stage, adapter_name="install")
             extra_layers["install"] = installed.status
             events.emit("step.finished", installed.reason, step=name, status=installed.status)

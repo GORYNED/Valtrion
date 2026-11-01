@@ -319,6 +319,8 @@ class _Runner:
         self.phase: str | None = None
         #: The lease each `acquire_one` resource name resolved to (a counted resource becomes one of its slots), for `release_one`.
         self.taken: dict[str, str] = {}
+        #: Resources the job was started with (`spec.leases`): held for the whole job, never released by a stage.
+        self.pinned: set[str] = set()
 
     def set_phase(self, phase: str | None) -> None:
         """What the job is doing now, in job.json (`phase`) and as a `progress` event with `data.phase`. Cleared with None."""
@@ -364,6 +366,7 @@ class _Runner:
             reason = self.acquire_one(item)
             if reason:
                 return f"BLOCKED: {reason}"
+            self.pinned.add(item["resource"])
         return None
 
     def acquire_one(self, item: Mapping[str, Any]) -> str | None:
@@ -401,6 +404,8 @@ class _Runner:
     def release_one(self, item: Mapping[str, Any]) -> bool:
         """Give back one lease taken with `acquire_one` (named as there) before the job ends, so the next job can take it. The
         others stay held. Returns False when this job does not hold it."""
+        if item["resource"] in self.pinned:
+            return False  # requested for the whole job (`--lease`): the stage does not give it back
         actual = self.taken.pop(item["resource"], None)
         if actual is None or self.keeper is None:
             return False

@@ -447,8 +447,7 @@ class LeaseKeeper:
         with self._lock:
             if resource not in self._resources:
                 return None
-            self._resources.remove(resource)
-            self.lost = [r for r in self.lost if r != resource]
+            self._resources.remove(resource)  # `lost` is kept: a lease lost while it was held is still reported at the end
             return self._manager.release(resource, self._session, self._pid)
 
     def replace(self, lost: str, taken: str) -> None:

@@ -177,13 +177,23 @@ class ScopedLeaseTests(unittest.TestCase):
         return [{"stage": "build"}, {"stage": "install"},
                 {"stage": "run", "plan": "open.plan.json", "args": {"app": "com.example.app", "stallSec": 5}, "timeoutSec": 30}]
 
-    def run_job(self, label, document, lease_wait=0.0, project=True):
+    def test_a_lease_requested_for_the_whole_job_is_not_given_back_by_a_stage(self):
+        self.open_gates("A")
+        _, store = self.run_job("A", self.document(), lease_wait=5, leases=({"resource": "device:" + PHONE},))
+        self.assertEqual("PASS", store.read_job()["status"], store.read_job()["reason"])
+        released = [e["message"] for e in self.events_of(store) if e["type"] == "lease.released"]
+        self.assertEqual("device:" + PHONE, released[-1], released)
+        self.assertEqual(1, released.count("device:" + PHONE), released)
+        self.assertEqual({e["seq"] for e in self.events_of(store) if e["type"] == "lease.released" and e["message"] == "device:" + PHONE},
+                         {max(e["seq"] for e in self.events_of(store) if e["type"] == "lease.released")}, "released only at the end of the job")
+
+    def run_job(self, label, document, lease_wait=0.0, project=True, leases=()):
         payload = {"type": "pipeline", "file": "<inline>", "inline": document, "baseDir": str(self.base / "plans"), "devicePollSec": 0.02,
                    **({"projectDir": str(self.project(label))} if project else {})}
         request = jobs.JobRequest(
             kind="pipeline", project="Sample", sha=document["candidate"]["sha"], label=label, payload=payload,
             host={"id": "win", "transport": "local", "selectedBy": "local"}, stall_sec=30, timeout_sec=120, owner="tester",
-            lease_wait_sec=lease_wait, tick_sec=0.1)
+            lease_wait_sec=lease_wait, tick_sec=0.1, leases=leases)
         info = jobs.start_job(request, self.root, self.home, foreground=True)
         return info, jobs.JobStore(Path(info["dir"]))
 
@@ -486,8 +496,54 @@ class BuildCacheTests(unittest.TestCase):
         source = self.base / f"out{self.number}" / "app.apk"
         source.parent.mkdir()
         source.write_bytes(content)
-        return buildcache.publish(self.root, key, source, project="P", platform="android", sha="a" * 40, profile="Prof", dirty=dirty,
-                                  toolchain={"unity": "6"}, config_hash="none", job_id=f"job-{self.number}", cacheable=cacheable)
+        return self.publish_artifact(key, source, source.parent, cacheable, dirty)
+
+    def publish_artifact(self, key, artifact, out, cacheable=True, dirty=False):
+        return buildcache.publish(self.root, key, artifact, out=out, project="P", platform="android", sha="a" * 40, profile="Prof",
+                                  dirty=dirty, toolchain={"unity": "6"}, config_hash="none", job_id=f"job-{self.number}", cacheable=cacheable)
+
+    def test_a_file_artifact_takes_its_sibling_files_along_and_a_folder_artifact_moves_alone(self):
+        out = self.base / "win"
+        (out / "Game_Data").mkdir(parents=True)
+        (out / "Game_Data" / "app.info").write_text("x", encoding="utf-8")
+        (out / "Game.exe").write_bytes(b"exe")
+        entry = self.publish_artifact("win", out / "Game.exe", out)
+        self.assertEqual(b"exe", entry.path.read_bytes())
+        self.assertTrue((entry.path.parent / "Game_Data" / "app.info").is_file(), "the data folder next to the exe is published too")
+        self.assertEqual(3, entry.describe()["sizeBytes"], "the artifact itself is what is hashed and measured")
+        self.assertIsNotNone(buildcache.lookup(self.root, "win"))
+        ios = self.base / "ios"
+        (ios / "Build" / "App.app").mkdir(parents=True)
+        (ios / "Build" / "App.app" / "bin").write_bytes(b"1")
+        (ios / "Export").mkdir()
+        kept = self.publish_artifact("ios", ios / "Build" / "App.app", ios)
+        self.assertEqual("directory", kept.manifest["kind"])
+        self.assertTrue((ios / "Export").exists(), "the rest of the output stays in the work folder")
+
+    def test_an_artifact_outside_the_build_output_is_never_moved(self):
+        project = self.base / "UnityProject"
+        (project / "Assets").mkdir(parents=True)
+        out = self.base / "out"
+        out.mkdir()
+        with self.assertRaises(ValueError):
+            self.publish_artifact("editor", project, out)
+        self.assertTrue((project / "Assets").is_dir(), "the Unity project is untouched")
+        self.assertEqual([], buildcache.entries(self.root))
+
+    def test_a_failed_publish_gives_the_build_output_back(self):
+        source = self.base / "out" / "app.apk"
+        source.parent.mkdir()
+        source.write_bytes(b"apk")
+        with mock.patch.object(buildcache.core, "atomic_write_json", side_effect=OSError("disk full")):
+            with self.assertRaises(OSError):
+                self.publish_artifact("k", source, source.parent)
+        self.assertEqual(b"apk", source.read_bytes())
+        self.assertEqual([], [p for p in self.root.iterdir()])
+
+    def test_a_broken_entry_in_the_way_is_replaced(self):
+        (self.root / "k1").mkdir(parents=True)
+        (self.root / "k1" / buildcache.MANIFEST).write_text("{broken", encoding="utf-8")
+        self.assertEqual(b"apk", self.publish("k1").path.read_bytes())
 
     def test_publish_moves_the_artifact_and_describes_it(self):
         entry = self.publish("k1")
