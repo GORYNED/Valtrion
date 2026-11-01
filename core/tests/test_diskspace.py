@@ -398,6 +398,40 @@ class PipelineDiskTests(unittest.TestCase):
         events = [json.loads(line) for line in store.events.read_text(encoding="utf-8").splitlines()]
         self.assertTrue(any("dead runner" in e.get("message", "") for e in events), "reported in the new job's events")
 
+    def test_a_cancelled_job_of_another_project_tree_is_not_reaped(self):
+        self.settings({"artifactsRoot": str(self.root)})
+        other = self.base / "OtherCheckout"
+        leftover = other / "Builds" / "iOS"
+        leftover.mkdir(parents=True)
+        old = self.root / "Sample" / "abcdef12" / "20261101T000000Z-old-abcdef12"
+        old.mkdir(parents=True)
+        core.atomic_write_json(old / "job.json", {"state": "cancelled"})
+        core.atomic_write_json(old / "spec.json", {
+            "jobId": old.name, "project": "Sample", "sha8": "abcdef12", "artifactsRoot": str(self.root), "cleanup": True,
+            "payload": {"type": "pipeline", "projectDir": str(other)}})
+        core.atomic_write_json(old / "temp-paths.json", [str(leftover)])
+        store = self.run_job()
+        self.assertEqual("PASS", store.read_job()["status"], store.read_job()["reason"])
+        self.assertTrue(leftover.exists(), "another checkout of the same project may be in use under its own lease")
+
+    def test_a_spec_that_does_not_describe_its_own_folder_removes_nothing(self):
+        leftover = self.base / "A" / "Builds" / "iOS"
+        leftover.mkdir(parents=True)
+        folder = self.root / "Sample" / "abcdef12" / "copied"
+        folder.mkdir(parents=True)
+        core.atomic_write_json(folder / "temp-paths.json", [str(leftover)])
+        spec = {"jobId": "copied", "project": "Sample", "sha8": "abcdef12", "artifactsRoot": str(self.root), "cleanup": True,
+                "payload": {"type": "pipeline", "projectDir": str(self.base / "A")}}
+        notes = []
+
+        class Events:
+            def emit(self, kind, message=None, **kwargs):
+                notes.append(message)
+
+        jobs._remove_orphaned_temporaries(spec, "copied", Events(), self.root / "Sample" / "abcdef12" / "somewhere-else")
+        self.assertTrue(leftover.exists())
+        self.assertTrue(any("does not describe the folder" in (note or "") for note in notes))
+
     def test_a_retained_or_no_cleanup_job_keeps_its_work_folder(self):
         original = adapter_class(self.world)
 

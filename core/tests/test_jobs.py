@@ -236,6 +236,23 @@ class DetachedTests(JobTestCase):
         events = [json.loads(line) for line in (layout.directory / "events.jsonl").read_text(encoding="utf-8").splitlines()]
         self.assertTrue(any("dead runner" in e.get("message", "") for e in events))
 
+    def test_cancel_leaves_the_temporary_paths_while_a_live_process_may_still_be_the_runner(self):
+        bystander = __import__("subprocess").Popen(HANG)
+        self.addCleanup(bystander.wait)
+        self.addCleanup(bystander.kill)
+        project = Path(self._folder.name) / "project"
+        export = project / "Builds" / "iOS"
+        export.mkdir(parents=True)
+        layout, _ = jobs.create_job(self.request(HANG, payload={"type": "command", "argv": HANG, "cwd": None, "projectDir": str(project)}),
+                                    self.root, self.home)
+        core.atomic_write_json(layout.directory / "temp-paths.json", [str(export)])
+        job = jobs.JobStore(layout.directory).read_job()
+        job.update({"state": "running", "pid": bystander.pid})  # alive, and no runner record proves it is not the runner
+        core.atomic_write_json(layout.job_json, job)
+        jobs.cancel_job(layout.directory, grace_sec=0.3)
+        self.assertIsNone(bystander.poll())
+        self.assertTrue(export.exists(), "nothing is removed under a process that may be working there")
+
     def test_a_job_without_a_runner_record_is_never_killed_by_pid(self):
         bystander = __import__("subprocess").Popen(HANG)
         self.addCleanup(bystander.wait)

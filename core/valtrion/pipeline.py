@@ -852,10 +852,11 @@ def execute(pipeline: Mapping[str, Any], pipeline_path: Path | None, ctx: JobCon
                 if reason:
                     events.emit("step.finished", reason, step=name, status=constants.BLOCKED)
                     return fail(constants.BLOCKED, reason)
-                try:  # the project lease is held: nobody else builds in this tree, so a cancelled job's leftovers are safe to remove
-                    jobs_reap(Path(ctx.spec["artifactsRoot"]), ctx.spec["project"], events, ctx.job_id)
-                except (KeyError, OSError):
-                    pass
+                if adapter.build_uses_editor:  # only then the project lease is held: nobody else builds in this tree
+                    try:
+                        jobs_reap(Path(ctx.spec["artifactsRoot"]), ctx.spec["project"], project_dir, events, ctx.job_id)
+                    except (KeyError, OSError):
+                        pass
                 low = check_disk(name)
                 if low is not None:
                     return low
