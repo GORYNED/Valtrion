@@ -1,0 +1,7 @@
+{
+  "schema": "gdv.hosts/1",
+  "hosts": [
+    { "id": "box", "transport": { "kind": "local" }, "os": "windows", "artifactsRoot": "D:/gdv-artifacts" },
+    { "id": "box", "transport": { "kind": "ssh", "sshTarget": "other.example" }, "os": "macos", "artifactsRoot": "~/gdv-artifacts" }
+  ]
+}

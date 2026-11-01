@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "gdv.plan/1",
+  "title": "Validation plan",
+  "type": "object",
+  "required": ["schema", "id", "kind", "dataPolicy", "budgetSeconds", "steps"],
+  "additionalProperties": false,
+  "properties": {
+    "schema": { "const": "gdv.plan/1" },
+    "id": { "$ref": "common.schema.json#/$defs/identifier" },
+    "kind": { "$ref": "common.schema.json#/$defs/planKind" },
+    "requires": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "platforms": { "type": "array", "items": { "$ref": "common.schema.json#/$defs/platform" }, "minItems": 1 },
+        "capabilities": { "$ref": "common.schema.json#/$defs/stringList" },
+        "profile": { "$ref": "common.schema.json#/$defs/identifier" },
+        "evidence": { "type": "array", "items": { "$ref": "common.schema.json#/$defs/evidence" }, "minItems": 1 }
+      }
+    },
+    "dataPolicy": { "$ref": "common.schema.json#/$defs/dataPolicy" },
+    "budgetSeconds": { "$ref": "common.schema.json#/$defs/int32", "minimum": 1 },
+    "repeat": { "$ref": "common.schema.json#/$defs/int32", "minimum": 1 },
+    "warmup": { "$ref": "common.schema.json#/$defs/int32", "minimum": 0 },
+    "continueOnFail": { "type": "boolean" },
+    "setup": { "type": "array", "items": { "$ref": "#/$defs/step" } },
+    "steps": { "type": "array", "items": { "$ref": "#/$defs/step" }, "minItems": 1 },
+    "metrics": { "type": "object", "additionalProperties": { "$ref": "#/$defs/metricSpec" } },
+    "cleanup": { "enum": ["ledger", "none"] }
+  },
+  "$defs": {
+    "step": {
+      "type": "object",
+      "required": ["type", "timeoutSec"],
+      "properties": {
+        "type": { "$ref": "common.schema.json#/$defs/identifier" },
+        "timeoutSec": { "$ref": "common.schema.json#/$defs/int32", "minimum": 1 }
+      }
+    },
+    "metricSpec": {
+      "type": "object",
+      "required": ["unit", "direction"],
+      "additionalProperties": false,
+      "properties": {
+        "unit": { "type": "string", "minLength": 1 },
+        "direction": { "$ref": "common.schema.json#/$defs/direction" },
+        "budget": { "type": "number" },
+        "regressionPct": { "type": "number", "minimum": 0 },
+        "minSamples": { "$ref": "common.schema.json#/$defs/int32", "minimum": 1 }
+      }
+    }
+  }
+}

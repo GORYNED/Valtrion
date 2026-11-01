@@ -1,0 +1,12 @@
+{
+  "schema": "gdv.lease/1",
+  "resource": "device:ios:1",
+  "owner": "agent-a",
+  "session": "session-1",
+  "pid": 4242,
+  "host": "mac-build",
+  "acquiredUtc": "2026-10-29T15:30:01Z",
+  "renewedUtc": "2026-10-29T15:31:01Z",
+  "ttlSec": 0,
+  "purpose": "perf series"
+}

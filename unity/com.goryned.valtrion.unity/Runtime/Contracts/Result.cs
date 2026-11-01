@@ -1,0 +1,404 @@
+using System.Collections.Generic;
+using Valtrion.Unity.Json;
+
+namespace Valtrion.Unity.Contracts
+{
+    public sealed class MetricStats
+    {
+        public long N { get; set; }
+
+        public double Median { get; set; }
+
+        public double P90 { get; set; }
+
+        public double Max { get; set; }
+
+        public double? Stdev { get; set; }
+
+        internal static MetricStats Read(ContractReader reader)
+        {
+            var stats = new MetricStats
+            {
+                N = reader.Int("n", 0),
+                Median = reader.Num("median"),
+                P90 = reader.Num("p90"),
+                Max = reader.Num("max"),
+                Stdev = reader.OptNum("stdev", 0),
+            };
+            reader.Done();
+            return stats;
+        }
+
+        internal JsonValue Write() => JsonValue.NewObject()
+            .Set("n", JsonValue.From(N)).Set("median", JsonValue.From(Median)).Set("p90", JsonValue.From(P90)).Set("max", JsonValue.From(Max))
+            .SetIf("stdev", Stdev);
+    }
+
+    public sealed class ResultCandidate
+    {
+        public string Repo { get; set; }
+
+        public string Sha { get; set; }
+
+        public string Profile { get; set; }
+
+        public string Unity { get; set; }
+
+        public bool Dirty { get; set; }
+
+        internal static ResultCandidate Read(ContractReader reader)
+        {
+            var candidate = new ResultCandidate
+            {
+                Repo = reader.Str("repo"),
+                Sha = reader.Hex("sha", 40),
+                Profile = reader.Identifier("profile"),
+                Unity = reader.Str("unity"),
+                Dirty = reader.Bool("dirty"),
+            };
+            reader.Done();
+            return candidate;
+        }
+
+        internal JsonValue Write() => JsonValue.NewObject()
+            .Set("repo", JsonValue.From(Repo)).Set("sha", JsonValue.From(Sha)).Set("profile", JsonValue.From(Profile))
+            .Set("unity", JsonValue.From(Unity)).Set("dirty", JsonValue.From(Dirty));
+    }
+
+    public sealed class ResultTarget
+    {
+        public string Platform { get; set; }
+
+        public string DeviceId { get; set; }
+
+        public string DeviceClass { get; set; }
+
+        public string Model { get; set; }
+
+        public string Os { get; set; }
+
+        public int OsMajor { get; set; }
+
+        public string Evidence { get; set; }
+
+        internal static ResultTarget Read(ContractReader reader)
+        {
+            var target = new ResultTarget
+            {
+                Platform = reader.Choice("platform", Enums.Platforms),
+                DeviceId = reader.OptIdentifier("deviceId"),
+                DeviceClass = reader.Identifier("deviceClass"),
+                Model = reader.OptStr("model"),
+                Os = reader.OptStr("os"),
+                OsMajor = reader.Int32("osMajor", 0),
+                Evidence = reader.Choice("evidence", EvidenceKind.All),
+            };
+            reader.Done();
+            return target;
+        }
+
+        internal JsonValue Write() => JsonValue.NewObject()
+            .Set("platform", JsonValue.From(Platform)).SetIf("deviceId", DeviceId).Set("deviceClass", JsonValue.From(DeviceClass))
+            .SetIf("model", Model).SetIf("os", Os).Set("osMajor", JsonValue.From(OsMajor)).Set("evidence", JsonValue.From(Evidence));
+    }
+
+    /// <summary>The host that executed the run. The choice is deterministic and recorded: <see cref="Transport"/> is local or ssh,
+    /// <see cref="SelectedBy"/> is local (the caller's machine satisfied the request), capability (a remote host did) or pinned.</summary>
+    public sealed class ResultHost
+    {
+        public string Id { get; set; }
+
+        public string Transport { get; set; }
+
+        public string SelectedBy { get; set; }
+
+        public Dictionary<string, string> Tools { get; set; }
+
+        internal static ResultHost Read(ContractReader reader)
+        {
+            var host = new ResultHost
+            {
+                Id = reader.Identifier("id"),
+                Transport = reader.Choice("transport", Enums.TransportKinds),
+                SelectedBy = reader.Choice("selectedBy", Enums.HostSelections),
+                Tools = reader.StringMap("tools"),
+            };
+            reader.Done();
+            return host;
+        }
+
+        internal JsonValue Write()
+        {
+            var node = JsonValue.NewObject().Set("id", JsonValue.From(Id)).Set("transport", JsonValue.From(Transport))
+                .Set("selectedBy", JsonValue.From(SelectedBy));
+            if (Tools != null) node.Set("tools", JsonBuild.StringMap(Tools));
+            return node;
+        }
+    }
+
+    public sealed class ResultPlan
+    {
+        public string Id { get; set; }
+
+        public string Sha256 { get; set; }
+
+        internal static ResultPlan Read(ContractReader reader)
+        {
+            var plan = new ResultPlan { Id = reader.Identifier("id"), Sha256 = reader.Hex("sha256", 64) };
+            reader.Done();
+            return plan;
+        }
+
+        internal JsonValue Write() => JsonValue.NewObject().Set("id", JsonValue.From(Id)).Set("sha256", JsonValue.From(Sha256));
+    }
+
+    /// <summary>Per-layer outcome; null means the layer did not run. A layer is never inferred from its neighbour: compile, export, native build, sign, install, launch and scenario are reported separately.</summary>
+    public sealed class ResultLayers
+    {
+        public string Compile { get; set; }
+
+        public string Export { get; set; }
+
+        public string NativeBuild { get; set; }
+
+        public string Sign { get; set; }
+
+        public string Install { get; set; }
+
+        public string Launch { get; set; }
+
+        public string Scenario { get; set; }
+
+        internal static ResultLayers Read(ContractReader reader)
+        {
+            var layers = new ResultLayers
+            {
+                Compile = reader.OptChoice("compile", ValidationStatus.All),
+                Export = reader.OptChoice("export", ValidationStatus.All),
+                NativeBuild = reader.OptChoice("nativeBuild", ValidationStatus.All),
+                Sign = reader.OptChoice("sign", ValidationStatus.All),
+                Install = reader.OptChoice("install", ValidationStatus.All),
+                Launch = reader.OptChoice("launch", ValidationStatus.All),
+                Scenario = reader.OptChoice("scenario", ValidationStatus.All),
+            };
+            reader.Done();
+            return layers;
+        }
+
+        internal JsonValue Write() => JsonValue.NewObject()
+            .SetIf("compile", Compile).SetIf("export", Export).SetIf("nativeBuild", NativeBuild)
+            .SetIf("sign", Sign).SetIf("install", Install).SetIf("launch", Launch).SetIf("scenario", Scenario);
+    }
+
+    public sealed class ResultStep
+    {
+        public string Type { get; set; }
+
+        public string Status { get; set; }
+
+        public long StartMs { get; set; }
+
+        public long DurationMs { get; set; }
+
+        public Dictionary<string, double> Marks { get; set; }
+
+        public string Message { get; set; }
+
+        internal static ResultStep Read(ContractReader reader)
+        {
+            var step = new ResultStep
+            {
+                Type = reader.Identifier("type"),
+                Status = reader.Choice("status", ValidationStatus.All),
+                StartMs = reader.Int("startMs", 0),
+                DurationMs = reader.Int("durationMs", 0),
+                Marks = reader.NumberMap("marks"),
+                Message = reader.OptStr("message"),
+            };
+            reader.Done();
+            return step;
+        }
+
+        internal JsonValue Write()
+        {
+            var node = JsonValue.NewObject().Set("type", JsonValue.From(Type)).Set("status", JsonValue.From(Status))
+                .Set("startMs", JsonValue.From(StartMs)).Set("durationMs", JsonValue.From(DurationMs));
+            if (Marks != null) node.Set("marks", JsonBuild.NumberMap(Marks));
+            return node.SetIf("message", Message);
+        }
+    }
+
+    public sealed class ResultMetric
+    {
+        public string Name { get; set; }
+
+        public string Unit { get; set; }
+
+        public List<double> Samples { get; set; } = new List<double>();
+
+        public MetricStats Stats { get; set; }
+
+        internal static ResultMetric Read(ContractReader reader)
+        {
+            var metric = new ResultMetric
+            {
+                Name = reader.Identifier("name"),
+                Unit = reader.Str("unit"),
+                Samples = reader.Numbers("samples"),
+                Stats = MetricStats.Read(reader.Object("stats")),
+            };
+            reader.Done();
+            return metric;
+        }
+
+        internal JsonValue Write() => JsonValue.NewObject()
+            .Set("name", JsonValue.From(Name)).Set("unit", JsonValue.From(Unit))
+            .Set("samples", JsonBuild.Numbers(Samples)).Set("stats", Stats.Write());
+    }
+
+    public sealed class ResultComparison
+    {
+        public string Baseline { get; set; }
+
+        public string Verdict { get; set; }
+
+        public List<string> Details { get; set; } = new List<string>();
+
+        internal static ResultComparison Read(ContractReader reader)
+        {
+            var comparison = new ResultComparison
+            {
+                Baseline = reader.Str("baseline"),
+                Verdict = reader.Choice("verdict", ComparisonVerdict.All),
+                Details = reader.Strings("details"),
+            };
+            reader.Done();
+            return comparison;
+        }
+
+        internal JsonValue Write() => JsonValue.NewObject()
+            .Set("baseline", JsonValue.From(Baseline)).Set("verdict", JsonValue.From(Verdict)).Set("details", JsonBuild.Strings(Details));
+    }
+
+    public sealed class ResultArtifact
+    {
+        public string Kind { get; set; }
+
+        public string Path { get; set; }
+
+        public string Sha256 { get; set; }
+
+        internal static ResultArtifact Read(ContractReader reader)
+        {
+            var artifact = new ResultArtifact { Kind = reader.Str("kind"), Path = reader.Str("path"), Sha256 = reader.Hex("sha256", 64) };
+            reader.Done();
+            return artifact;
+        }
+
+        internal JsonValue Write() => JsonValue.NewObject()
+            .Set("kind", JsonValue.From(Kind)).Set("path", JsonValue.From(Path)).Set("sha256", JsonValue.From(Sha256));
+    }
+
+    /// <summary>The result of one run (<c>gdv.result/1</c>), written by the Runtime or the host; the same envelope for every platform.</summary>
+    public sealed class ResultDocument : IGdvDocument
+    {
+        public string Schema => SchemaIds.Result;
+
+        public string RunId { get; set; }
+
+        public string Status { get; set; }
+
+        /// <summary>Why the status is not PASS; null for PASS.</summary>
+        public string Reason { get; set; }
+
+        public ResultCandidate Candidate { get; set; }
+
+        public ResultTarget Target { get; set; }
+
+        public ResultHost Host { get; set; }
+
+        public ResultPlan Plan { get; set; }
+
+        public string StartedUtc { get; set; }
+
+        public string FinishedUtc { get; set; }
+
+        public ResultLayers Layers { get; set; }
+
+        public List<ResultStep> Steps { get; set; } = new List<ResultStep>();
+
+        public List<ResultMetric> Metrics { get; set; } = new List<ResultMetric>();
+
+        public ResultComparison Comparison { get; set; }
+
+        public List<ResultArtifact> Artifacts { get; set; } = new List<ResultArtifact>();
+
+        /// <summary>What remains unverified; required, and an empty list claims that nothing does.</summary>
+        public List<string> Unverified { get; set; } = new List<string>();
+
+        public int ExitCode => ValidationStatus.ExitCode(Status);
+
+        public static ResultDocument Parse(string json) => FromJson(JsonValue.Parse(json));
+
+        public static ResultDocument FromJson(JsonValue value)
+        {
+            var reader = new ContractReader(value, "$");
+            reader.Const("schema", SchemaIds.Result);
+            var result = new ResultDocument
+            {
+                RunId = reader.Identifier("runId"),
+                Status = reader.Choice("status", ValidationStatus.All),
+                Reason = reader.NullableStr("reason"),
+                Candidate = ResultCandidate.Read(reader.Object("candidate")),
+                Target = ResultTarget.Read(reader.Object("target")),
+                Host = ResultHost.Read(reader.Object("host")),
+                Plan = ResultPlan.Read(reader.Object("plan")),
+                StartedUtc = reader.Utc("startedUtc"),
+                FinishedUtc = reader.Utc("finishedUtc"),
+                Layers = ResultLayers.Read(reader.Object("layers")),
+                Steps = reader.Items("steps", ResultStep.Read),
+                Metrics = reader.Items("metrics", ResultMetric.Read),
+                Comparison = reader.OptObject("comparison") is ContractReader comparison ? ResultComparison.Read(comparison) : null,
+                Artifacts = reader.Items("artifacts", ResultArtifact.Read),
+                Unverified = reader.Strings("unverified"),
+            };
+            reader.Done();
+            CheckConsistency(result);
+            return result;
+        }
+
+        /// <summary>A PASS result has no reason and no layer that is not PASS; any other status says why.</summary>
+        static void CheckConsistency(ResultDocument result)
+        {
+            if (result.Status == ValidationStatus.Pass && result.Reason != null)
+                throw new ContractException("$.reason: a PASS result has no reason");
+            if (result.Status != ValidationStatus.Pass && string.IsNullOrEmpty(result.Reason))
+                throw new ContractException($"$.reason: a {result.Status} result needs a reason");
+            if (result.Status != ValidationStatus.Pass)
+                return;
+            var layers = result.Layers;
+            foreach (var layer in new[] { layers.Compile, layers.Export, layers.NativeBuild, layers.Sign, layers.Install, layers.Launch, layers.Scenario })
+            {
+                if (layer != null && layer != ValidationStatus.Pass)
+                    throw new ContractException($"$.layers: a PASS result cannot have a {layer} layer");
+            }
+        }
+
+        public JsonValue ToJson()
+        {
+            var node = JsonValue.NewObject().Set("schema", JsonValue.From(Schema)).Set("runId", JsonValue.From(RunId))
+                .Set("status", JsonValue.From(Status)).Set("reason", JsonValue.From(Reason))
+                .Set("candidate", Candidate.Write()).Set("target", Target.Write());
+            node.Set("host", Host.Write()).Set("plan", Plan.Write()).Set("startedUtc", JsonValue.From(StartedUtc)).Set("finishedUtc", JsonValue.From(FinishedUtc))
+                .Set("layers", Layers.Write()).Set("steps", JsonBuild.Array(Steps, step => step.Write()))
+                .Set("metrics", JsonBuild.Array(Metrics, metric => metric.Write()));
+            if (Comparison != null) node.Set("comparison", Comparison.Write());
+            // Both lists are always written: an empty list is a claim ("nothing was left unverified"), omission is not.
+            node.Set("artifacts", JsonBuild.Array(Artifacts, artifact => artifact.Write()));
+            node.Set("unverified", JsonBuild.Strings(Unverified));
+            return node;
+        }
+
+        public string ToJsonString() => ToJson().Write(true);
+    }
+}

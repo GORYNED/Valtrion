@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "gdv.heartbeat/1",
+  "title": "Heartbeat written by the Runtime every few seconds",
+  "type": "object",
+  "required": ["schema", "runId", "seq", "utc", "state", "stepIndex", "stepType", "elapsedMs"],
+  "additionalProperties": false,
+  "properties": {
+    "schema": { "const": "gdv.heartbeat/1" },
+    "runId": { "$ref": "common.schema.json#/$defs/identifier" },
+    "seq": { "type": "integer", "minimum": 0 },
+    "utc": { "$ref": "common.schema.json#/$defs/utc" },
+    "state": { "enum": ["starting", "running", "waiting-host", "finishing", "done"] },
+    "stepIndex": { "$ref": "common.schema.json#/$defs/int32", "minimum": -1 },
+    "stepType": { "type": "string" },
+    "elapsedMs": { "type": "integer", "minimum": 0 },
+    "message": { "type": "string" },
+    "request": {
+      "type": "object",
+      "required": ["id", "action"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "$ref": "common.schema.json#/$defs/identifier" },
+        "action": { "type": "string", "minLength": 1 },
+        "args": { "type": "object" }
+      }
+    }
+  }
+}

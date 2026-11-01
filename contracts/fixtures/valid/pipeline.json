@@ -1,0 +1,13 @@
+{
+  "schema": "gdv.pipeline/1",
+  "id": "example.series-1",
+  "candidate": { "repo": "ExampleApp", "sha": "0123456789abcdef0123456789abcdef01234567", "profile": "Internal" },
+  "device": { "class": "ipad-a14", "platform": "ios" },
+  "stages": [
+    { "stage": "build", "timeoutSec": 1800 },
+    { "stage": "install" },
+    { "stage": "run", "plan": "plans/perf.open-playback.plan.json", "variant": "E1", "repeat": 3, "coldLaunch": true, "args": { "camera": "cameras120.json" } },
+    { "stage": "collect" }
+  ],
+  "compare": "baselines"
+}

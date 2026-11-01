@@ -1,0 +1,7 @@
+{
+  "schema": "gdv.registry/1",
+  "host": { "id": "mac-build", "os": "macos", "roles": [] },
+  "devices": [
+    { "id": "ios:1", "hostId": "mac-build", "platform": "ios", "class": "ipad-a14", "capabilities": [], "exclusive": true, "udid": "hardcoded" }
+  ]
+}

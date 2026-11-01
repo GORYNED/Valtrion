@@ -1,0 +1,9 @@
+{
+  "dependencies": {
+    "com.goryned.valtrion.unity": "file:../../com.goryned.valtrion.unity",
+    "com.unity.test-framework": "1.8.0"
+  },
+  "testables": [
+    "com.goryned.valtrion.unity"
+  ]
+}

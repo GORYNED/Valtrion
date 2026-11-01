@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "gdv.pipeline/1",
+  "title": "Validation pipeline: build, install, run series, collect, compare",
+  "type": "object",
+  "required": ["schema", "id", "candidate", "device", "stages"],
+  "additionalProperties": false,
+  "properties": {
+    "schema": { "const": "gdv.pipeline/1" },
+    "id": { "$ref": "common.schema.json#/$defs/identifier" },
+    "candidate": {
+      "type": "object",
+      "required": ["repo", "profile"],
+      "additionalProperties": false,
+      "properties": {
+        "repo": { "type": "string", "minLength": 1 },
+        "sha": { "$ref": "common.schema.json#/$defs/gitSha", "description": "Optional, or all zeros: the commit of the checkout is used and recorded." },
+        "profile": { "$ref": "common.schema.json#/$defs/identifier" }
+      }
+    },
+    "device": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "class": { "$ref": "common.schema.json#/$defs/identifier" },
+        "id": { "$ref": "common.schema.json#/$defs/identifier" },
+        "platform": { "$ref": "common.schema.json#/$defs/platform" }
+      }
+    },
+    "stages": { "type": "array", "items": { "$ref": "#/$defs/stage" }, "minItems": 1 },
+    "compare": { "type": "string", "minLength": 1 }
+  },
+  "$defs": {
+    "stage": {
+      "type": "object",
+      "required": ["stage"],
+      "additionalProperties": false,
+      "properties": {
+        "stage": { "enum": ["build", "install", "run", "collect"] },
+        "plan": { "type": "string", "minLength": 1 },
+        "variant": { "type": "string", "minLength": 1 },
+        "repeat": { "$ref": "common.schema.json#/$defs/int32", "minimum": 1 },
+        "coldLaunch": { "type": "boolean" },
+        "timeoutSec": { "$ref": "common.schema.json#/$defs/int32", "minimum": 1 },
+        "args": { "type": "object" },
+        "prelaunchFiles": {
+          "type": "array",
+          "description": "Files pushed into the application's data root before it starts (read before the first scene): local is absolute or relative to the pipeline file, remote is relative to the data root.",
+          "items": {
+            "type": "object",
+            "required": ["local", "remote"],
+            "additionalProperties": false,
+            "properties": {
+              "local": { "type": "string", "minLength": 1 },
+              "remote": { "type": "string", "minLength": 1 }
+            }
+          }
+        }
+      }
+    }
+  }
+}

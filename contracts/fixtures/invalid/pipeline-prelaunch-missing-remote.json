@@ -1,0 +1,7 @@
+{
+  "schema": "gdv.pipeline/1",
+  "id": "example.prelaunch-missing-remote",
+  "candidate": { "repo": "ExampleApp", "profile": "Validation" },
+  "device": { "platform": "android" },
+  "stages": [ { "stage": "run", "plan": "plans/smoke.plan.json", "prelaunchFiles": [ { "local": "settings/camera.json" } ] } ]
+}

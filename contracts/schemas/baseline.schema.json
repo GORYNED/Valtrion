@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "gdv.baseline/1",
+  "title": "Baseline summary of one plan on one comparability key",
+  "type": "object",
+  "required": ["schema", "planId", "key", "createdUtc", "source", "metrics"],
+  "additionalProperties": false,
+  "properties": {
+    "schema": { "const": "gdv.baseline/1" },
+    "planId": { "$ref": "common.schema.json#/$defs/identifier" },
+    "key": { "$ref": "common.schema.json#/$defs/comparabilityKey" },
+    "createdUtc": { "$ref": "common.schema.json#/$defs/utc" },
+    "source": {
+      "type": "object",
+      "required": ["runId", "repo", "sha", "evidence"],
+      "additionalProperties": false,
+      "properties": {
+        "runId": { "$ref": "common.schema.json#/$defs/identifier" },
+        "repo": { "type": "string", "minLength": 1 },
+        "sha": { "$ref": "common.schema.json#/$defs/gitSha" },
+        "evidence": { "enum": ["physical", "emulator", "host"] }
+      }
+    },
+    "metrics": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "required": ["unit", "direction", "stats"],
+        "additionalProperties": false,
+        "properties": {
+          "unit": { "type": "string", "minLength": 1 },
+          "direction": { "$ref": "common.schema.json#/$defs/direction" },
+          "stats": { "$ref": "common.schema.json#/$defs/stats" }
+        }
+      }
+    }
+  }
+}

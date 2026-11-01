@@ -1,0 +1,29 @@
+name: Bug report
+description: Report a reproducible problem with Valtrion.
+body:
+  - type: markdown
+    attributes:
+      value: |
+        For vulnerabilities, follow SECURITY.md instead of posting details here.
+        Remove credentials, user names, private paths and real device identifiers from examples and logs.
+  - type: textarea
+    id: environment
+    attributes:
+      label: Versions and environment
+      description: Include the Valtrion commit, Core/Unity package versions, operating system, Editor version and target platform. Use synthetic device identifiers.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to reproduce
+      description: Provide the smallest synthetic plan or configuration and the exact command. Avoid attaching a private project.
+    validations:
+      required: true
+  - type: textarea
+    id: behavior
+    attributes:
+      label: Expected and observed behavior
+      description: Include exit code, test counts, result status and redacted relevant logs.
+    validations:
+      required: true

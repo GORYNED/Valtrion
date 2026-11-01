@@ -1,0 +1,10 @@
+{
+  "schema": "gdv.checks/1",
+  "platforms": { "required": ["editor"] },
+  "unityEditorSlots": 1,
+  "areas": [ { "glob": "**", "kind": "project" } ],
+  "kinds": {
+    "project": { "L2": ["playmode:Valtrion.SmokeTests"] }
+  },
+  "unclassified": "fail"
+}

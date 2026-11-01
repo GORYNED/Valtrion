@@ -1,0 +1,7 @@
+{
+  "schema": "gdv.event/1",
+  "seq": 1,
+  "utc": "2026-10-29T15:31:24Z",
+  "jobId": "job-1",
+  "type": "job.exploded"
+}

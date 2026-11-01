@@ -1,0 +1,90 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  source-install:
+    name: public source checks and clean offline install
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12"
+      - name: Check source metadata, licenses and examples
+        run: python tools/check_release.py
+      - name: Build a source distribution and rebuild its wheel
+        run: |
+          python -m pip install build
+          python -m build core --outdir dist
+          python -m venv .venv/distribution
+          .venv/distribution/bin/python -m pip install --no-index --no-deps dist/*.whl
+          .venv/distribution/bin/python -m valtrion --version
+          .venv/distribution/bin/python -m valtrion validate examples/smoke.plan.json
+          .venv/distribution/bin/python -m pip check
+      - name: Install into an empty environment without a package index
+        env:
+          PIP_NO_INDEX: "1"
+        run: |
+          python tools/install.py --venv --home .valtrion-home > valtrion-install.log
+          cat valtrion-install.log
+          command_path="$(tail -n 1 valtrion-install.log)"
+          "$command_path" --version
+          "$command_path" schemas
+          "$command_path" validate examples/smoke.plan.json
+          "$command_path" check-config --checks examples/quick-start-checks.json
+
+  contracts:
+    name: contracts (schemas and fixtures)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12"
+      - run: python tools/check_contracts.py
+
+  core:
+    name: core (${{ matrix.os }}, python ${{ matrix.python }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest, ubuntu-latest]
+        python: ["3.10", "3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Test
+        if: ${{ hashFiles('core/valtrion/__init__.py') != '' }}
+        working-directory: core
+        run: python -m unittest discover -s tests -t . -v
+
+  core-no-unity:
+    name: core without Unity or mobile tooling
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12"
+      - name: No Unity, adb or Xcode on this runner
+        run: |
+          for tool in Unity unity-editor adb xcodebuild; do
+            if command -v "$tool" >/dev/null 2>&1; then echo "unexpected tool on the runner: $tool"; exit 1; fi
+          done
+      - name: Test
+        if: ${{ hashFiles('core/valtrion/__init__.py') != '' }}
+        working-directory: core
+        env:
+          UNITY_PATH: ""
+          GDV_UNITY_HUB_PATHS: ""
+        run: python -m unittest discover -s tests -t . -v

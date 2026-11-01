@@ -1,0 +1,14 @@
+{
+  "schema": "gdv.job/1",
+  "jobId": "job-1",
+  "kind": "run",
+  "state": "paused",
+  "status": null,
+  "reason": null,
+  "createdUtc": "2026-10-29T15:30:00Z",
+  "updatedUtc": "2026-10-29T15:31:30Z",
+  "host": "mac-build",
+  "command": ["valtrion", "run"],
+  "watchdog": { "stallSec": 600, "timeoutSec": 7200, "lastProgressUtc": "2026-10-29T15:31:24Z" },
+  "eventsOffset": 0
+}

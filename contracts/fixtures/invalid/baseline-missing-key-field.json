@@ -1,0 +1,13 @@
+{
+  "schema": "gdv.baseline/1",
+  "planId": "example.smoke",
+  "key": {
+    "planSha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "deviceClass": "ipad-a14",
+    "osMajor": 27,
+    "unityVersion": "6000.6.7f1"
+  },
+  "createdUtc": "2026-10-29T16:00:00Z",
+  "source": { "runId": "run-1", "repo": "ExampleApp", "sha": "0123456789abcdef0123456789abcdef01234567", "evidence": "physical" },
+  "metrics": {}
+}

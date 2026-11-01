@@ -1,0 +1,12 @@
+{
+  "schema": "gdv.heartbeat/1",
+  "runId": "20261029T1530Z-ipad10-7c46db7",
+  "seq": 42,
+  "utc": "2026-10-29T15:31:24Z",
+  "state": "waiting-host",
+  "stepIndex": 2,
+  "stepType": "external.ui",
+  "elapsedMs": 84000,
+  "message": "waiting for the host",
+  "request": { "id": "req-1", "action": "system.allowCamera", "args": { "timeoutSec": 30 } }
+}

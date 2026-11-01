@@ -1,0 +1,14 @@
+{
+    "name": "Valtrion.Unity.Tests",
+    "rootNamespace": "Valtrion.Unity.Tests",
+    "references": [
+        "Valtrion.Unity"
+    ],
+    "includePlatforms": [
+        "Editor"
+    ],
+    "optionalUnityReferences": [
+        "TestAssemblies"
+    ],
+    "autoReferenced": true
+}

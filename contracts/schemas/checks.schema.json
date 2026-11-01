@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "gdv.checks/1",
+  "title": "Project check map: changed paths to kinds, kinds to checks per level",
+  "type": "object",
+  "required": ["schema", "platforms", "areas", "kinds", "unclassified"],
+  "additionalProperties": false,
+  "properties": {
+    "schema": { "const": "gdv.checks/1" },
+    "platforms": {
+      "type": "object",
+      "required": ["required"],
+      "additionalProperties": false,
+      "properties": {
+        "required": { "type": "array", "items": { "$ref": "common.schema.json#/$defs/platform" } },
+        "dev": { "type": "array", "items": { "$ref": "common.schema.json#/$defs/platform" } }
+      }
+    },
+    "unityEditorSlots": { "$ref": "common.schema.json#/$defs/int32", "minimum": 1 },
+    "areas": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["glob", "kind"],
+        "additionalProperties": false,
+        "properties": {
+          "glob": { "type": "string", "minLength": 1 },
+          "kind": { "$ref": "common.schema.json#/$defs/identifier" }
+        }
+      }
+    },
+    "kinds": { "type": "object", "additionalProperties": { "$ref": "#/$defs/levels" } },
+    "unclassified": { "enum": ["widest", "fail"] }
+  },
+  "$defs": {
+    "levels": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "L0": { "$ref": "common.schema.json#/$defs/stringList" },
+        "L1": { "$ref": "common.schema.json#/$defs/stringList" },
+        "L2": { "$ref": "common.schema.json#/$defs/stringList" },
+        "L3": { "$ref": "common.schema.json#/$defs/stringList" },
+        "L4": { "$ref": "common.schema.json#/$defs/stringList" }
+      }
+    }
+  }
+}

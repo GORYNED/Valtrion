@@ -1,0 +1,6 @@
+{
+  "schema": "gdv.hosts/1",
+  "hosts": [
+    { "id": "mac-build", "transport": { "kind": "ssh" }, "os": "macos", "artifactsRoot": "~/gdv-artifacts" }
+  ]
+}

@@ -1,0 +1,11 @@
+{
+  "schema": "gdv.event/1",
+  "seq": 7,
+  "utc": "2026-10-29T15:31:24Z",
+  "jobId": "job-20261029T1530Z-1",
+  "type": "step.finished",
+  "step": "install",
+  "status": "PASS",
+  "message": "installed",
+  "data": { "durationMs": 8120, "nested": { "ok": true, "list": [1, 2.5, "x", null] } }
+}

@@ -1,0 +1,7 @@
+{
+  "schema": "gdv.pipeline/1",
+  "id": "example.sha-empty",
+  "candidate": { "repo": "ExampleApp", "sha": "", "profile": "Validation" },
+  "device": { "platform": "android" },
+  "stages": [ { "stage": "build" } ]
+}

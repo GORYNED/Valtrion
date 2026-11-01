@@ -1,0 +1,8 @@
+{
+  "schema": "gdv.plan/1",
+  "id": "example.smoke",
+  "kind": "smoke",
+  "dataPolicy": "isolated",
+  "budgetSeconds": 60,
+  "steps": [ { "type": "wait" } ]
+}

@@ -1,0 +1,15 @@
+{
+  "name": "com.goryned.valtrion.unity",
+  "version": "0.7.1",
+  "displayName": "Valtrion Unity",
+  "license": "MIT",
+  "description": "Development-only device validation for Unity: plan contracts and the Runtime harness of Valtrion.",
+  "unity": "6000.6",
+  "dependencies": {
+    "com.unity.modules.imageconversion": "1.0.0",
+    "com.unity.modules.screencapture": "1.0.0"
+  },
+  "author": {
+    "name": "GORYNED"
+  }
+}

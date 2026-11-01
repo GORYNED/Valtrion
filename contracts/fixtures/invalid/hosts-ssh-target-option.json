@@ -1,0 +1,6 @@
+{
+  "schema": "gdv.hosts/1",
+  "hosts": [
+    { "id": "mac-build", "transport": { "kind": "ssh", "sshTarget": "-oProxyCommand=evil" }, "os": "macos", "artifactsRoot": "~/gdv-artifacts" }
+  ]
+}

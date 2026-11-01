@@ -1,0 +1,104 @@
+# Work root and local state
+
+This page explains where Valtrion keeps its files on a host: the disposable work root, the state home with hosts, registry, leases and job index, and the artifacts root. It also covers how background jobs run on macOS, how leases behave, and the temporary setting that lets the new CLI share a lease directory with the earlier tool.
+
+## State home
+
+Machine-local state lives under `~/.valtrion`. `VALTRION_HOME` overrides it (for tests and isolated runs); an isolated home carries its own `work/`.
+
+| Path | Content |
+| --- | --- |
+| `hosts.json` | `gdv.hosts/1` inventory. The local machine is always a host, added automatically if not listed. |
+| `host.json` | Settings of this machine, below |
+| `registry.json` | `gdv.registry/1` device registry |
+| `leases/` | Lease files |
+| `jobs/` | Job id to run folder index |
+| `hostcache/` | Five-minute cache of remote `doctor` reports |
+| `artifacts/` | Default artifacts root (retained results, baselines, run folders) |
+| `core/<version>/` | Virtual environment created by `tools/install.py --venv` or `valtrion hosts sync`; uses the real `~/.valtrion` even when `VALTRION_HOME` is set. The local installer's `--home DIR` instead uses `DIR/.valtrion/core/<version>`. |
+| `ssh/` | SSH control sockets |
+
+### host.json
+
+```json
+{
+  "artifactsRoot": "~/.valtrion/artifacts",
+  "workRoot": "~/Library/Caches/com.valtrion/work",
+  "retention": { "keepDays": 30 }
+}
+```
+
+All keys are optional. `artifactsRoot` and `workRoot` must be non-empty; `workRoot` must be absolute (or start with `~`). `retention.keepDays` is a non-negative number (default 30) used by `valtrion gc`. `GDV_WORK_ROOT` (absolute) overrides `workRoot` for one process.
+
+**`leasesDir` (temporary).** An absolute path (or one starting with `~`) that replaces `<home>/leases`. It exists for the move from the earlier tool: set it to the absolute path of the old tool's leases folder, and the old and new CLIs share one lease directory, so they never both hold the same device. The lease file format is unchanged. Remove the setting once the old tool is no longer used.
+
+**`unityEditorSlots`.** A positive integer: how many Unity processes (the `unity-editor` slots) the host runs at once. Without it the host allows 2, and 1 on macOS. Every provider counts this one total. Slots above the total are not looked at: when you lower it (or on macOS, where it is 1), a holder from an older version that still sits on a higher slot is ignored until it ends, so during a mixed-version transition one more Unity can run than the new total. `PlatformAdapter.unity_editor_slots` no longer exists; a third-party provider that set it loses that limit and must use `unityEditorSlots` here.
+
+## Work root
+
+Everything Valtrion builds, exports or checks out is disposable and lives under one work root that is not a folder the operating system protects. macOS asks the owner for permission (TCC) when a program that is not already trusted touches Documents, Desktop, Downloads, iCloud Drive or a removable volume, and a one-shot background job has no stable identity to remember the answer for. Repositories stay where they are; Valtrion keeps its own processes out of those folders.
+
+| System | Default work root |
+| --- | --- |
+| macOS | `~/Library/Caches/com.valtrion/work` (not protected, not synced, outside backups) |
+| Windows | `%USERPROFILE%\.valtrion\work` (beside the state home; short, local, not under `AppData`) |
+| other | `$XDG_CACHE_HOME/valtrion/work`, or `~/.cache/valtrion/work` |
+
+`valtrion doctor` warns for each of work root, artifacts root and state home that lies in a protected folder, and for abandoned job directories.
+
+On Windows, `doctor` also checks for virtualized paths and for a work root that may exceed the path limit. A job runs the same checks at startup. These are warnings: they do not establish that a build will fit.
+
+- **Virtualized location.** A path resolved under `AppData\Local\Packages\<name>\LocalCache` is reported. For a folder that does not yet exist, a packaged Python running against nominal `%LOCALAPPDATA%` can also trigger a warning that the location may be redirected. Existing paths are judged by their resolved location. The check cannot detect every kind of redirection.
+- **Estimated length.** When Windows long paths are known to be off, `doctor` assumes a longest job id of 66 characters and 134 characters below the Unity project root. That leaves 43 characters for the work root under the 259-character usable path limit. The 134 is an estimate; generated files and projects nested inside a repository can need more. At job start, the estimate uses the actual job id. An unreadable long-path setting produces no warning.
+- **Android builds.** The warning uses a historical observation of a Gradle/IL2CPP build file 247 characters below a project root. It recommends enabling Windows long paths and Git's `core.longpaths`; a shorter root alone cannot accommodate that example. This is not a measured limit for every project. Changing the system setting needs an administrator and may need a restart; Valtrion does not change it.
+- **Measured checkout length.** `valtrion workroot checkout` measures the new checkout's tracked files. Before job cleanup, the complete checkout is measured again, including generated files, and an overlong path is logged as a `path-length` warning event. Both measurements run only on Windows when long paths are known to be off. They report the actual excess beyond 259 characters; they cannot predict files a later build will generate.
+
+Use a short absolute work root on a local drive. Enabling Windows long paths is necessary for some builds but is not a guarantee: Git and every other tool in the build must also support long paths.
+
+**At job start.** A job started with a work root (`valtrion job start`, pipelines) returns the same warnings in a `warnings` list of its start report; the job still runs. For the length check it uses the job's real id, so it warns only when this job's checkout can exceed the limit, not for the worst-case id. Doctor keeps the worst case.
+
+Both warnings name the fix: set `workRoot` in host.json, or `GDV_WORK_ROOT` for one process, to a short absolute path on a local drive. Nothing derived from `GDV_JOB_DIR` changes: the job layout below stays the same, only its root moves.
+
+```
+<workRoot>/jobs/<jobId>/{checkout,build,export,derived-data,tmp}   everything one job creates
+<workRoot>/jobs/inbox-<id>/                                         files a caller sent to run a plan or pipeline here (`valtrion workroot inbox`); removed with its job; otherwise swept when idle for hours and no active job uses it
+<workRoot>/mirrors/<project>.git                                   bare clone the checkouts hang off (kept: it is the cache)
+<workRoot>/tools/valtrion-<hash>/                                  the CLI staged for background jobs
+<workRoot>/launchd/                                                job definitions and logs of macOS background jobs
+```
+
+### What a job receives
+
+A command job started with a work root (and no `env` of its own, which would replace the environment) gets `GDV_WORK_ROOT`, `GDV_JOB_ID`, `GDV_JOB_DIR`, `GDV_JOB_CHECKOUT`, `GDV_JOB_BUILD`, `GDV_JOB_EXPORT`, `GDV_JOB_DERIVED_DATA`, `GDV_JOB_TMP` and `GDV_RUN_DIR` (the run folder under the artifacts root). Providers write build output, the Unity export and Xcode DerivedData into the first group, and logs, results and diagnostics into `GDV_RUN_DIR`.
+
+### Checkout
+
+`valtrion workroot checkout --project P --sha <40 hex> --job-id $GDV_JOB_ID (--source URL | --repo PATH)` fetches the commit into the mirror (from a URL, or from the origin of `--repo`; only that one `git fetch` reads a repository folder) and adds a detached worktree at `GDV_JOB_CHECKOUT`. Its `.git` points into the work root, so Unity, Xcode and `git` never read the original repository. The Unity `Library` is not copied between checkouts. Git LFS files are restored after the checkout whenever `git lfs ls-files` lists any; a tree that declares LFS on a host without a usable git-lfs is refused (`BLOCKED`), never left as pointer files.
+
+### Cleanup
+
+When a job ends, passed or failed, `<workRoot>/jobs/<jobId>` is removed and the mirrors are pruned of its worktree; results and diagnostics are already in the run folder. The directories stay when the run is retained, overlaps a `--protect` path, has cleanup turned off, or is a pipeline that has not saved `result.json`.
+
+`valtrion gc` and `valtrion workroot sweep [--max-age-hours N] [--dry-run]` also remove job directories and launchd files of runners that died (a job counts as active only while its runner is verifiably alive or was created two minutes ago) and, when no job is active, staged CLI copies unused for that long. Repositories, baselines, retained runs and the mirrors are never removed. `valtrion workroot show [--json]` prints the work root and any protected-folder warning; `valtrion workroot release --job-id ID` removes one job's directories.
+
+## Background jobs
+
+A job runs in its own detached process in the run folder `<artifactsRoot>/<project>/<sha8>/<runId>/` with `job.json`, `events.jsonl`, `console.log` and, for pipelines, `result.json`.
+
+- Windows: `DETACHED_PROCESS`, breaking away from a parent Job Object when allowed.
+- Other systems: `setsid`.
+- macOS: a one-shot launchd agent, tried in the `user` domain and then the `gui` domain (`--domain` chooses; `gui` is needed for signing). The label is `com.valtrion.<jobId>`. The job definition, its log and its working directory are under `<workRoot>/launchd`, and the job runs the staged CLI (copied once per content hash to `<workRoot>/tools/valtrion-<hash>`).
+
+On macOS the job runs **the interpreter that runs `valtrion`** (the pipx or virtual environment interpreter it was installed with), not the system one. The job is refused if that interpreter lies in a folder macOS protects (Documents, Desktop, Downloads, cloud storage); install with pipx or `python tools/install.py` into an unprotected folder.
+
+## Artifacts root
+
+Run folders, retained results and baselines live under the artifacts root (`<home>/artifacts` by default, `artifactsRoot` in `host.json`, or the `artifactsRoot` of the host in `hosts.json`). `valtrion collect JOB --host H` pulls a remote run into the local artifacts root with the same layout.
+
+## Leases
+
+A lease is a lock file created exclusively under `leases/`, holding a `gdv.lease/1` document. The process that supervises the work renews it every third of the TTL. A lease is stale only when its holder process is dead **and** its TTL has expired; a live lease is never taken, and a stale one is reclaimed under a short guard so two claimants cannot both win. A run that finds the resource leased waits a bounded time and then reports `BLOCKED` naming the holder. A counted resource (concurrent Editors) is `N` leases `<name>:slot1..N`. The resource `unity-editor` is counted with the host's total (see `unityEditorSlots` above) wherever no slot count is given: `valtrion lease acquire unity-editor` and `valtrion job start --lease unity-editor` take a slot of that total, and an explicit count (`--slots N`, `--lease unity-editor=N`) is used as given. The lease held is one slot, `unity-editor:slotN`: `lease renew` and `lease release` must use the `lease.resource` that `lease acquire` printed, not the bare `unity-editor`. `valtrion lease name unity-project PATH` prints the lease name of one Unity project folder. Leases are always taken on the host that owns the resource; a remote caller runs `valtrion lease --host H`.
+
+## Supervisor
+
+Every step runs with a hard timeout and a stall window (default 600 s; 180 s for short operations; neither can be disabled). Progress is growth of the log or of watched files, an advancing `seq` in a heartbeat file (when one is given, log growth no longer counts, so a stuck app that spams its log still stalls), and, opt-in, CPU time of the process tree. A hung step is killed with its whole tree (a Windows Job Object, a POSIX process group) and classified `STALL` or `TIMEOUT`. A `GDV-RESULT <status>` line written by the app is stricter than its exit code.

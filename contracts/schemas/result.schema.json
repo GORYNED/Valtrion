@@ -1,0 +1,131 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "gdv.result/1",
+  "title": "Result of one validation run",
+  "type": "object",
+  "required": ["schema", "runId", "status", "reason", "candidate", "target", "host", "plan", "startedUtc", "finishedUtc", "layers", "steps", "metrics", "artifacts", "unverified"],
+  "additionalProperties": false,
+  "properties": {
+    "schema": { "const": "gdv.result/1" },
+    "runId": { "$ref": "common.schema.json#/$defs/identifier" },
+    "status": { "$ref": "common.schema.json#/$defs/status" },
+    "reason": { "type": ["string", "null"] },
+    "candidate": {
+      "type": "object",
+      "required": ["repo", "sha", "profile", "unity", "dirty"],
+      "additionalProperties": false,
+      "properties": {
+        "repo": { "type": "string", "minLength": 1 },
+        "sha": { "$ref": "common.schema.json#/$defs/gitSha" },
+        "profile": { "$ref": "common.schema.json#/$defs/identifier" },
+        "unity": { "type": "string", "minLength": 1 },
+        "dirty": { "type": "boolean" }
+      }
+    },
+    "target": {
+      "type": "object",
+      "required": ["platform", "deviceClass", "osMajor", "evidence"],
+      "additionalProperties": false,
+      "properties": {
+        "platform": { "$ref": "common.schema.json#/$defs/platform" },
+        "deviceId": { "$ref": "common.schema.json#/$defs/identifier" },
+        "deviceClass": { "$ref": "common.schema.json#/$defs/identifier" },
+        "model": { "type": "string" },
+        "os": { "type": "string" },
+        "osMajor": { "$ref": "common.schema.json#/$defs/int32", "minimum": 0 },
+        "evidence": { "$ref": "common.schema.json#/$defs/evidence" }
+      }
+    },
+    "host": {
+      "description": "The host that executed the run and how it was chosen; the choice is deterministic and recorded.",
+      "type": "object",
+      "required": ["id", "transport", "selectedBy"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "$ref": "common.schema.json#/$defs/identifier" },
+        "transport": { "$ref": "common.schema.json#/$defs/transportKind" },
+        "selectedBy": { "$ref": "common.schema.json#/$defs/hostSelection" },
+        "tools": { "type": "object", "additionalProperties": { "type": "string" } }
+      }
+    },
+    "plan": {
+      "type": "object",
+      "required": ["id", "sha256"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "$ref": "common.schema.json#/$defs/identifier" },
+        "sha256": { "$ref": "common.schema.json#/$defs/sha256" }
+      }
+    },
+    "startedUtc": { "$ref": "common.schema.json#/$defs/utc" },
+    "finishedUtc": { "$ref": "common.schema.json#/$defs/utc" },
+    "layers": {
+      "description": "A layer that did not run is absent or BLOCKED, never inferred from a neighbour.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "compile": { "$ref": "common.schema.json#/$defs/layerStatus" },
+        "export": { "$ref": "common.schema.json#/$defs/layerStatus" },
+        "nativeBuild": { "$ref": "common.schema.json#/$defs/layerStatus" },
+        "sign": { "$ref": "common.schema.json#/$defs/layerStatus" },
+        "install": { "$ref": "common.schema.json#/$defs/layerStatus" },
+        "launch": { "$ref": "common.schema.json#/$defs/layerStatus" },
+        "scenario": { "$ref": "common.schema.json#/$defs/layerStatus" }
+      }
+    },
+    "steps": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["type", "status", "startMs", "durationMs"],
+        "additionalProperties": false,
+        "properties": {
+          "type": { "$ref": "common.schema.json#/$defs/identifier" },
+          "status": { "$ref": "common.schema.json#/$defs/status" },
+          "startMs": { "type": "integer", "minimum": 0 },
+          "durationMs": { "type": "integer", "minimum": 0 },
+          "marks": { "type": "object", "additionalProperties": { "type": "number" } },
+          "message": { "type": "string" }
+        }
+      }
+    },
+    "metrics": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "unit", "samples", "stats"],
+        "additionalProperties": false,
+        "properties": {
+          "name": { "$ref": "common.schema.json#/$defs/identifier" },
+          "unit": { "type": "string", "minLength": 1 },
+          "samples": { "type": "array", "items": { "type": "number" } },
+          "stats": { "$ref": "common.schema.json#/$defs/stats" }
+        }
+      }
+    },
+    "comparison": {
+      "type": "object",
+      "required": ["baseline", "verdict", "details"],
+      "additionalProperties": false,
+      "properties": {
+        "baseline": { "type": "string", "minLength": 1 },
+        "verdict": { "$ref": "common.schema.json#/$defs/verdict" },
+        "details": { "$ref": "common.schema.json#/$defs/stringList" }
+      }
+    },
+    "artifacts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["kind", "path", "sha256"],
+        "additionalProperties": false,
+        "properties": {
+          "kind": { "type": "string", "minLength": 1 },
+          "path": { "type": "string", "minLength": 1 },
+          "sha256": { "$ref": "common.schema.json#/$defs/sha256" }
+        }
+      }
+    },
+    "unverified": { "$ref": "common.schema.json#/$defs/stringList" }
+  }
+}

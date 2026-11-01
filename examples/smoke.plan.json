@@ -1,0 +1,15 @@
+{
+  "schema": "gdv.plan/1",
+  "id": "example.editor.smoke",
+  "kind": "smoke",
+  "requires": { "platforms": ["editor"], "evidence": ["editor"] },
+  "dataPolicy": "isolated",
+  "budgetSeconds": 30,
+  "repeat": 1,
+  "steps": [
+    { "type": "idle", "timeoutSec": 5, "frames": 3 },
+    { "type": "wait", "timeoutSec": 5, "seconds": 0.1 },
+    { "type": "mark", "timeoutSec": 5, "name": "smoke.complete" }
+  ],
+  "cleanup": "ledger"
+}

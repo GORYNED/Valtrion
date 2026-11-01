@@ -1,0 +1,11 @@
+{
+    "name": "Valtrion.Unity.Editor",
+    "rootNamespace": "Valtrion.Unity.Editor",
+    "references": [
+        "Valtrion.Unity"
+    ],
+    "includePlatforms": [
+        "Editor"
+    ],
+    "autoReferenced": false
+}

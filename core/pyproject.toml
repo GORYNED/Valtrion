@@ -1,0 +1,30 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "valtrion"
+version = "0.7.4"
+description = "Device validation: build, install, launch and verify apps on local or remote hosts and real devices, with structured evidence."
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.10"
+dependencies = []
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Operating System :: OS Independent",
+    "Private :: Do Not Upload",
+]
+
+[project.scripts]
+valtrion = "valtrion.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["valtrion"]
+
+[tool.hatch.build.hooks.custom]
+path = "hatch_build.py"
+
+[tool.hatch.build.targets.sdist]
+include = ["valtrion", "tests", "README.md", "hatch_build.py"]

@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "gdv.registry/1",
+  "title": "Host device registry (outside git)",
+  "type": "object",
+  "required": ["schema", "host", "devices"],
+  "additionalProperties": false,
+  "properties": {
+    "schema": { "const": "gdv.registry/1" },
+    "host": {
+      "type": "object",
+      "required": ["id", "os", "roles"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "$ref": "common.schema.json#/$defs/identifier" },
+        "os": { "$ref": "common.schema.json#/$defs/hostOs" },
+        "roles": { "$ref": "common.schema.json#/$defs/stringList" }
+      }
+    },
+    "devices": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "hostId", "platform", "class", "capabilities", "exclusive"],
+        "additionalProperties": false,
+        "properties": {
+          "id": { "$ref": "common.schema.json#/$defs/identifier" },
+          "hostId": { "$ref": "common.schema.json#/$defs/identifier" },
+          "alias": { "$ref": "common.schema.json#/$defs/identifier" },
+          "platform": { "$ref": "common.schema.json#/$defs/platform" },
+          "class": { "$ref": "common.schema.json#/$defs/identifier" },
+          "model": { "type": "string" },
+          "os": { "type": "string" },
+          "evidence": { "$ref": "common.schema.json#/$defs/evidence" },
+          "capabilities": { "$ref": "common.schema.json#/$defs/stringList" },
+          "exclusive": { "type": "boolean" },
+          "notes": { "type": "string" }
+        }
+      }
+    }
+  }
+}

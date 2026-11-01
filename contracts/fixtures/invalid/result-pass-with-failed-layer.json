@@ -1,0 +1,17 @@
+{
+  "schema": "gdv.result/1",
+  "runId": "run-1",
+  "status": "PASS",
+  "reason": null,
+  "candidate": { "repo": "ExampleApp", "sha": "0123456789abcdef0123456789abcdef01234567", "profile": "Internal", "unity": "6000.6.7f1", "dirty": false },
+  "target": { "platform": "ios", "deviceClass": "ipad-a14", "osMajor": 27, "evidence": "physical" },
+  "host": { "id": "mac-build", "transport": "local", "selectedBy": "local" },
+  "plan": { "id": "example.smoke", "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" },
+  "startedUtc": "2026-10-29T15:30:00Z",
+  "finishedUtc": "2026-10-29T15:31:00Z",
+  "layers": { "compile": "PASS", "install": "BLOCKED" },
+  "steps": [],
+  "metrics": [],
+  "artifacts": [],
+  "unverified": []
+}

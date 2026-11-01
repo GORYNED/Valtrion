@@ -1,0 +1,7 @@
+{
+  "schema": "valtrion.compat/1",
+  "package": "com.goryned.valtrion.unity",
+  "ranges": [
+    { "package": "0.7.x", "core": ">=0.7.0,<0.8" }
+  ]
+}

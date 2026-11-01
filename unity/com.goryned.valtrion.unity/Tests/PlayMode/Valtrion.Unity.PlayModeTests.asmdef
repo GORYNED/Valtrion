@@ -1,0 +1,15 @@
+{
+    "name": "Valtrion.Unity.PlayModeTests",
+    "rootNamespace": "Valtrion.Unity.PlayModeTests",
+    "references": [
+        "Valtrion.Unity"
+    ],
+    "includePlatforms": [],
+    "optionalUnityReferences": [
+        "TestAssemblies"
+    ],
+    "defineConstraints": [
+        "DEVELOPMENT_BUILD || UNITY_EDITOR"
+    ],
+    "autoReferenced": false
+}

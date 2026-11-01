@@ -1,0 +1,7 @@
+{
+  "name": "Valtrion.SmokeTests",
+  "references": ["Valtrion.Unity", "Valtrion.Unity.PlayModeTests"],
+  "optionalUnityReferences": ["TestAssemblies"],
+  "defineConstraints": ["DEVELOPMENT_BUILD || UNITY_EDITOR"],
+  "autoReferenced": false
+}

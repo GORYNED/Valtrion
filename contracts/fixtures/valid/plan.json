@@ -1,0 +1,30 @@
+{
+  "schema": "gdv.plan/1",
+  "id": "example.perf.open-playback",
+  "kind": "performance",
+  "requires": {
+    "platforms": ["ios"],
+    "capabilities": ["camera.120fps"],
+    "profile": "Internal",
+    "evidence": ["physical"]
+  },
+  "dataPolicy": "devdata",
+  "budgetSeconds": 900,
+  "repeat": 3,
+  "warmup": 1,
+  "continueOnFail": false,
+  "setup": [
+    { "type": "file.put", "timeoutSec": 10, "path": "variant.txt", "text": "Baseline" }
+  ],
+  "steps": [
+    { "type": "app.waitScreen", "timeoutSec": 180, "screen": "Menu" },
+    { "type": "probe.start", "timeoutSec": 10, "probes": ["frameTiming", "memory", "log:OPEN"] },
+    { "type": "scenario.record", "timeoutSec": 120, "seconds": 10, "expectFps": 120, "options": { "preArm": 6, "tags": ["a", "b"] } },
+    { "type": "probe.stop", "timeoutSec": 10 }
+  ],
+  "metrics": {
+    "stopToReadyMs": { "unit": "ms", "direction": "lower", "budget": 20000, "regressionPct": 10, "minSamples": 3 },
+    "frameTime.p99": { "unit": "ms", "direction": "lower", "regressionPct": 15 }
+  },
+  "cleanup": "ledger"
+}

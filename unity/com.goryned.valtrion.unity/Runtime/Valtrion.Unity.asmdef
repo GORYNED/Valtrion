@@ -1,0 +1,10 @@
+{
+    "name": "Valtrion.Unity",
+    "rootNamespace": "Valtrion.Unity",
+    "references": [],
+    "defineConstraints": [
+        "DEVELOPMENT_BUILD || UNITY_EDITOR"
+    ],
+    "autoReferenced": true,
+    "noEngineReferences": false
+}

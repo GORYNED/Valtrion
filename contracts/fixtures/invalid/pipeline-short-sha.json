@@ -1,0 +1,7 @@
+{
+  "schema": "gdv.pipeline/1",
+  "id": "example.series-1",
+  "candidate": { "repo": "ExampleApp", "sha": "0123456", "profile": "Internal" },
+  "device": { "class": "ipad-a14" },
+  "stages": [ { "stage": "build" } ]
+}

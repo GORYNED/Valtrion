@@ -1,0 +1,7 @@
+{
+  "schema": "gdv.pipeline/1",
+  "id": "example.prelaunch-empty",
+  "candidate": { "repo": "ExampleApp", "sha": "0000000000000000000000000000000000000000", "profile": "Validation" },
+  "device": { "platform": "ios" },
+  "stages": [ { "stage": "run", "plan": "plans/smoke.plan.json", "prelaunchFiles": [] } ]
+}

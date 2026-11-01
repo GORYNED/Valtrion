@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "gdv.job/1",
+  "title": "State of a detached host job (job.json, rewritten atomically)",
+  "type": "object",
+  "required": ["schema", "jobId", "kind", "state", "status", "reason", "createdUtc", "updatedUtc", "host", "command", "watchdog", "eventsOffset"],
+  "additionalProperties": false,
+  "properties": {
+    "schema": { "const": "gdv.job/1" },
+    "jobId": { "$ref": "common.schema.json#/$defs/identifier" },
+    "kind": { "enum": ["run", "pipeline", "build", "install", "collect"] },
+    "state": { "enum": ["queued", "running", "finished", "cancelled"] },
+    "status": {
+      "anyOf": [
+        { "type": "null" },
+        { "$ref": "common.schema.json#/$defs/status" }
+      ]
+    },
+    "reason": { "type": ["string", "null"] },
+    "createdUtc": { "$ref": "common.schema.json#/$defs/utc" },
+    "updatedUtc": { "$ref": "common.schema.json#/$defs/utc" },
+    "host": { "$ref": "common.schema.json#/$defs/identifier" },
+    "pid": { "$ref": "common.schema.json#/$defs/int32", "minimum": 1 },
+    "command": { "$ref": "common.schema.json#/$defs/stringList" },
+    "resultPath": { "type": "string", "minLength": 1 },
+    "watchdog": {
+      "type": "object",
+      "required": ["stallSec", "timeoutSec", "lastProgressUtc"],
+      "additionalProperties": false,
+      "properties": {
+        "stallSec": { "$ref": "common.schema.json#/$defs/int32", "minimum": 1 },
+        "timeoutSec": { "$ref": "common.schema.json#/$defs/int32", "minimum": 1 },
+        "lastProgressUtc": { "$ref": "common.schema.json#/$defs/utc" }
+      }
+    },
+    "eventsOffset": { "type": "integer", "minimum": 0 }
+  }
+}

@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "gdv.common/1",
+  "title": "Shared definitions of the Valtrion contracts",
+  "$defs": {
+    "status": { "enum": ["PASS", "FAIL", "BLOCKED", "NEEDS_PERMISSION", "STALL", "TIMEOUT"] },
+    "layerStatus": { "$ref": "#/$defs/status" },
+    "evidence": { "enum": ["physical", "emulator", "editor", "host"] },
+    "platform": { "enum": ["ios", "android", "windows", "macos", "editor"] },
+    "int32": { "type": "integer", "maximum": 2147483647 },
+    "hostOs": { "enum": ["windows", "macos", "linux"] },
+    "transportKind": { "enum": ["local", "ssh"] },
+    "hostSelection": { "enum": ["local", "capability", "pinned"] },
+    "planKind": { "enum": ["functional", "performance", "soak", "smoke"] },
+    "dataPolicy": { "enum": ["isolated", "devdata", "clean-install"] },
+    "direction": { "enum": ["lower", "higher"] },
+    "verdict": { "enum": ["PASS", "REGRESSION", "IMPROVED", "NOISY", "NOT_COMPARABLE"] },
+    "identifier": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$", "maxLength": 200 },
+    "gitSha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "utc": { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$" },
+    "stringList": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+    "stats": {
+      "type": "object",
+      "required": ["n", "median", "p90", "max"],
+      "additionalProperties": false,
+      "properties": {
+        "n": { "type": "integer", "minimum": 0 },
+        "median": { "type": "number" },
+        "p90": { "type": "number" },
+        "max": { "type": "number" },
+        "stdev": { "type": "number", "minimum": 0 }
+      }
+    },
+    "comparabilityKey": {
+      "type": "object",
+      "required": ["planSha256", "deviceClass", "osMajor", "buildProfile", "unityVersion"],
+      "additionalProperties": false,
+      "properties": {
+        "planSha256": { "$ref": "#/$defs/sha256" },
+        "deviceClass": { "$ref": "#/$defs/identifier" },
+        "osMajor": { "$ref": "#/$defs/int32", "minimum": 0 },
+        "buildProfile": { "$ref": "#/$defs/identifier" },
+        "unityVersion": { "type": "string", "minLength": 1 }
+      }
+    }
+  }
+}

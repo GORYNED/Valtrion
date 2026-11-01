@@ -1,0 +1,8 @@
+{
+  "schema": "gdv.plan/1",
+  "id": "example.smoke",
+  "kind": "benchmark",
+  "dataPolicy": "isolated",
+  "budgetSeconds": 60,
+  "steps": [ { "type": "wait", "timeoutSec": 5 } ]
+}

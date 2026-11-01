@@ -1,0 +1,20 @@
+{
+  "schema": "gdv.registry/1",
+  "host": { "id": "mac-build", "os": "macos", "roles": ["ios-build", "ios-device"] },
+  "devices": [
+    {
+      "id": "ios:00008101-000000000000001E",
+      "hostId": "mac-build",
+      "alias": "ipad10",
+      "platform": "ios",
+      "class": "ipad-a14",
+      "model": "iPad13,19",
+      "os": "27.2",
+      "evidence": "physical",
+      "capabilities": ["camera.120fps", "touch"],
+      "exclusive": true,
+      "notes": "no UI automation during camera recording"
+    },
+    { "id": "android:EXAMPLE123", "hostId": "mac-build", "platform": "android", "class": "phone-mid", "capabilities": ["touch"], "exclusive": true }
+  ]
+}

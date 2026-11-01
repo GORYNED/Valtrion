@@ -1,0 +1,13 @@
+{
+  "schema": "gdv.pipeline/1",
+  "id": "example.prelaunch-extra-key",
+  "candidate": { "repo": "ExampleApp", "profile": "Validation" },
+  "device": { "platform": "android" },
+  "stages": [
+    {
+      "stage": "run",
+      "plan": "plans/smoke.plan.json",
+      "prelaunchFiles": [ { "local": "settings/camera.json", "remote": "settings/camera.json", "mode": "append" } ]
+    }
+  ]
+}

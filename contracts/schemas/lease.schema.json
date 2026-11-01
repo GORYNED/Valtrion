@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "gdv.lease/1",
+  "title": "Lease on an exclusive resource (device, editor slot, signing, worktree)",
+  "type": "object",
+  "required": ["schema", "resource", "owner", "session", "pid", "host", "acquiredUtc", "renewedUtc", "ttlSec", "purpose"],
+  "additionalProperties": false,
+  "properties": {
+    "schema": { "const": "gdv.lease/1" },
+    "resource": { "$ref": "common.schema.json#/$defs/identifier" },
+    "owner": { "type": "string", "minLength": 1 },
+    "session": { "type": "string", "minLength": 1 },
+    "worktree": { "type": "string" },
+    "pid": { "$ref": "common.schema.json#/$defs/int32", "minimum": 1 },
+    "host": { "$ref": "common.schema.json#/$defs/identifier" },
+    "acquiredUtc": { "$ref": "common.schema.json#/$defs/utc" },
+    "renewedUtc": { "$ref": "common.schema.json#/$defs/utc" },
+    "ttlSec": { "$ref": "common.schema.json#/$defs/int32", "minimum": 1 },
+    "purpose": { "type": "string" }
+  }
+}

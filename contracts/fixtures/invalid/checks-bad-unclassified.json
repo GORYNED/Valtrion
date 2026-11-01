@@ -1,0 +1,7 @@
+{
+  "schema": "gdv.checks/1",
+  "platforms": { "required": ["ios"] },
+  "areas": [ { "glob": "docs/**", "kind": "docs" } ],
+  "kinds": { "docs": { "L0": ["l0"] } },
+  "unclassified": "ignore"
+}

@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "gdv.hosts/1",
+  "title": "Host inventory of one machine (machine-local, outside git): where Valtrion may run work",
+  "type": "object",
+  "required": ["schema", "hosts"],
+  "additionalProperties": false,
+  "properties": {
+    "schema": { "const": "gdv.hosts/1" },
+    "hosts": { "type": "array", "items": { "$ref": "#/$defs/host" }, "minItems": 1 }
+  },
+  "$defs": {
+    "host": {
+      "type": "object",
+      "required": ["id", "transport", "os", "artifactsRoot"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "$ref": "common.schema.json#/$defs/identifier" },
+        "transport": { "$ref": "#/$defs/transport" },
+        "os": { "$ref": "common.schema.json#/$defs/hostOs" },
+        "roles": { "$ref": "common.schema.json#/$defs/stringList" },
+        "capabilities": { "$ref": "#/$defs/capabilities" },
+        "projectsRoot": { "type": "string", "minLength": 1 },
+        "worktreePolicy": { "enum": ["per-task", "shared"] },
+        "artifactsRoot": { "type": "string", "minLength": 1 },
+        "python": { "type": "string", "minLength": 1, "description": "Absolute path of the Python (3.10 or newer) that valtrion hosts sync uses on an SSH host; recorded by valtrion hosts add --python or found by valtrion hosts sync." },
+        "valtrionCommand": { "type": "string", "minLength": 1, "description": "Absolute path of the valtrion command on an SSH host; recorded by valtrion hosts sync, used instead of PATH lookup." }
+      }
+    },
+    "transport": {
+      "type": "object",
+      "required": ["kind"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": { "$ref": "common.schema.json#/$defs/transportKind" },
+        "sshTarget": { "type": "string", "pattern": "^[^-\\x00-\\x1f][^\\x00-\\x1f]*" },
+        "connectTimeoutSec": { "$ref": "common.schema.json#/$defs/int32", "minimum": 1 }
+      }
+    },
+    "capabilities": {
+      "description": "What the host declares; valtrion doctor verifies it. Devices attached to the host are discovered, not declared.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "unityEditors": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["version", "modules"],
+            "additionalProperties": false,
+            "properties": {
+              "version": { "type": "string", "minLength": 1 },
+              "modules": { "$ref": "common.schema.json#/$defs/stringList" }
+            }
+          }
+        },
+        "buildPlatforms": { "type": "array", "items": { "$ref": "common.schema.json#/$defs/platform" } },
+        "xcode": { "type": "string", "minLength": 1 },
+        "iosSigning": { "type": "boolean" },
+        "adb": { "type": "boolean" }
+      }
+    }
+  }
+}

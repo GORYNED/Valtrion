@@ -1,0 +1,137 @@
+# Command line
+
+This page lists every `valtrion` command with its options, explains how a command finds the Unity project, and gives the exit codes. `valtrion --help` and `valtrion <command> --help` print the same from the installed version; the code is the reference if they differ from this page.
+
+`valtrion` is also available as `python -m valtrion`. `valtrion --version` prints `valtrion <version> (contract <n>)`.
+
+## Exit codes
+
+| Code | Meaning |
+| --- | --- |
+| 0 | `PASS` |
+| 1 | `FAIL` (also a `REGRESSION` verdict, and invalid content in `validate`) |
+| 2 | `BLOCKED` or `NEEDS_PERMISSION`: a prerequisite is missing, nothing was proven |
+| 3 | `STALL` or `TIMEOUT` |
+
+`valtrion exit-code <STATUS>` prints the code for a status.
+
+## Project discovery
+
+Commands that need the Unity project (`run`, `pipeline`, `doctor --project`) resolve it in this order, first match wins:
+
+1. `--project-dir <folder>`
+2. the `GDV_UNITY_PROJECT` environment variable
+3. the nearest `valtrion.json`, found by walking up from the current directory. Its content is `{"unityProject": "<path relative to the file>"}`.
+
+`valtrion.json` may also hold `"checks": "<path relative to the file>"`, the check map that `select`, `report` and `check-config` use when `--checks` is not given. That lookup starts at the current directory, ignores `--project-dir` and `GDV_UNITY_PROJECT`, and ignores a file outside the repository. Without the key the map is `validation/device/checks.json` under the repository root; `--checks` always wins; an invalid `checks` value is `BLOCKED`. Build profiles are always read from `validation/device/profiles.json` inside the Unity project folder resolved by the three rules above.
+
+`valtrion.json` only names a folder. It does not run anything. A missing folder or an invalid file is `BLOCKED`.
+
+## Remote options
+
+Many commands take `--host HOST` (run on a host from `valtrion hosts`) and `--remote-project DIR` (the working directory on an SSH host; or set `GDV_REMOTE_PROJECT`). The command that runs on an SSH host is the absolute path recorded by `valtrion hosts sync`; if none is recorded the command is `BLOCKED` and tells you to sync.
+
+A remote project path is a path on the host. A POSIX path that starts with `/` and is typed in Git Bash, MSYS2 or Cygwin on Windows is turned into a Windows path before the program starts (`/Users/me/x` arrives as `C:/Program Files/Git/Users/me/x`). For a host that is not Windows, `valtrion` treats any drive path as such a rewrite; for a Windows host only a path below `X:/Program Files/Git/` (also `Program Files (x86)`), `X:/msys*/` or `X:/cygwin*/` whose next folder is a POSIX top-level one (`usr`, `Users`, `home`, `opt`, `tmp`, `mnt`, `Volumes`, `etc`, `var`, `private`) is suspect. A folder that is merely called `Git` or `msys64` (`C:\Git\Game`) is an ordinary path. It reports `the remote path ... looks rewritten by the local shell (MSYS path conversion); set GDV_REMOTE_PROJECT or use a script` as `BLOCKED` instead of probing the host and calling it unreachable; for a Windows host the message is only a warning on stderr (once per process), and the path is used. `hosts add --projects-root` is checked the same way. The same check applies to a value taken from `GDV_REMOTE_PROJECT`. A script that passes the path to `valtrion` (for example from Python) is not subject to the conversion.
+
+## Hosts and diagnostics
+
+| Command | What it does |
+| --- | --- |
+| `hosts [--json]` / `hosts list` | List the configured hosts. This machine is always listed. |
+| `hosts add --id ID --ssh USER@HOST --os {windows,macos,linux} --artifacts-root PATH [--projects-root PATH] [--connect-timeout SEC] [--python PATH]` | Add or replace an SSH host in `hosts.json`. `--projects-root` must be absolute on the host (`/...` or `~/...` on macOS and Linux, a drive or UNC path on Windows). `--python` is the absolute path of a Python 3.10+ on the host; `hosts sync` uses only that one. |
+| `hosts sync [--only HOST]...` | Install this core version into a virtual environment on every SSH host (or the named ones) and record the absolute `valtrion` command in `hosts.json`. Exit 2 if any host is not synced. See [install.md](install.md). |
+| `doctor [--json] [--devices] [--project [DIR]] [--host HOST] [--remote-project DIR]` | Read-only probe: Unity editors and modules, Xcode and `devicectl`, `adb`, GUI session and signing identities on macOS, free disk, a local CI runner (reported only, never touched), work root state, warnings for locations in protected folders (and, on Windows, for a virtualized or too long work root: see [work-root.md](work-root.md)). `--devices` also runs live device discovery. |
+| `devices [--refresh] [--json] [--host HOST] [--remote-project DIR]` | Show the device registry, or refresh it by discovery through the providers. A vanished device is dropped; alias and notes survive. |
+
+**`doctor --project [DIR]`** also checks that the Unity package of the project (`com.goryned.valtrion.unity`, read from `Packages/packages-lock.json`) is supported by this core, using `compat.json`. Without `DIR` the project is resolved as described above. Result: `ok`, `skipped` (the project does not use the package or no project is given), or `BLOCKED` with the reason and the action to take (exit 2). A project whose package version cannot be read yet (a git package before Unity unpacked it) is `BLOCKED` with "open the project in Unity".
+
+**`doctor --host H`** runs `doctor --json` on the SSH host and compares its core version with this one. A different version is `BLOCKED`; run `valtrion hosts sync`.
+
+### How a host is judged reachable
+
+A call to an SSH host ends in one of four readings, and only the last one says "unreachable":
+
+| Reading | When | Reported as |
+| --- | --- | --- |
+| reachable | the remote command ran, whatever its own exit code (a failing command is not a failing host) | the command's own result |
+| transient | ssh exited 255 (connection reset, banner or connect timeout, `MaxStartups` refusal, DNS or VPN flap, broken connection-sharing socket) or the call timed out | retried, see below |
+| reachable but tool missing | the host answered and the shell reports exit 126/127 or "command not found" | `reachable, but the valtrion command is missing on the host`; run `valtrion hosts sync` |
+| unreachable | a transient failure that persisted through every retry, or ssh refused for a reason no retry fixes (authentication denied, host key mismatch, bad ssh option, no matching algorithm) | `unreachable (<last error>)`, with the number of attempts when it was retried |
+
+Calls that are safe to repeat (probing, `doctor`, `hosts sync`, `job tail`/`watch`, collecting artifacts) are tried up to 5 times, pausing 1, 2, 4 and 8 s between tries (15 s of pauses). No new try starts once 240 s have passed since the first, so one call takes at most 240 s plus the deadline of one more call (its timeout plus the connect timeout). A refusal that a retry cannot fix (for example `Permission denied`) is not retried. When the error names a broken control socket, the retry runs without connection sharing. Commands that are not safe to repeat (starting a run) are tried once.
+
+Output around the answer does not matter: a login banner, a message of the day or profile output before or after the JSON of `doctor --json`, the `valtrion --version` line or the Python probe lines is skipped. Only a successful probe is cached (for 300 s); a failure is never cached. On a host reached without a login shell, `doctor` also looks for `adb` in the usual package folders (`/opt/homebrew/bin`, `/usr/local/bin` on macOS; `/usr/local/bin`, `/usr/local/sbin`, `/snap/bin` on Linux) after PATH, because that session's PATH does not include them.
+
+## Running work
+
+| Command | What it does |
+| --- | --- |
+| `run PLAN --repo REPO --sha SHA --app APP [options]` | Run one `gdv.plan/1` on a device as a detached job. The host is chosen by capability (this machine first). |
+| `pipeline FILE [options]` | Run a `gdv.pipeline/1` as a detached job on a host chosen by capability. |
+| `job start/status/tail/watch/cancel` | Start a command as a detached, supervised job and inspect it. |
+| `lease acquire/renew/release/status/list/name` | Leases on exclusive resources; `name` prints a lease name. |
+| `collect JOB_ID --host HOST [--remote-project DIR]` | Pull a remote job's artifacts into the local artifacts root with the same layout. |
+| `gc [--keep-days N] [--dry-run] [--protect PATH]` | Remove run folders older than `--keep-days` (default `retention.keepDays` of `host.json`, 30). Active, retained and protected runs are kept. |
+| `retain JOB_ID` | Keep a run from `gc`. |
+| `workroot show/checkout/inbox/release/sweep` | The work root, see [work-root.md](work-root.md). `inbox` creates `<workRoot>/jobs/inbox-<id>` and prints `{"inbox": "<path>"}`; a caller uses it to send files (see below). |
+
+**`run` and `pipeline` on an SSH host.** The command line is forwarded to the host. The plan, the pipeline and the pre-launch files are sent, and the project is found there; every other path on the command line (`--artifact FILE`, `--protect PATH`, `--project-dir` on a host without `projectsRoot`) is a path on the host, as given:
+
+- *The plan is sent.* The caller reads the plan (for `pipeline`: the file and every plan and `prelaunchFiles[].local` file its stages name, resolved against the pipeline file's folder; for `run`: the plan and the `--prelaunch-file LOCAL` files, resolved against the plan's folder) and copies them with `scp` into a new private folder `inbox-<id>` that the host creates under its own work root (`valtrion workroot inbox`). The forwarded command names the copies (`<inbox>/1-<name>`, ...); the copy of a pipeline names its plans by their copies. A file that does not exist on the caller is `BLOCKED` before anything is sent. The plan's SHA-256 in the result is that of the bytes the host read, which are the bytes of the original. The job is started with the name of its inbox: the inbox is removed when the job's work directories are cleaned up, and `gc` and `workroot sweep` (both manual) keep the inbox of an active job and remove other inboxes that nothing has touched for hours.
+- *The project is found on the host.* An explicit `--remote-project` (or `GDV_REMOTE_PROJECT`) is used as before: it is the working directory on the host, and the command line is forwarded unchanged. Otherwise, if the host has a `projectsRoot` (`hosts add --projects-root`), the project is `<projectsRoot>/<name>`, where `<name>` is the last folder of the Unity project this machine resolved (`--project-dir`, else `GDV_UNITY_PROJECT`, else `valtrion.json`) with the last segment of `candidate.repo` (`owner/Game`, `https://host/owner/Game.git` and `Game` all give `Game`) as the second name to try. A `~/...` projectsRoot on a macOS or Linux host is expanded by the host. The lookup happens only when the run needs a project (a project was resolved on this machine, the platform is `editor`, or the pipeline has a `build` stage); a run of an installed build on a device needs none and is not held back. The folder is checked on the host (`test -d`; on a Windows host with the Python recorded for it, and without one nothing can be asked, so the first name is used unverified, even when a second name exists, and the host checks the folder when the command starts and the run is `BLOCKED` there with `the Unity project folder ... does not exist on host`). If no name is a folder the run is `BLOCKED` with a reason that names the host, the `projectsRoot` and every name, its source and path that was looked for; a check that itself fails (ssh error, wrong Python path) is `BLOCKED` with the error, not reported as a missing folder. `--project-dir` of this machine is replaced by the path found, never forwarded. A host with neither gets the command line as given, including `--project-dir`.
+- *The result says what was tested.* A result of a run on an SSH host records the project folder it used as `host.tools.projectDir`. `host.tools` is a free map of strings in `gdv.result/1` and in the Unity package's reader, so no schema changes; it is not a gap and is not listed under `unverified`.
+**`run` options:** `--repo`, `--sha` (full 40-hex commit), `--app` (application id to launch on the device; for the `editor` platform the test assembly that holds the plan test, or `editor` to take `planAssembly` from the profile), `--profile`, `--device-class`, `--device-id`, `--platform` / `--target {ios,android,windows,macos,editor}`, `--artifact FILE` (install this build artifact before the run), `--build` (build the project first), `--launch-arg ARG` (repeatable), `--prelaunch-file LOCAL=REMOTE` (repeatable; push a file into the app's data folder before it starts), `--project-dir`, `--stall-sec`, `--timeout-sec`, `--lease-wait SEC`, `--protect PATH` (repeatable; cleanup never removes it), `--domain {auto,user,gui}`, `--foreground`, `--watch`, `--host` (pin the host), `--remote-project`.
+
+**`pipeline` options:** `--sha` (names the commit explicitly; must equal the checked-out commit, otherwise `BLOCKED` before any stage), `--project-dir`, `--stall-sec`, `--timeout-sec`, `--lease-wait`, `--protect`, `--domain`, `--foreground`, `--watch`, `--host`, `--remote-project`. If `candidate.sha` in the file is missing or all zeros, the run uses the commit of the checkout and records it in every result. `prelaunchFiles` in a `run` stage push files before launch; `local` is absolute or relative to the pipeline file, `remote` is a plain relative path (no `..`, no drive, no leading slash); a bad entry is `BLOCKED` before anything starts.
+
+**Commit and `dirty` in a result.** Before any stage, a pipeline reads the full `HEAD` of the repository that holds `--project-dir` (the project may be a subfolder of the repository or a folder of a linked worktree) and `git status` limited to that project folder. `candidate.dirty` is true when a tracked file there is modified, staged, deleted or conflicted, or an untracked file there is not ignored; edits elsewhere in the repository do not count, and neither do untracked files below the folders the run keeps itself (the artifacts root and the work root, when they lie inside the project); a tracked file below such a folder still counts. Git runs without an inherited `GIT_DIR`, `GIT_WORK_TREE` or `GIT_INDEX_FILE` and without optional locks. If git cannot answer (not a repository, a lock, a timeout), `unverified` of every result, also one that ends before a run, names the reason; an unreadable commit leaves the all-zero sha, an unreadable tree state leaves `dirty` true, and both stop the result from becoming a baseline. A genuinely dirty tree lists its first changed paths there and is still refused by `baseline promote`. `baseline promote` is stricter than the result's flag on purpose: besides `candidate.dirty` it requires the whole repository at `--repo-root` to be clean now (any change or untracked file anywhere, no exclusions), because the baseline file it writes is committed from that tree.
+
+**`job start`** takes the command after `--`. Options: `--kind {run,pipeline,build,install,collect}`, `--project`, `--sha`, `--label`, `--stall-sec`, `--timeout-sec` (required), `--progress-file` (repeatable), `--heartbeat FILE` (a `gdv.heartbeat/1` whose `seq` must advance), `--cpu-progress`, `--contract-exit-codes`, `--lease RESOURCE[=SLOTS]` (repeatable), `--lease-wait`, `--lease-ttl`, `--cwd`, `--domain`, `--foreground`, `--watch`, `--host`, `--remote-project`.
+
+**`job status JOB_ID`**, **`job cancel JOB_ID`**: `--host`, `--remote-project`. **`job tail` / `job watch JOB_ID`**: `--host`, `--remote-project`, `--from OFFSET` (byte offset in `events.jsonl`), `--stall-sec`, `--poll-sec`, `--unreachable-sec`, `--no-collect`. A watcher ends on the job's result and prints `GDV-RESULT <status> job=<id> offset=<n>`; if the host is unreachable for `--unreachable-sec` it reports `BLOCKED` with the offset to resume from while the job keeps running.
+
+**`lease acquire RESOURCE`**: `--session`, `--holder-pid` (the process that holds the lease, default the parent of the command; it must stay alive and renew), `--owner`, `--host`, `--remote-project`, `--slots N` (a counted resource `RESOURCE:slot1..N`), `--ttl`, `--wait SEC` (bounded wait, then `BLOCKED` naming the holder; while it waits, a line `lease waiting <N> s: <reason>` goes to stderr after the first failed attempt and then about every 30 s), `--purpose`, `--worktree`. For the resource `unity-editor`, omitting `--slots` makes it the counted resource with the host's total of Unity slots (2, 1 on macOS, or `unityEditorSlots` in `host.json`); an explicit `--slots N` is used as given. Either way the lease held is one slot, `unity-editor:slotN`, so `renew` and `release` must name the `lease.resource` that `acquire` printed, not the bare `unity-editor`. Any other resource without `--slots` is a plain lease. `renew` and `release` take `--session`, `--holder-pid`, `--owner`, `--host`, `--remote-project`; `status RESOURCE` and `list` take `--host`, `--remote-project`. Environment: `GDV_OWNER`, `GDV_SESSION` provide defaults.
+
+**`lease name unity-project PATH`** (also `--host`, `--remote-project`) takes nothing and writes nothing: it prints `{"resource": "unity-project:<hash>"}`, the lease name of the Unity project folder `PATH` (the same name the pipeline and the Editor provider use), so a launcher can pass it to `lease acquire` or `job start --lease` without computing the hash itself. The name is made from the resolved path, lower-cased on Windows and macOS; with `--host` it is computed on that host from the path as it is there.
+
+**Lease events.** `job start --lease unity-editor` (no `=SLOTS`) takes a slot of the host's total, like `lease acquire unity-editor`; `--lease unity-editor=N` uses `N`. While a job waits for a lease (`--lease-wait`), it appends a `log` event to `events.jsonl` after the first failed attempt and then about every 30 s. Its `message` is `lease waiting <N> s: <reason>` and its `data` holds `resource`, `holder` (the reason, which names the holder) and `waitedSec`.
+
+**macOS launchd domain.** A background job on macOS runs as a one-shot launchd agent. `--domain auto` tries the `user` domain and then `gui`; steps that sign need `--domain gui` (the login keychain). See [work-root.md](work-root.md).
+
+## Comparison
+
+| Command | What it does |
+| --- | --- |
+| `compare RESULT --plan PLAN --baselines FOLDER` | Compare a `gdv.result/1` with its baseline. Verdicts: `PASS`, `IMPROVED` (0), `REGRESSION` (1), `NOISY`, `NOT_COMPARABLE` (2). The output names the baseline file that was used. |
+| `baseline promote RESULT --plan PLAN --baselines FOLDER --repo-root DIR [--main-branch NAME]` | Write a baseline under `<baselines>/<plan>/` from a passing, non-editor run of a commit on the main branch, made on a clean tree, with HEAD on that commit and a clean tree now. The file is `<deviceClass>.json`; a baseline of another OS major, build profile, Unity version or evidence for the same plan and device class is written next to it as `<deviceClass>-os<N>-<profile>-<digest>.json`. Promoting the same combination again replaces its file, also when the plan file changed. |
+
+**Finding the baseline.** A baseline is found by content, not by file name: among all `*.json` files in `<baselines>/<plan>/` the one whose `planId`, comparability key and evidence equal those of the result is used (the newest `createdUtc` when several do). Plan ids or device classes that differ only in characters a file name cannot hold therefore never share or overwrite a baseline. If the plan has baselines but none with the key of the result, the verdict is `NOT_COMPARABLE` and the details name the key fields that differ in the closest one; with no baseline the details list the folders that were searched; a file that is not a valid `gdv.baseline/1` is named in the details. None of these is a `PASS`. A `budget` breach is still a `REGRESSION` without a baseline.
+
+**Comparison in a pipeline.** With `compare` set in the pipeline, every run stage that passes is compared with the baseline of its own plan and key, whatever the other stages did. A relative `compare` folder is looked for under the pipeline file's folder and under `--project-dir` (both searched, never the working directory). The results of the stages are listed with their `comparison` in `summary.json`; `result.json` of the job is the first failing stage, otherwise the first stage with the worst verdict, and its comparison details name the other stages that are not `PASS` or `IMPROVED`. The job status is the worst comparison verdict of all stages that passed (`REGRESSION` is `FAIL`, `NOT_COMPARABLE` and `NOISY` are `BLOCKED`), unless a stage itself did not pass: then the job takes that stage's status and reason, and the reason also names the earlier stages whose comparison was a `REGRESSION` (their comparisons stay in `summary.json`). A baseline folder that holds a file which is not a valid `gdv.baseline/1` makes the comparison `NOT_COMPARABLE` (a `budget` breach stays `REGRESSION`) and the file is the first detail, because an unreadable file may be the newest baseline of the key; fix or remove it. If the pipeline and project folders hold different baselines for the key, the details say so. With `repeat`, the samples of the runs are joined without the warmup samples of every run after the first (a run with fewer samples than the warmup is left out and noted in `unverified`), so the comparison drops exactly one warmup per run; the `stats` of the joined metric describe the samples as joined, including the first run's warmup. Baselines promoted from `repeat` greater than 1 by earlier versions contain the warmup samples of the later runs; promote them again.
+
+Two results are compared only when plan id, plan SHA-256, device class, OS major version, build profile and Unity version are all equal; otherwise `NOT_COMPARABLE`. A `budget` breach, or a median worse than the baseline by more than `regressionPct`, is `REGRESSION`; a baseline or run whose spread exceeds `regressionPct`, or too few samples, is `NOISY` (use a higher `repeat`); better by more than `regressionPct` is `IMPROVED`.
+
+## Choosing checks for a change
+
+A project describes in `validation/device/checks.json` (`gdv.checks/1`; see `examples/checks.json`) which paths belong to which kind of change and which checks each kind needs per level `L0` to `L4`.
+
+| Command | What it does |
+| --- | --- |
+| `select --base-ref REF [--checks FILE] [--include-worktree] [--level L0..L4] [--json]` | List the checks the diff from the merge base with `REF` to `HEAD` needs. Levels are cumulative; default `L4`. Exit 0, 1 (unclassified path under `"unclassified": "fail"`, invalid map or plan), 2 (git or file missing). |
+| `report --base-ref REF --results FOLDER [--checks FILE] [--include-worktree] [--level L0..L4] [--pr] [--json] [--sha SHA]` | Build the `Local verification` block: one row per selected check and platform with status, evidence and host. A check without a `gdv.result/1` file is `NOT_RUN`; a result for another revision does not count; a `PASS` with weaker evidence than the plan requires (a plan that declares none needs `physical`) or from a dirty tree is `NOT_VERIFIED`. `--pr` prints the block with its heading. `--sha` must equal `HEAD`. Exit code of the worst row; `NOT_RUN` and `NOT_VERIFIED` exit 2. |
+| `check-config [--checks FILE] [--base-ref REF] [--include-worktree] [--warn-unclassified]` | Validate the check map, its areas and entries, every referenced plan (valid, unique `id`) and, with a base, the unclassified paths of the diff (an error, or a warning with the flag). |
+
+Entries in a level list: `l0` or `l0:name`; `editmode:A,B[@runner]` and `playmode:A[@runner]` (Editor test assemblies; `runner` is the project's command with `{assemblies}` replaced by the united, sorted list); `player:target`; `device:plans/name` (the file `plans/name.plan.json` next to `checks.json`). A path no area matches is unclassified: with `"unclassified": "widest"` every kind is selected, with `"fail"` `select` exits 1 and selects nothing. A result belongs to a check when its `plan.id` equals the check key.
+
+## Documents and schemas
+
+| Command | What it does |
+| --- | --- |
+| `validate FILE` | Validate a `.json` document or an `events.jsonl` log against its schema. Exit 0 valid, 1 malformed content, 2 file missing, unreadable or not UTF-8. |
+| `schemas` | Print the contract schema ids. |
+| `exit-code STATUS` | Print the exit code of a status. |
+| `version` | Print the core version and the CLI contract version. |
+
+## Reserved commands
+
+`build`, `install`, `launch`, `push`, `pull`, `screenshot` and `logs` are reserved for provider-level commands. They accept any arguments, print `not implemented`, and exit 2. Builds, installs and launches currently happen through `run` and `pipeline`.

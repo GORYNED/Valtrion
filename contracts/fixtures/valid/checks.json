@@ -1,0 +1,14 @@
+{
+  "schema": "gdv.checks/1",
+  "platforms": { "required": ["ios"], "dev": ["windows", "editor"] },
+  "unityEditorSlots": 2,
+  "areas": [
+    { "glob": "Assets/Project/Playback/**", "kind": "playback-perf" },
+    { "glob": "docs/**", "kind": "docs" }
+  ],
+  "kinds": {
+    "playback-perf": { "L2": ["editmode:Playback.Tests"], "L4": ["device:plans/perf.open-playback"] },
+    "docs": { "L0": ["l0"] }
+  },
+  "unclassified": "widest"
+}

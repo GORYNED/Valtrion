@@ -1,0 +1,3 @@
+<linker>
+  <assembly fullname="Valtrion.Unity" preserve="all"/>
+</linker>

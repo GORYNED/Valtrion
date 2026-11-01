@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "gdv.event/1",
+  "title": "One line of events.jsonl (append-only job log)",
+  "type": "object",
+  "required": ["schema", "seq", "utc", "jobId", "type"],
+  "additionalProperties": false,
+  "properties": {
+    "schema": { "const": "gdv.event/1" },
+    "seq": { "type": "integer", "minimum": 0 },
+    "utc": { "$ref": "common.schema.json#/$defs/utc" },
+    "jobId": { "$ref": "common.schema.json#/$defs/identifier" },
+    "type": {
+      "enum": [
+        "job.started", "job.finished", "step.started", "step.finished", "progress",
+        "stall.detected", "timeout.detected", "lease.acquired", "lease.released", "log"
+      ]
+    },
+    "step": { "type": "string" },
+    "status": { "$ref": "common.schema.json#/$defs/status" },
+    "message": { "type": "string" },
+    "data": { "type": "object" }
+  }
+}
