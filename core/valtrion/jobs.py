@@ -134,18 +134,34 @@ def active_job_ids(home: Path | None = None, now: Callable[[], datetime] = core.
     return active
 
 
-def prune_index(home: Path | None = None, dry_run: bool = False) -> list[str]:
+def prune_index(artifacts_root: Path, home: Path | None = None, dry_run: bool = False) -> list[str]:
     """Remove index entries (`<home>/jobs/<jobId>.json`) whose run folder no longer exists (`valtrion gc` removed it): the index
-    is read in full by `active_job_ids`, so it must not grow for ever. Returns the removed job ids."""
+    is read in full by `active_job_ids`, so it must not grow for ever. Only an entry that lies under `artifacts_root` is judged, and
+    only while that root is readable (an unmounted or hung volume would otherwise look like "everything is gone"); the entry of an
+    active job is never removed. Returns the removed job ids."""
     folder = (home or core.valtrion_home()) / "jobs"
     removed: list[str] = []
-    for entry in sorted(folder.glob("*.json")) if folder.is_dir() else []:
+    if not folder.is_dir() or not artifacts_root.is_dir():
+        return removed
+    try:
+        root = artifacts_root.resolve()
+        next(artifacts_root.iterdir(), None)  # the root answers
+    except OSError:
+        return removed
+    active = set(active_job_ids(home))
+    for entry in sorted(folder.glob("*.json")):
+        if entry.stem in active:
+            continue
         try:
             directory = Path(core.read_json(entry, attempts=2)["dir"])
         except FileNotFoundError:
             continue
         except (OSError, ValueError, KeyError, TypeError):
-            continue  # unreadable now (being written): keep it
+            continue  # unreadable now (being written), or not an index entry: keep it
+        try:
+            directory.resolve().relative_to(root)
+        except (OSError, ValueError):
+            continue  # another artifacts root: not ours to judge
         if directory.exists():
             continue
         if not dry_run:

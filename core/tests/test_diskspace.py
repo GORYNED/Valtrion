@@ -310,17 +310,25 @@ class PipelineDiskTests(unittest.TestCase):
         self.assertEqual(["k1", "k2", "legacy"], keys)
 
     def test_the_job_index_loses_entries_whose_run_folder_is_gone(self):
-        alive = self.base / "alive"
-        alive.mkdir()
+        alive = self.root / "P" / "abcdef12" / "alive"
+        alive.mkdir(parents=True)
         index = self.home / "jobs"
         index.mkdir()
         core.atomic_write_json(index / "alive.json", {"dir": str(alive)})
-        core.atomic_write_json(index / "gone.json", {"dir": str(self.base / "gone")})
+        core.atomic_write_json(index / "gone.json", {"dir": str(self.root / "P" / "abcdef12" / "gone")})
+        core.atomic_write_json(index / "running-gone.json", {"dir": str(self.root / "P" / "abcdef12" / "running-gone")})
+        core.atomic_write_json(index / "elsewhere.json", {"dir": str(self.base / "other-root" / "gone")})  # another artifacts root
+        core.atomic_write_json(index / "nodir.json", {"other": 1})
         (index / "broken.json").write_text("{not json", encoding="utf-8")
-        self.assertEqual(["gone"], jobs.prune_index(self.home, dry_run=True))
-        self.assertTrue((index / "gone.json").exists())
-        self.assertEqual(["gone"], jobs.prune_index(self.home))
-        self.assertEqual(["alive.json", "broken.json"], sorted(p.name for p in index.glob("*.json")))
+        with mock.patch.object(jobs, "active_job_ids", lambda home=None: ["running-gone"]):
+            self.assertEqual(["gone"], jobs.prune_index(self.root, self.home, dry_run=True))
+            self.assertTrue((index / "gone.json").exists())
+            self.assertEqual(["gone"], jobs.prune_index(self.root, self.home))
+        self.assertEqual(["alive.json", "broken.json", "elsewhere.json", "nodir.json", "running-gone.json"],
+                         sorted(p.name for p in index.glob("*.json")))
+        # an unavailable artifacts root (unmounted volume) makes every folder look gone: nothing is judged then
+        self.assertEqual([], jobs.prune_index(self.base / "not-mounted", self.home))
+        self.assertTrue((index / "alive.json").exists())
 
     def test_the_gc_command_prunes_the_job_index(self):
         from valtrion import cli
@@ -328,7 +336,9 @@ class PipelineDiskTests(unittest.TestCase):
         import io
         index = self.home / "jobs"
         index.mkdir()
-        core.atomic_write_json(index / "gone.json", {"dir": str(self.base / "gone")})
+        self.root.mkdir(parents=True, exist_ok=True)
+        self.settings({"artifactsRoot": str(self.root)})
+        core.atomic_write_json(index / "gone.json", {"dir": str(self.root / "P" / "abcdef12" / "gone")})
         out = io.StringIO()
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
             code = cli.main(["gc"])
