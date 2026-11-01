@@ -24,6 +24,7 @@ from typing import Any, Callable, Mapping, Sequence
 from . import artifacts, buildcache, compare, config, constants, core, diskspace, gitstate, lease, providers, supervise
 from .adapter import DeviceHealth, DeviceInfo, PlatformAdapter, StepOutcome
 from .jobs import JobContext
+from .jobs import reap_cancelled_jobs as jobs_reap
 from .jobs import work_cleanup_blocker as jobs_blocker
 from .schema import Validator, validate_document
 
@@ -618,6 +619,7 @@ def execute(pipeline: Mapping[str, Any], pipeline_path: Path | None, ctx: JobCon
     artifact: Path | None = None
     build_outcome: StepOutcome | None = None
     build_info: dict[str, Any] | None = None  # the published build (or the reused one), recorded in every result of the job
+    reaped_dead_jobs = False  # the leftovers of cancelled jobs are removed before this job's first build only
     build_pending_release = False  # a build whose output is still in the work folder (not published): released after the install
     used_entry: buildcache.Entry | None = None  # touched again before the install, so a long wait for the device does not let gc take it
     extra_layers: dict[str, str] = {}
@@ -851,6 +853,12 @@ def execute(pipeline: Mapping[str, Any], pipeline_path: Path | None, ctx: JobCon
                 if reason:
                     events.emit("step.finished", reason, step=name, status=constants.BLOCKED)
                     return fail(constants.BLOCKED, reason)
+                if adapter.build_uses_editor and not reaped_dead_jobs:  # only then the project lease is held; once per job
+                    reaped_dead_jobs = True
+                    try:
+                        jobs_reap(Path(ctx.spec["artifactsRoot"]), ctx.spec["project"], project_dir, events, ctx.job_id)
+                    except (KeyError, OSError):
+                        pass
                 low = check_disk(name)
                 if low is not None:
                     return low
@@ -899,8 +907,7 @@ def execute(pipeline: Mapping[str, Any], pipeline_path: Path | None, ctx: JobCon
                     diskspace.remember_build(directory, published.key)
                     events.emit("progress", f"build published {published.key}", step=name, data={"build": build_info})
                     _collect_build_cache(ctx, published.key)
-                    release_build_output()
-                    build_pending_release = False
+                    release_build_output()  # also the leftovers of an earlier unpublished build: the registry lists them all
                     continue
             build_pending_release = True  # not published (no key, or it failed): the output is released after the install
             continue

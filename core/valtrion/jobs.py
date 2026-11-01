@@ -134,6 +134,45 @@ def active_job_ids(home: Path | None = None, now: Callable[[], datetime] = core.
     return active
 
 
+def prune_index(artifacts_root: Path, home: Path | None = None, dry_run: bool = False) -> list[str]:
+    """Remove index entries (`<home>/jobs/<jobId>.json`) whose run folder no longer exists (`valtrion gc` removed it): the index
+    is read in full by `active_job_ids`, so it must not grow for ever. Only an entry that lies under `artifacts_root` is judged, and
+    only while that root is readable (an unmounted or hung volume would otherwise look like "everything is gone"); the entry of an
+    active job is never removed. Returns the removed job ids."""
+    folder = (home or core.valtrion_home()) / "jobs"
+    removed: list[str] = []
+    if not folder.is_dir() or not artifacts_root.is_dir():
+        return removed
+    try:
+        root = artifacts_root.resolve()
+        next(artifacts_root.iterdir(), None)  # the root answers
+    except OSError:
+        return removed
+    active = set(active_job_ids(home))
+    for entry in sorted(folder.glob("*.json")):
+        if entry.stem in active:
+            continue
+        try:
+            directory = Path(core.read_json(entry, attempts=2)["dir"])
+        except FileNotFoundError:
+            continue
+        except (OSError, ValueError, KeyError, TypeError):
+            continue  # unreadable now (being written), or not an index entry: keep it
+        try:
+            directory.resolve().relative_to(root)
+        except (OSError, ValueError):
+            continue  # another artifacts root: not ours to judge
+        if directory.exists():
+            continue
+        if not dry_run:
+            try:
+                entry.unlink()
+            except OSError:
+                continue
+        removed.append(entry.stem)
+    return removed
+
+
 def new_job_id(label: str, sha8: str, moment: datetime | None = None) -> str:
     stamp = (moment or core.now()).strftime("%Y%m%dT%H%M%S") + "Z"
     return core.safe_identifier(f"{stamp}-{core.safe_segment(label, 'job', 40)}-{sha8}")
@@ -941,9 +980,73 @@ def cancel_job(directory: Path, grace_sec: float = 15.0, sleep: Callable[[float]
         forced = supervise.kill_process_tree(pid)
     final = store.read_job()
     if final["state"] not in ("finished", "cancelled"):
-        # The runner is gone and left the job open; close it so no watcher waits for it, and free what it held.
-        _close_orphaned(store, final)
+        # The runner is gone and left the job open; close it so no watcher waits for it, and free what it held. What it registered
+        # as temporary is removed only when the runner is certainly dead: killed just now, or its recorded pid is no longer alive.
+        # A live process that cannot be shown to be the runner (no runner record, a reused pid) may still be working there.
+        recorded = job.get("pid")
+        _close_orphaned(store, final, remove_temporaries=forced or not recorded or not core.process_alive(recorded))
     return {"jobId": job["jobId"], "state": "cancelled", "note": "runner was killed" if forced else "runner was already gone"}
+
+
+def _remove_orphaned_temporaries(spec: Mapping[str, Any], job_id: str, events: "EventLog", directory: Path) -> None:
+    """A runner that died (killed, crashed, cancelled by force) never ran its cleanup, so what its build registered as temporary
+    (an iOS export folder inside the project, the build output) stayed, and the next build on the same tree found the export
+    folder in its way and was BLOCKED. Remove those paths now, with the rules of the runner's own cleanup (only inside the run
+    folder, the temp folders, the work root jobs folder and the project; nothing protected or retained). No result will be saved
+    by a dead runner, so it is not waited for."""
+    if not spec.get("cleanup", True):
+        return
+    import tempfile
+    try:
+        layout = RunLayout(Path(spec["artifactsRoot"]), spec["project"], spec["sha8"], job_id)
+        if layout.directory.resolve() != directory.resolve():
+            events.emit("log", f"the spec of {job_id} does not describe the folder it lies in: its temporary paths are left")
+            return
+        roots = [tempfile.gettempdir(), *spec.get("tempRoots", [])]
+        if spec.get("workRoot"):
+            roots.append(str(workroot.WorkRoots(Path(spec["workRoot"])).jobs))
+        if spec["payload"].get("projectDir"):
+            roots.append(spec["payload"]["projectDir"])
+        report = artifacts.cleanup_run(layout, [Path(p) for p in spec.get("protectedPaths", [])], allowed_roots=roots, require_result=False)
+    except (OSError, KeyError, ValueError) as error:
+        events.emit("log", f"temporary paths of the dead runner could not be removed: {error}")
+        return
+    if report.removed or report.kept:
+        events.emit("log", "cleanup of a dead runner's temporary paths",
+                    data={"removed": list(report.removed), "kept": [list(item) for item in report.kept]})
+
+
+def reap_cancelled_jobs(artifacts_root: Path, project: str, project_dir: Path, events: "EventLog", current_job: str) -> int:
+    """Before a build: remove the temporary paths that jobs of the same project tree left when they were cancelled by a version that
+    did not clean up (or whose cleanup failed), so a leftover export folder in the project does not block this build. The caller
+    holds the project's lease, so nobody else builds in `project_dir`. Only a job whose state is `cancelled`, whose project folder
+    is `project_dir` and whose registry still lists paths is touched; the same rules as `_remove_orphaned_temporaries`."""
+    base = artifacts_root / core.safe_segment(project, "project")
+    reaped = 0
+    if not base.is_dir():
+        return reaped
+    wanted = project_dir.resolve()
+    for job_json in sorted(base.glob("*/*/job.json")):
+        directory = job_json.parent
+        registry = directory / artifacts.TEMP_REGISTRY
+        try:
+            if directory.name == current_job or registry.stat().st_size <= 2:  # absent, or an emptied `[]`
+                continue
+            document = core.read_json(job_json, attempts=2)
+            if document.get("state") != "cancelled":
+                continue
+            if document.get("pid") and core.process_alive(int(document["pid"])):
+                continue  # a live process under the recorded pid may still be the runner (cancel could not prove otherwise)
+            if not core.read_json(registry, attempts=2):
+                continue
+            spec = core.read_json(directory / "spec.json", attempts=2)
+            if Path(spec["payload"]["projectDir"]).resolve() != wanted:
+                continue
+        except (OSError, ValueError, AttributeError, KeyError, TypeError):
+            continue
+        _remove_orphaned_temporaries(spec, directory.name, events, directory)
+        reaped += 1
+    return reaped
 
 
 def _runner_is_ours(store: JobStore, pid: int | None) -> bool:
@@ -958,7 +1061,7 @@ def _runner_is_ours(store: JobStore, pid: int | None) -> bool:
     return recorded.get("pid") == pid and recorded.get("token") is not None and recorded.get("token") == core.process_start_token(pid)
 
 
-def _close_orphaned(store: JobStore, job: dict) -> None:
+def _close_orphaned(store: JobStore, job: dict, remove_temporaries: bool = True) -> None:
     spec = store.read_spec()
     events = EventLog(store, job["jobId"])
     manager = lease.LeaseManager(host_id=spec["host"]["id"])
@@ -966,6 +1069,10 @@ def _close_orphaned(store: JobStore, job: dict) -> None:
         if item.record and item.record.session == job["jobId"]:
             manager.release(item.resource, job["jobId"], item.record.pid)
             events.emit("lease.released", item.resource, data={"resource": item.resource, "ok": True})
+    if remove_temporaries:
+        _remove_orphaned_temporaries(spec, job["jobId"], events, store.directory)
+    else:
+        events.emit("log", "the process of the job's pid is alive but not shown to be its runner: its temporary paths are left")
     if spec.get("workRoot"):
         kept = work_cleanup_blocker(spec)
         if kept:

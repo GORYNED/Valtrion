@@ -209,7 +209,10 @@ class ScopedLeaseTests(unittest.TestCase):
     def job_files(self):
         found = {}
         for path in sorted(self.root.glob("*/*/*/job.json")):
-            document = json.loads(path.read_text(encoding="utf-8"))
+            try:
+                document = core.read_json(path)  # retries: job.json is replaced atomically and a reader may meet the swap (Windows)
+            except (OSError, ValueError):
+                continue
             found[path.parent.name] = document
         return found
 

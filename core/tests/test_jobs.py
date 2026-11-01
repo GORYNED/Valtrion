@@ -217,6 +217,42 @@ class DetachedTests(JobTestCase):
         self.assertEqual("cancelled", result["state"])
         self.assertEqual("cancelled", jobs.JobStore(layout.directory).read_job()["state"])
 
+    def test_cancelling_a_job_whose_runner_is_gone_removes_the_temporary_paths_it_registered(self):
+        project = Path(self._folder.name) / "project"
+        export = project / "Builds" / "iOS"
+        export.mkdir(parents=True)
+        (export / "Xcode.proj").write_text("x", encoding="utf-8")
+        protected = project / "Builds" / "Keep"
+        protected.mkdir()
+        layout, _ = jobs.create_job(self.request(HANG, payload={"type": "command", "argv": HANG, "cwd": None, "projectDir": str(project)},
+                                                 protected_paths=(str(protected),)), self.root, self.home)
+        core.atomic_write_json(layout.directory / "temp-paths.json", [str(export), str(protected)])
+        job = jobs.JobStore(layout.directory).read_job()
+        job.update({"state": "running", "pid": 999999})
+        core.atomic_write_json(layout.job_json, job)  # the runner is gone: nobody ran its cleanup and no result was saved
+        jobs.cancel_job(layout.directory, grace_sec=0.3)
+        self.assertFalse(export.exists(), "the export folder in the project would block the next build")
+        self.assertTrue(protected.exists(), "a protected path stays")
+        events = [json.loads(line) for line in (layout.directory / "events.jsonl").read_text(encoding="utf-8").splitlines()]
+        self.assertTrue(any("dead runner" in e.get("message", "") for e in events))
+
+    def test_cancel_leaves_the_temporary_paths_while_a_live_process_may_still_be_the_runner(self):
+        bystander = __import__("subprocess").Popen(HANG)
+        self.addCleanup(bystander.wait)
+        self.addCleanup(bystander.kill)
+        project = Path(self._folder.name) / "project"
+        export = project / "Builds" / "iOS"
+        export.mkdir(parents=True)
+        layout, _ = jobs.create_job(self.request(HANG, payload={"type": "command", "argv": HANG, "cwd": None, "projectDir": str(project)}),
+                                    self.root, self.home)
+        core.atomic_write_json(layout.directory / "temp-paths.json", [str(export)])
+        job = jobs.JobStore(layout.directory).read_job()
+        job.update({"state": "running", "pid": bystander.pid})  # alive, and no runner record proves it is not the runner
+        core.atomic_write_json(layout.job_json, job)
+        jobs.cancel_job(layout.directory, grace_sec=0.3)
+        self.assertIsNone(bystander.poll())
+        self.assertTrue(export.exists(), "nothing is removed under a process that may be working there")
+
     def test_a_job_without_a_runner_record_is_never_killed_by_pid(self):
         bystander = __import__("subprocess").Popen(HANG)
         self.addCleanup(bystander.wait)

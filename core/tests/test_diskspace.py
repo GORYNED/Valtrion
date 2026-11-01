@@ -275,7 +275,7 @@ class PipelineDiskTests(unittest.TestCase):
         while time.monotonic() < deadline and entry is None:
             time.sleep(0.05)
             entries = buildcache.entries(buildcache.builds_root(self.home))
-            waiting = [p for p in self.root.glob("*/*/*/job.json") if json.loads(p.read_text(encoding="utf-8")).get("phase") == "waiting-device"]
+            waiting = [p for p in self.root.glob("*/*/*/job.json") if core.read_json(p).get("phase") == "waiting-device"]
             entry = entries[0] if entries and waiting else None
         self.assertIsNotNone(entry, "the job built, published and waits for the device")
         old = core.format_utc(core.now() - timedelta(days=10))
@@ -290,6 +290,163 @@ class PipelineDiskTests(unittest.TestCase):
         core.atomic_write_json(entry.directory / buildcache.MANIFEST, {**entry.manifest, "lastUsedUtc": old, "publishedUtc": old})
         diskspace.ensure_free(config.load_host_settings(self.home), self.home, free=FakeVolume(1))
         self.assertFalse(entry.directory.exists(), "once no active job needs it, the expired build goes")
+
+    def test_the_active_build_keys_are_found_from_a_list_of_active_jobs_without_reading_the_index_again(self):
+        run = self.base / "run1"
+        run.mkdir()
+        diskspace.remember_build(run, "k1")
+        diskspace.remember_build(run, "k2")  # a pipeline with an install by key and then a build uses two
+        diskspace.remember_build(run, "k1")
+        self.assertEqual({"keys": ["k1", "k2"]}, json.loads((run / diskspace.BUILD_KEY_FILE).read_text(encoding="utf-8")))
+        old = self.base / "run0"
+        old.mkdir()
+        (old / diskspace.BUILD_KEY_FILE).write_text('{"key": "legacy"}', encoding="utf-8")  # the form 0.8.2 wrote
+        jobs_folder = self.home / "jobs"
+        jobs_folder.mkdir()
+        core.atomic_write_json(jobs_folder / "job-a.json", {"dir": str(run)})
+        core.atomic_write_json(jobs_folder / "job-b.json", {"dir": str(old)})
+        with mock.patch.object(jobs, "active_job_ids", side_effect=AssertionError("the index was read again")):
+            keys = diskspace.active_build_keys(self.home, active=["job-a", "job-b", "job-unknown"])
+        self.assertEqual(["k1", "k2", "legacy"], keys)
+
+    def test_the_job_index_loses_entries_whose_run_folder_is_gone(self):
+        alive = self.root / "P" / "abcdef12" / "alive"
+        alive.mkdir(parents=True)
+        index = self.home / "jobs"
+        index.mkdir()
+        core.atomic_write_json(index / "alive.json", {"dir": str(alive)})
+        core.atomic_write_json(index / "gone.json", {"dir": str(self.root / "P" / "abcdef12" / "gone")})
+        core.atomic_write_json(index / "running-gone.json", {"dir": str(self.root / "P" / "abcdef12" / "running-gone")})
+        core.atomic_write_json(index / "elsewhere.json", {"dir": str(self.base / "other-root" / "gone")})  # another artifacts root
+        core.atomic_write_json(index / "nodir.json", {"other": 1})
+        (index / "broken.json").write_text("{not json", encoding="utf-8")
+        with mock.patch.object(jobs, "active_job_ids", lambda home=None: ["running-gone"]):
+            self.assertEqual(["gone"], jobs.prune_index(self.root, self.home, dry_run=True))
+            self.assertTrue((index / "gone.json").exists())
+            self.assertEqual(["gone"], jobs.prune_index(self.root, self.home))
+        self.assertEqual(["alive.json", "broken.json", "elsewhere.json", "nodir.json", "running-gone.json"],
+                         sorted(p.name for p in index.glob("*.json")))
+        # an unavailable artifacts root (unmounted volume) makes every folder look gone: nothing is judged then
+        self.assertEqual([], jobs.prune_index(self.base / "not-mounted", self.home))
+        self.assertTrue((index / "alive.json").exists())
+
+    def test_the_gc_command_prunes_the_job_index(self):
+        from valtrion import cli
+        import contextlib
+        import io
+        index = self.home / "jobs"
+        index.mkdir()
+        self.root.mkdir(parents=True, exist_ok=True)
+        self.settings({"artifactsRoot": str(self.root)})
+        core.atomic_write_json(index / "gone.json", {"dir": str(self.root / "P" / "abcdef12" / "gone")})
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+            code = cli.main(["gc"])
+        self.assertEqual(0, code)
+        self.assertFalse((index / "gone.json").exists())
+        self.assertIn("job index entry gone", out.getvalue())
+
+    def test_two_build_stages_release_the_leftovers_of_an_unpublished_first_build(self):
+        original = adapter_class(self.world)
+        work = self.work
+        real_publish = buildcache.publish
+        calls = []
+
+        def publish_once_failing(*args, **kwargs):
+            calls.append(1)
+            if len(calls) == 1:
+                raise OSError("disk full")
+            return real_publish(*args, **kwargs)
+
+        class Leftover(original):
+            def bind_temporary_registrar(self, register):
+                self.register = register
+
+            def build(self, project, profile, out):
+                extra = out.parent / "xcode-export-test"
+                extra.mkdir(parents=True, exist_ok=True)
+                (extra / "big.bin").write_bytes(b"x" * 100)
+                self.register(extra)
+                return super().build(project, profile, out)
+
+        providers.register("android", Leftover)
+        with mock.patch.object(buildcache, "publish", publish_once_failing):
+            store = self.run_job([{"stage": "build"}, {"stage": "build", "args": {"reuse": False}}, {"stage": "install"}])
+        self.assertEqual("PASS", store.read_job()["status"], store.read_job()["reason"])
+        self.assertEqual(2, len(calls))
+        self.assertEqual([], [p for p in (work / "jobs").glob("*/xcode-export-test") if p.exists()], "released by the pipeline")
+        events = [json.loads(line) for line in store.events.read_text(encoding="utf-8").splitlines()]
+        self.assertTrue(any(e["type"] == "log" and "of build output from the job work folder" in e.get("message", "") for e in events))
+
+    def test_a_new_build_removes_what_a_cancelled_job_left_in_the_same_project_tree(self):
+        self.settings({"artifactsRoot": str(self.root)})
+        project = self.base / "A"
+        leftover = project / "Builds" / "iOS"  # an export folder the cancelled build made inside the project
+        leftover.mkdir(parents=True)
+        (leftover / "Xcode.proj").write_text("x", encoding="utf-8")
+        old = self.root / "Sample" / "abcdef12" / "20261101T000000Z-old-abcdef12"
+        old.mkdir(parents=True)
+        core.atomic_write_json(old / "job.json", {"state": "cancelled"})
+        core.atomic_write_json(old / "spec.json", {
+            "jobId": old.name, "project": "Sample", "sha8": "abcdef12", "artifactsRoot": str(self.root), "cleanup": True,
+            "payload": {"type": "pipeline", "projectDir": str(project)}})
+        core.atomic_write_json(old / "temp-paths.json", [str(leftover)])
+        store = self.run_job()
+        self.assertEqual("PASS", store.read_job()["status"], store.read_job()["reason"])
+        self.assertFalse(leftover.exists())
+        self.assertEqual([], core.read_json(old / "temp-paths.json"), "the dead job's registry is emptied")
+        events = [json.loads(line) for line in store.events.read_text(encoding="utf-8").splitlines()]
+        self.assertTrue(any("dead runner" in e.get("message", "") for e in events), "reported in the new job's events")
+
+    def test_a_cancelled_job_of_another_project_tree_is_not_reaped(self):
+        self.settings({"artifactsRoot": str(self.root)})
+        other = self.base / "OtherCheckout"
+        leftover = other / "Builds" / "iOS"
+        leftover.mkdir(parents=True)
+        old = self.root / "Sample" / "abcdef12" / "20261101T000000Z-old-abcdef12"
+        old.mkdir(parents=True)
+        core.atomic_write_json(old / "job.json", {"state": "cancelled"})
+        core.atomic_write_json(old / "spec.json", {
+            "jobId": old.name, "project": "Sample", "sha8": "abcdef12", "artifactsRoot": str(self.root), "cleanup": True,
+            "payload": {"type": "pipeline", "projectDir": str(other)}})
+        core.atomic_write_json(old / "temp-paths.json", [str(leftover)])
+        store = self.run_job()
+        self.assertEqual("PASS", store.read_job()["status"], store.read_job()["reason"])
+        self.assertTrue(leftover.exists(), "another checkout of the same project may be in use under its own lease")
+
+    def test_a_cancelled_job_whose_recorded_pid_is_alive_is_not_reaped(self):
+        self.settings({"artifactsRoot": str(self.root)})
+        project = self.base / "A"
+        leftover = project / "Builds" / "iOS"
+        leftover.mkdir(parents=True)
+        old = self.root / "Sample" / "abcdef12" / "20261101T000000Z-old-abcdef12"
+        old.mkdir(parents=True)
+        core.atomic_write_json(old / "job.json", {"state": "cancelled", "pid": os.getpid()})  # alive: it may still be working there
+        core.atomic_write_json(old / "spec.json", {
+            "jobId": old.name, "project": "Sample", "sha8": "abcdef12", "artifactsRoot": str(self.root), "cleanup": True,
+            "payload": {"type": "pipeline", "projectDir": str(project)}})
+        core.atomic_write_json(old / "temp-paths.json", [str(leftover)])
+        store = self.run_job()
+        self.assertEqual("PASS", store.read_job()["status"], store.read_job()["reason"])
+        self.assertTrue(leftover.exists())
+
+    def test_a_spec_that_does_not_describe_its_own_folder_removes_nothing(self):
+        leftover = self.base / "A" / "Builds" / "iOS"
+        leftover.mkdir(parents=True)
+        folder = self.root / "Sample" / "abcdef12" / "copied"
+        folder.mkdir(parents=True)
+        core.atomic_write_json(folder / "temp-paths.json", [str(leftover)])
+        spec = {"jobId": "copied", "project": "Sample", "sha8": "abcdef12", "artifactsRoot": str(self.root), "cleanup": True,
+                "payload": {"type": "pipeline", "projectDir": str(self.base / "A")}}
+        notes = []
+
+        class Events:
+            def emit(self, kind, message=None, **kwargs):
+                notes.append(message)
+
+        jobs._remove_orphaned_temporaries(spec, "copied", Events(), self.root / "Sample" / "abcdef12" / "somewhere-else")
+        self.assertTrue(leftover.exists())
+        self.assertTrue(any("does not describe the folder" in (note or "") for note in notes))
 
     def test_a_retained_or_no_cleanup_job_keeps_its_work_folder(self):
         original = adapter_class(self.world)
