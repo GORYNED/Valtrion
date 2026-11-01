@@ -1,10 +1,37 @@
 # Installing
 
-Install Core from a checkout. Start with the [Quick Start](quick-start.md) for a command check without Unity or use the [AI-agent setup prompt](ai-agent-setup.md). For Unity, add the package separately using the [Unity Quick Start](unity-quick-start.md). Public HTTPS cloning needs no GitHub account or token; private forks require normal repository access. These instructions do not depend on a package-index release.
+Install Core from PyPI with `pipx`, or from a checkout. Start with the [Quick Start](quick-start.md) for a command check without Unity or use the [AI-agent setup prompt](ai-agent-setup.md). For Unity, add the package separately using the [Unity Quick Start](unity-quick-start.md). Public HTTPS cloning needs no GitHub account or token; private forks require normal repository access.
 
 ## Requirements
 
 Python 3.10 or newer. Nothing else is installed at runtime (standard library only). The tools a platform needs (Unity Editor, Xcode, `adb`) are probed by `valtrion doctor`; a missing one is reported, not required to install.
+
+## From PyPI (recommended)
+
+```
+pipx install valtrion              # latest release
+pipx install valtrion==0.7.4       # a specific release
+pipx upgrade valtrion              # update later
+valtrion --version
+```
+
+Without pipx: `python -m venv <dir>` then `<dir>/bin/pip install valtrion` (`Scripts` on Windows). `pipx` puts `valtrion` on your PATH (`pipx ensurepath`). The package has no runtime dependencies. Releases are published by the manual [Release workflow](releasing.md) through PyPI Trusted Publishing; Core `0.7.4` is the first PyPI release, so these commands work once it has been published.
+
+## Unity package (UPM, from Git)
+
+The Unity package has its own version and is not on PyPI. Add it to `Packages/manifest.json` (or Package Manager → Add package from git URL):
+
+```json
+"com.goryned.valtrion.unity": "https://github.com/GORYNED/Valtrion.git?path=integrations/unity/com.goryned.valtrion.unity#unity-v0.7.1"
+```
+
+Add `"testables": ["com.goryned.valtrion.unity"]` to run its tests, as in the [Unity Quick Start](unity-quick-start.md). Tags are `unity-vX.Y.Z`; pin a tag or a full commit SHA for shared projects, not a branch.
+
+## Updating
+
+- Core: `pipx upgrade valtrion`. On SSH hosts run `valtrion hosts sync` so every host has the same version.
+- Unity: change the tag in the manifest URL (for example `#unity-v0.7.1` to a newer `unity-vX.Y.Z`), let Unity resolve it, and commit `Packages/manifest.json` and `packages-lock.json`.
+- Then run `valtrion doctor --project <Unity project>`: it reports `BLOCKED` with the action to take if the pair is not listed in [compat.json](../compat.json). Read the changelogs ([Core](../CHANGELOG.md), [Unity](../integrations/unity/com.goryned.valtrion.unity/CHANGELOG.md)) before upgrading.
 
 ## From a checkout
 
@@ -22,7 +49,7 @@ valtrion --version
 
 This prints `valtrion <version> (contract <n>)`. Here and below, replace `valtrion` with the printed absolute path or add its directory to PATH. `python -m valtrion` works only with the installed environment's Python. To use the checkout without installing, put `core/` on `PYTHONPATH`.
 
-The offline installer is the simplest route. Standard Python builds use Hatchling 1.27 or newer as a build-only dependency (`python -m pip wheel ./core`); building from the source archive is supported too. Runtime dependencies remain empty. Both distribution paths include schemas, the compatibility table and the MIT notice. The `Private :: Do Not Upload` classifier is an intentional publication guard: removing it and uploading to an index is a separate release decision.
+The offline installer is the simplest route. Standard Python builds use Hatchling 1.27 or newer as a build-only dependency (`python -m pip wheel ./core`); building from the source archive is supported too. Runtime dependencies remain empty. Both distribution paths include schemas, the compatibility table and the MIT notice. The same distributions are what the Release workflow uploads to PyPI.
 
 On macOS, install into a folder that is not protected (not under Documents, Desktop, Downloads or cloud storage): background jobs run the interpreter that runs `valtrion` and are refused otherwise. See [work-root.md](work-root.md).
 

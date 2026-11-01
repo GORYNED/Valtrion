@@ -1,11 +1,9 @@
 # Changelog
 
-## Unreleased
-
-- Move the integration to `integrations/unity/com.goryned.valtrion.unity` and its verification project to `integrations/unity/UnityProject`. Update local and Git installation paths. Package identity, API, GUIDs and version are unchanged.
-
 ## 0.7.1 (2026-10-30)
 
+- First public release, tagged `unity-v0.7.1`: install with `https://github.com/GORYNED/Valtrion.git?path=integrations/unity/com.goryned.valtrion.unity#unity-v0.7.1`.
+- Move the integration to `integrations/unity/com.goryned.valtrion.unity` and its verification project to `integrations/unity/UnityProject`. Update local and Git installation paths. Package identity, API, GUIDs and version are unchanged.
 - Fix: the fixture-based contract tests (`ContractFixtureTests`) now end Ignored, not failed, when no `contracts/fixtures` folder exists above the package folder (a consumer project with the package in `testables` and no repository checkout). The repository verification project is now `integrations/unity/UnityProject`; see release readiness for current execution evidence.
 - Document that `PlanTest` and `NUnitXmlResultWriter` live in the test assembly `Valtrion.Unity.PlayModeTests`, which Unity compiles only when the package is in the consumer's `testables`, with the manifest snippet.
 - The Runtime assembly `Valtrion.Unity` is unchanged.

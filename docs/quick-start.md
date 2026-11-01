@@ -5,6 +5,10 @@ status, events and console output and enforces time and progress limits. You
 need Git and Python 3.10+ with `venv` and `pip`. No Unity Editor, package, project,
 device or third-party runtime dependency is needed.
 
+## Install from PyPI
+
+If Core is published on PyPI, `pipx install valtrion` gives you the `valtrion` command; skip to the check below and use `valtrion` in place of `$valtrion`/`$VALTRION`, with the example files from a checkout of this repository. Otherwise, or to run exactly a checkout's code:
+
 ## Install from this repository
 
 Public HTTPS cloning needs no GitHub account or token. Private forks require your existing Git access. From a new checkout:

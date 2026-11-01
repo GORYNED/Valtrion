@@ -8,7 +8,7 @@ Use `valtrion job start -- ...` to supervise an ordinary command without Unity. 
 
 Unity is the first and only ready application integration. The higher-level `run` and `pipeline` workflow, project discovery, build profiles and metric comparability still have Unity-specific assumptions. Platform providers are transport and lifecycle mechanisms, not proof of another engine integration.
 
-This is pre-release software. Install from the full repository checkout with `python tools/install.py --venv`; use the command path printed by the installer. The checkout includes the schemas and compatibility table needed by the installed package.
+This is pre-release software. Install with `pipx install valtrion` (update with `pipx upgrade valtrion`), or from a full repository checkout with `python tools/install.py --venv`. The Unity package is installed separately from Git with its own version; see the installation guide.
 
 See the [repository README](https://github.com/GORYNED/Valtrion#readme), [Quick Start](https://github.com/GORYNED/Valtrion/blob/main/docs/quick-start.md), and [CLI reference](https://github.com/GORYNED/Valtrion/blob/main/docs/cli.md). Core and the Unity package have separate versions; the repository's `compat.json` defines compatible pairs.
 

@@ -52,6 +52,6 @@ For Unity changes, use the Editor specified in `integrations/unity/UnityProject/
 4. Include exact verification commands, results, platforms and missing tools or checks. Remove personal and device data from attached logs.
 5. Address review findings and failing checks before the change is considered ready.
 
-Keep GitHub Actions pinned to full commit SHAs with a version comment. Do not publish packages or releases as part of an ordinary contribution.
+Keep GitHub Actions pinned to full commit SHAs with a version comment. Do not publish packages or releases as part of an ordinary contribution; releases are made only by the maintainers' manual Release workflow, see [releasing](docs/releasing.md).
 
 Contributions are submitted under the repository's [MIT license](LICENSE). Include required attribution for any third-party material and explain new dependencies. Report security issues through [SECURITY.md](SECURITY.md), rather than a public bug report.

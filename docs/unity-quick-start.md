@@ -8,7 +8,7 @@ You need Git, Python 3.10 or newer with `venv` and `pip`, and a licensed Unity E
 
 Clone a checkout next to your Unity project, outside its `Assets` folder:
 
-Record the resolved commit with `git rev-parse HEAD` and use the same source for Core and the Unity package.
+Record the resolved commit with `git rev-parse HEAD` and use the same source for Core and the Unity package. Alternatively install Core with `pipx install valtrion` and the package from the release tag `https://github.com/GORYNED/Valtrion.git?path=integrations/unity/com.goryned.valtrion.unity#unity-v0.7.1`; check the pair with `valtrion doctor --project`.
 
 ```sh
 git clone https://github.com/GORYNED/Valtrion.git
