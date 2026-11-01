@@ -49,20 +49,32 @@ BUILD_KEY_FILE = "build-key.json"
 
 def remember_build(run_folder: Path, key: str) -> None:
     """Record, in the run folder of a job, the published build it depends on, so that no cleanup removes it while the job is active."""
+    keys = _read_keys(run_folder)
+    if key not in keys:  # a pipeline may use several builds (an install by key, then a build): every one stays protected
+        keys.append(key)
     try:
-        core.atomic_write_json(run_folder / BUILD_KEY_FILE, {"key": key})
+        core.atomic_write_json(run_folder / BUILD_KEY_FILE, {"keys": keys})
     except OSError:
         pass  # bookkeeping only: the one-hour guard of the build cache still applies
 
 
-def active_build_keys(home: Path | None = None) -> list[str]:
-    """Keys of the published builds that jobs which are still active depend on (built and waiting for the device, or installing by key)."""
+def _read_keys(run_folder: Path) -> list[str]:
+    try:
+        document = core.read_json(run_folder / BUILD_KEY_FILE, attempts=2)
+        found = document["keys"] if "keys" in document else [document["key"]]  # `key` is the form of 0.8.2
+        return [str(item) for item in found]
+    except (OSError, ValueError, KeyError, TypeError):
+        return []
+
+
+def active_build_keys(home: Path | None = None, active: Sequence[str] | None = None) -> list[str]:
+    """Keys of the published builds that jobs which are still active depend on (built and waiting for the device, or installing by key).
+    `active` is the list of active job ids when the caller already has it (finding it reads the whole job index)."""
     keys: list[str] = []
-    for job_id in jobs.active_job_ids(home):
+    for job_id in (jobs.active_job_ids(home) if active is None else active):
         try:
-            document = core.read_json(jobs.find_job_directory(job_id, home) / BUILD_KEY_FILE, attempts=2)
-            keys.append(str(document["key"]))
-        except (jobs.JobError, OSError, ValueError, KeyError, TypeError):
+            keys.extend(_read_keys(jobs.find_job_directory(job_id, home)))
+        except jobs.JobError:
             continue
     return keys
 
@@ -117,7 +129,7 @@ def ensure_free(settings: config.HostSettings, home: Path | None, protected: Seq
                                                          keep=lambda job_id: jobs.kept_work_reason(job_id, home))),
         ("expired run folders", lambda: artifacts.gc(settings.artifacts_root, settings.keep_days_under_pressure,
                                                     protected=protected_paths).removed),
-        ("expired builds", lambda: buildcache.gc(buildcache.builds_root(home), protect=active_build_keys(home)).removed)]
+        ("expired builds", lambda: buildcache.gc(buildcache.builds_root(home), protect=active_build_keys(home, active)).removed)]
     for name, step in steps:
         try:  # a locked file (Windows) or a folder that vanished meanwhile must not stop the others, nor fail the stage
             removed.extend(step())

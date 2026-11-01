@@ -899,8 +899,7 @@ def execute(pipeline: Mapping[str, Any], pipeline_path: Path | None, ctx: JobCon
                     diskspace.remember_build(directory, published.key)
                     events.emit("progress", f"build published {published.key}", step=name, data={"build": build_info})
                     _collect_build_cache(ctx, published.key)
-                    release_build_output()
-                    build_pending_release = False
+                    release_build_output()  # also the leftovers of an earlier unpublished build: the registry lists them all
                     continue
             build_pending_release = True  # not published (no key, or it failed): the output is released after the install
             continue

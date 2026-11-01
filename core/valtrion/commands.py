@@ -1025,6 +1025,8 @@ def _gc(arguments: argparse.Namespace) -> int:
     stale = workroot.sweep(settings.roots, jobs.active_job_ids(), dry_run=arguments.dry_run, keep=jobs.kept_work_reason)
     for path in stale:
         print(f"{verb} {path} (work root, abandoned by a runner that died)")
+    for job_id in jobs.prune_index(dry_run=arguments.dry_run):  # after the run folders went: their index entries point nowhere
+        print(f"{verb} job index entry {job_id}")
     built = buildcache.gc(buildcache.builds_root(), dry_run=arguments.dry_run, protect=diskspace.active_build_keys())
     for item in built.removed:
         print(f"{verb} build {item}")

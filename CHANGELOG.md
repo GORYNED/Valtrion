@@ -2,6 +2,14 @@
 
 Core (the `valtrion` Python package) and the Unity package `com.goryned.valtrion.unity` are versioned independently. The Unity changelog is in `integrations/unity/com.goryned.valtrion.unity/CHANGELOG.md`; `compat.json` lists compatible pairs.
 
+## 0.8.3
+
+Follow-ups of the host-disk cleanup (0.8.2).
+
+- A job protects every published build it depends on, not only the last: `build-key.json` in its run folder lists all keys (a pipeline with an install by key and then a build uses two). A file written by 0.8.2 is still read.
+- The cleanup finds the active jobs once per run instead of reading the whole job index several times, and `valtrion gc` now removes job index entries (`<home>/jobs/<jobId>.json`) whose run folder is gone, so the index no longer grows for ever.
+- With several `build` stages, the leftovers of an unpublished earlier build are released when a later build is published (they were already; now covered by a test and by the flag that no longer resets).
+
 ## 0.8.2
 
 Host disk: a build host no longer fills up silently while builds queue.

@@ -134,6 +134,29 @@ def active_job_ids(home: Path | None = None, now: Callable[[], datetime] = core.
     return active
 
 
+def prune_index(home: Path | None = None, dry_run: bool = False) -> list[str]:
+    """Remove index entries (`<home>/jobs/<jobId>.json`) whose run folder no longer exists (`valtrion gc` removed it): the index
+    is read in full by `active_job_ids`, so it must not grow for ever. Returns the removed job ids."""
+    folder = (home or core.valtrion_home()) / "jobs"
+    removed: list[str] = []
+    for entry in sorted(folder.glob("*.json")) if folder.is_dir() else []:
+        try:
+            directory = Path(core.read_json(entry, attempts=2)["dir"])
+        except FileNotFoundError:
+            continue
+        except (OSError, ValueError, KeyError, TypeError):
+            continue  # unreadable now (being written): keep it
+        if directory.exists():
+            continue
+        if not dry_run:
+            try:
+                entry.unlink()
+            except OSError:
+                continue
+        removed.append(entry.stem)
+    return removed
+
+
 def new_job_id(label: str, sha8: str, moment: datetime | None = None) -> str:
     stamp = (moment or core.now()).strftime("%Y%m%dT%H%M%S") + "Z"
     return core.safe_identifier(f"{stamp}-{core.safe_segment(label, 'job', 40)}-{sha8}")
