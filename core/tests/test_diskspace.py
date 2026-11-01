@@ -275,7 +275,7 @@ class PipelineDiskTests(unittest.TestCase):
         while time.monotonic() < deadline and entry is None:
             time.sleep(0.05)
             entries = buildcache.entries(buildcache.builds_root(self.home))
-            waiting = [p for p in self.root.glob("*/*/*/job.json") if json.loads(p.read_text(encoding="utf-8")).get("phase") == "waiting-device"]
+            waiting = [p for p in self.root.glob("*/*/*/job.json") if core.read_json(p).get("phase") == "waiting-device"]
             entry = entries[0] if entries and waiting else None
         self.assertIsNotNone(entry, "the job built, published and waits for the device")
         old = core.format_utc(core.now() - timedelta(days=10))
@@ -377,6 +377,26 @@ class PipelineDiskTests(unittest.TestCase):
         self.assertEqual([], [p for p in (work / "jobs").glob("*/xcode-export-test") if p.exists()], "released by the pipeline")
         events = [json.loads(line) for line in store.events.read_text(encoding="utf-8").splitlines()]
         self.assertTrue(any(e["type"] == "log" and "of build output from the job work folder" in e.get("message", "") for e in events))
+
+    def test_a_new_build_removes_what_a_cancelled_job_left_in_the_same_project_tree(self):
+        self.settings({"artifactsRoot": str(self.root)})
+        project = self.base / "A"
+        leftover = project / "Builds" / "iOS"  # an export folder the cancelled build made inside the project
+        leftover.mkdir(parents=True)
+        (leftover / "Xcode.proj").write_text("x", encoding="utf-8")
+        old = self.root / "Sample" / "abcdef12" / "20261101T000000Z-old-abcdef12"
+        old.mkdir(parents=True)
+        core.atomic_write_json(old / "job.json", {"state": "cancelled"})
+        core.atomic_write_json(old / "spec.json", {
+            "jobId": old.name, "project": "Sample", "sha8": "abcdef12", "artifactsRoot": str(self.root), "cleanup": True,
+            "payload": {"type": "pipeline", "projectDir": str(project)}})
+        core.atomic_write_json(old / "temp-paths.json", [str(leftover)])
+        store = self.run_job()
+        self.assertEqual("PASS", store.read_job()["status"], store.read_job()["reason"])
+        self.assertFalse(leftover.exists())
+        self.assertEqual([], core.read_json(old / "temp-paths.json"), "the dead job's registry is emptied")
+        events = [json.loads(line) for line in store.events.read_text(encoding="utf-8").splitlines()]
+        self.assertTrue(any("dead runner" in e.get("message", "") for e in events), "reported in the new job's events")
 
     def test_a_retained_or_no_cleanup_job_keeps_its_work_folder(self):
         original = adapter_class(self.world)

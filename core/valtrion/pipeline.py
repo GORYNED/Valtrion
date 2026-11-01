@@ -24,6 +24,7 @@ from typing import Any, Callable, Mapping, Sequence
 from . import artifacts, buildcache, compare, config, constants, core, diskspace, gitstate, lease, providers, supervise
 from .adapter import DeviceHealth, DeviceInfo, PlatformAdapter, StepOutcome
 from .jobs import JobContext
+from .jobs import reap_cancelled_jobs as jobs_reap
 from .jobs import work_cleanup_blocker as jobs_blocker
 from .schema import Validator, validate_document
 
@@ -851,6 +852,10 @@ def execute(pipeline: Mapping[str, Any], pipeline_path: Path | None, ctx: JobCon
                 if reason:
                     events.emit("step.finished", reason, step=name, status=constants.BLOCKED)
                     return fail(constants.BLOCKED, reason)
+                try:  # the project lease is held: nobody else builds in this tree, so a cancelled job's leftovers are safe to remove
+                    jobs_reap(Path(ctx.spec["artifactsRoot"]), ctx.spec["project"], events, ctx.job_id)
+                except (KeyError, OSError):
+                    pass
                 low = check_disk(name)
                 if low is not None:
                     return low

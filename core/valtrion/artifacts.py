@@ -146,8 +146,9 @@ class CleanupReport:
 
 
 def cleanup_run(layout: RunLayout, protected: Iterable[Path] = (), keep_on_fail: bool = False, status: str | None = None,
-                allowed_roots: Iterable[Path] | None = None) -> CleanupReport:
-    """Remove the temporary paths this run registered. Refuses unless results are saved, and keeps anything protected.
+                allowed_roots: Iterable[Path] | None = None, require_result: bool = True) -> CleanupReport:
+    """Remove the temporary paths this run registered. Refuses unless results are saved (`require_result`; a run whose runner died
+    will never save one, and its caller says so), and keeps anything protected.
     With `allowed_roots`, a registered path must lie in the run folder or under one of them (the registry file is not trusted
     to name arbitrary folders)."""
     try:
@@ -156,7 +157,7 @@ def cleanup_run(layout: RunLayout, protected: Iterable[Path] = (), keep_on_fail:
         return CleanupReport()  # the run registered nothing temporary
     if not registered:
         return CleanupReport()
-    if not layout.result.exists():
+    if require_result and not layout.result.exists():
         return CleanupReport(skipped_reason="results are not saved yet (result.json is missing)")
     if keep_on_fail and status not in (None, constants.PASS):
         return CleanupReport(skipped_reason=f"kept for diagnosis after {status}")
