@@ -4,7 +4,15 @@ This page explains what Valtrion does, which parts it consists of and how a vali
 
 ## What it does
 
-A **plan** describes what to verify in an app: steps, time limits, metrics. Valtrion builds the app for a platform, installs it on a device, starts it with the plan, watches it, collects the result and compares metrics with a baseline. Every outcome is one of a small set of statuses, and every result says what kind of evidence produced it. A run that could not prove something says so (`BLOCKED`, `NEEDS_PERMISSION`) instead of passing.
+Valtrion manages repeatable checks and preserves the evidence of their execution.
+Without Unity, a **command job** runs an ordinary process with time and progress
+limits and optional resource locks. Core saves its status, events and console output.
+The [Quick Start](quick-start.md) checks real Python data and exercises failure and timeout.
+
+For application checks, a **plan** describes steps, time limits and metrics. Unity
+is the only ready app integration: Valtrion can build the app, install it, start it
+with the plan, watch it, collect the result and compare compatible metrics.
+A run that could not prove something says so (`BLOCKED`, `NEEDS_PERMISSION`).
 
 ## Parts
 
@@ -26,7 +34,7 @@ The machine you run `valtrion` on is always a host. You can add SSH hosts (`valt
 3. The job collects the result, validates it against `gdv.result/1`, saves it in the run folder and removes temporary build data.
 4. `valtrion compare` and `valtrion baseline promote` compare against and update baselines.
 
-State is kept as files: a run folder per job under the artifacts root holds `job.json`, `events.jsonl`, `console.log` and `result.json`. A watcher reads them from a byte offset, so a dropped connection never changes the outcome of a job.
+State is kept as files: a run folder per job under the artifacts root holds `job.json`, `events.jsonl` and `console.log`. Pipeline jobs additionally save app results in `result.json`; command jobs do not. A watcher reads events from a byte offset, so a dropped connection never changes the outcome of a job. A process PASS means exit zero, not independent proof of app behavior.
 
 ## Statuses and exit codes
 

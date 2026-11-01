@@ -20,7 +20,7 @@ NAME = "valtrion"
 _TIMESTAMP = (2020, 1, 1, 0, 0, 0)  # fixed, so the same sources give the same wheel
 _METADATA = (
     "Metadata-Version: 2.1\nName: {name}\nVersion: {version}\n"
-    "Summary: Device validation: build, install, launch and verify apps on local or remote hosts and real devices.\n"
+    "Summary: Repeatable checks, supervised execution and verifiable evidence on local and SSH hosts.\n"
     "License: MIT\nRequires-Python: >=3.10\n")
 _WHEEL = "Wheel-Version: 1.0\nGenerator: valtrion.wheel\nRoot-Is-Purelib: true\nTag: py3-none-any\n"
 _ENTRY_POINTS = "[console_scripts]\nvaltrion = valtrion.cli:main\n"

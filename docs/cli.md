@@ -17,6 +17,12 @@ This page lists every `valtrion` command with its options, explains how a comman
 
 ## Project discovery
 
+Ordinary `job start` command jobs do not use Unity project discovery. They accept
+an explicit `--cwd` and a grouping label `--project`; that label does not locate a
+Unity project. See the [Core Quick Start](quick-start.md). `select`, `check-config`
+and schema validation also work without Unity with explicit input files. `report`
+requires app result files and does not turn command job status into app evidence.
+
 Commands that need the Unity project (`run`, `pipeline`, `doctor --project`) resolve it in this order, first match wins:
 
 1. `--project-dir <folder>`

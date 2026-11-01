@@ -1,123 +1,108 @@
-# Quick Start
+# Quick Start: Core without Unity
 
-Install the CLI, add the Unity package to a project, then run a small plan in the Editor. This checks the integration; it does not test your game's behavior or prove anything about a physical device.
+Run a real Python data check as a supervised job. Core retains the command's
+status, events and console output and enforces time and progress limits. You
+need Git and Python 3.10+ with `venv` and `pip`. No Unity Editor, package, project,
+device or third-party runtime dependency is needed.
 
-You need Git, Python 3.10 or newer with `venv` and `pip`, and a licensed Unity Editor matching your project's `ProjectSettings/ProjectVersion.txt`. The package declares Unity 6000.6 or newer. See [release readiness](release-readiness.md) for the versions actually tested. The repository is currently private: cloning requires access until the owner approves publication.
+## Install from this repository
 
-## 1. Install the CLI
-
-Clone a checkout next to your Unity project, outside its `Assets` folder:
-
-This guide belongs to preparation [PR #22](https://github.com/GORYNED/Valtrion/pull/22). Until it is merged, use `git clone --branch codex/open-source-readiness https://github.com/GORYNED/Valtrion.git` instead of the clone command below. After merge, use `main`. Always record the resolved commit and use that same source for Core and the Unity package.
+Public HTTPS cloning needs no GitHub account or token. Private forks require your existing Git access. From a new checkout:
 
 ```sh
 git clone https://github.com/GORYNED/Valtrion.git
 cd Valtrion
+git rev-parse HEAD
 python tools/install.py --venv --home .valtrion-home
 ```
 
-Use `python3` if that is your Python 3 command. The installer uses the checkout without downloading build tools or runtime dependencies. Its last line is the CLI path. `--home` keeps this installation under the checkout; omit it for the normal user installation. It does not change where CLI state is stored.
-
-For this checkout's Core 0.7.4, check the installed command from the checkout root:
+Record the resolved commit. Use `python3` if that is your Python 3 command. The
+installer works offline and prints the absolute CLI path. No environment
+activation is required. This checkout installs Core 0.7.4; use the printed path
+if the version or location differs.
 
 ```powershell
-# Windows PowerShell
+# Windows PowerShell, from the checkout root
 $valtrion = (Resolve-Path .valtrion-home/.valtrion/core/0.7.4/Scripts/valtrion.exe).Path
 & $valtrion --version
-& $valtrion validate examples/smoke.plan.json
-& $valtrion check-config --checks examples/quick-start-checks.json
+& $valtrion job start --help
 ```
 
 ```sh
-# macOS / Linux
+# macOS / Linux, from the checkout root
 VALTRION="$PWD/.valtrion-home/.valtrion/core/0.7.4/bin/valtrion"
 "$VALTRION" --version
-"$VALTRION" validate examples/smoke.plan.json
-"$VALTRION" check-config --checks examples/quick-start-checks.json
+"$VALTRION" job start --help
 ```
 
-Expected: `valtrion 0.7.4 (contract 1)`, a valid `gdv.plan/1`, and a valid check map. Use the path printed by the installer if the version or installation location differs. You do not need to activate an environment or change `PATH`.
+Expected version: `valtrion 0.7.4 (contract 1)`. The POSIX commands describe
+the implemented host path; see [release readiness](release-readiness.md) for
+the environments actually exercised in this preparation.
 
-## 2. Add the Unity package
+## Run a useful check
 
-In the Unity project, merge the following into `Packages/manifest.json`. Preserve existing dependencies and `testables` entries:
-
-```json
-{
-  "dependencies": {
-    "com.goryned.valtrion.unity": "file:/absolute/path/to/Valtrion/unity/com.goryned.valtrion.unity",
-    "com.unity.test-framework": "1.8.0"
-  },
-  "testables": ["com.goryned.valtrion.unity"]
-}
-```
-
-Replace the example path with your checkout path, using forward slashes (`file:C:/...` on Windows). Keep an existing compatible Test Framework version; 1.8.0 is the repository's tested version. `testables` is required for the test helper used below. Local paths are convenient for trying Valtrion; do not commit your absolute path. For a shared project, pin the package's Git URL to the full reviewed commit from the same checkout:
-
-```text
-https://github.com/GORYNED/Valtrion.git?path=unity/com.goryned.valtrion.unity#<full-reviewed-commit-sha>
-```
-
-This is a URL template: replace the SHA. Private repository credentials must come from your normal Git credential manager, never the manifest. Core and Unity versions are different; their compatibility is recorded in [compat.json](../compat.json).
-
-## 3. Add the smoke test and plan
-
-Copy both files from [examples/unity-smoke](../examples/unity-smoke) into `Assets/Validation/` in your Unity project. The assembly is named `Valtrion.SmokeTests`. Copy [examples/smoke.plan.json](../examples/smoke.plan.json) to `validation/smoke.plan.json` in your Unity project.
-
-The test calls `PlanTest.RunFromEnvironment()`. The plan waits a few frames and writes a marker. It uses only built-in steps; add app-specific assertions later. It does not need a device, signing identity or build method.
-
-Optionally create `valtrion.json` in your project's Git root:
-
-```json
-{ "unityProject": ".", "checks": "validation/checks.json" }
-```
-
-If Unity lives in a subfolder, replace `.` with its relative path. Copy [examples/quick-start-checks.json](../examples/quick-start-checks.json) to the `checks` location relative to this file. Check it with `valtrion check-config --checks validation/checks.json` using your installed command path. This initial map selects the smoke assembly for all changed paths. Refine it as your checks grow. `select` chooses checks; it does not execute them.
-
-## 4. Run in a background Editor
-
-Close any Editor using this project first. Choose the actual Editor executable, project path, plan path and output directory. Use an output directory outside `Assets` and ignore it in Git. In these examples, run from your Unity project root.
+From the checkout root, run the included catalog validator:
 
 ```powershell
-$editor = 'C:/Program Files/Unity/Hub/Editor/6000.6.7f1/Editor/Unity.exe'
-$project = (Get-Location).Path
-$out = Join-Path $project '.valtrion-results'
-New-Item -ItemType Directory -Force $out | Out-Null
-$runId = 'smoke-' + [guid]::NewGuid().ToString('N').Substring(0, 12)
-$previous = $env:GDV_PLAN, $env:GDV_OUT_ROOT, $env:GDV_RUN_ID
-try {
-    $env:GDV_PLAN = (Resolve-Path validation/smoke.plan.json).Path
-    $env:GDV_OUT_ROOT = $out
-    $env:GDV_RUN_ID = $runId
-    $process = Start-Process -FilePath $editor -WindowStyle Hidden -PassThru -ArgumentList "-batchmode -projectPath `"$project`" -runTests -testPlatform PlayMode -assemblyNames Valtrion.SmokeTests -testResults `"$out/$runId.xml`" -logFile `"$out/$runId.log`""
-    $process.WaitForExit()
-    $process.ExitCode
-} finally {
-    $env:GDV_PLAN, $env:GDV_OUT_ROOT, $env:GDV_RUN_ID = $previous
-}
+$python = (Get-Command python).Source
+$root = (Get-Location).Path
+$sha = git rev-parse HEAD
+$env:VALTRION_HOME = Join-Path $root '.valtrion-home/demo-state'
+$env:GDV_WORK_ROOT = Join-Path $root '.valtrion-home/demo-work'
+& $valtrion job start --project python-check --sha $sha --label catalog --cwd $root --timeout-sec 30 --stall-sec 10 --watch -- $python examples/python-check/check_catalog.py examples/python-check/catalog.json
+$LASTEXITCODE
 ```
 
 ```sh
-EDITOR='/Applications/Unity/Hub/Editor/6000.6.7f1/Unity.app/Contents/MacOS/Unity'
-PROJECT="$PWD"
-OUT="$PROJECT/.valtrion-results"
-mkdir -p "$OUT"
-RUN_ID="$(python -c 'import uuid; print("smoke-" + uuid.uuid4().hex[:12])')"
-GDV_PLAN="$PROJECT/validation/smoke.plan.json" GDV_OUT_ROOT="$OUT" GDV_RUN_ID="$RUN_ID" \
-  "$EDITOR" -batchmode -projectPath "$PROJECT" -runTests -testPlatform PlayMode \
-  -assemblyNames Valtrion.SmokeTests -testResults "$OUT/$RUN_ID.xml" -logFile "$OUT/$RUN_ID.log"
+PYTHON="$(python3 -c 'import sys; print(sys.executable)')"
+ROOT="$PWD"
+SHA="$(git rev-parse HEAD)"
+export VALTRION_HOME="$ROOT/.valtrion-home/demo-state"
+export GDV_WORK_ROOT="$ROOT/.valtrion-home/demo-work"
+"$VALTRION" job start --project python-check --sha "$SHA" --label catalog --cwd "$ROOT" --timeout-sec 30 --stall-sec 10 --watch -- "$PYTHON" examples/python-check/check_catalog.py examples/python-check/catalog.json
+echo "$?"
 ```
 
-Replace the Editor path/version with the one your project requires; on Linux use its installed Unity binary. These are Unity Test Framework commands, not a dependency on the separate Unity CLI. Do not add `-quit`: it can exit before tests finish. Watch the run's `.log` during startup; stop only your own process tree if it stalls. For repeatable automated runs, use a supervisor with a hard timeout and a no-progress limit. The snippets generate a fresh run id to avoid accepting old results.
+Expected: `GDV-RESULT PASS`, exit 0, and `Checked 2 products; inventory value
+2150 cents` in the run's `console.log`. `--cwd` makes the relative paths resolve
+in this checkout. The environment variables persist: use a separate shell or
+restore their previous values afterward. `--sha` is a supplied revision label,
+not an attestation that your checkout is clean.
 
-Verify all three pieces of evidence:
+Continue with [examples/python-check](../examples/python-check/README.md).
+It validates a small catalog's data, then demonstrates a genuinely
+invalid input and an intentionally slow process. All three use the installed
+CLI: expected outcomes are PASS (0), FAIL (1) and TIMEOUT (3).
 
-1. The process exited successfully, the run's `.xml` contains the selected test, and it passed with no failures or unexplained skips. A zero exit code alone is insufficient.
-2. `.valtrion-results/<run-id>/result.json` says `status: PASS`, identifies `example.editor.smoke`, and records `target.evidence: editor`. Validate it with your installed `valtrion validate` command.
-3. Read the run's `.log` for import/compilation errors. The smoke is a wiring check; a result may list unknown candidate metadata under `unverified` because this direct test does not supply a build candidate.
+The example provides exact PowerShell and POSIX commands, isolated state paths,
+an explicit working directory and inspection commands. Keep the printed job IDs
+and run directories: inspect `job.json`, `events.jsonl` and `console.log` after
+each run. Status alone does not explain which assertion ran; the console and
+events carry that evidence. Apply the same interface to your own trusted test
+command, with appropriate limits.
 
-After Unity resolves the package, run `valtrion doctor --project <absolute-project-path> --json`. Inspect the `project` object: its `status` must be `ok` with Unity package 0.7.1 and Core 0.7.4. `skipped` does not confirm integration. Doctor also checks tools for other platforms; unrelated missing prerequisites need not prevent this Editor smoke.
+## What this proves
 
-## Next steps
+Core can manage useful checks without an application integration. A command job
+can also hold a named resource lease or execute on an explicitly configured SSH
+host; this example verifies local execution only. See the [CLI reference](cli.md)
+and [installation guide](install.md) before configuring a remote host.
 
-Add steps that exercise your app and assert its behavior. See the [Unity guide](../unity/com.goryned.valtrion.unity/Documentation~/index.md) for custom steps and the [providers guide](providers.md) for project build methods, the Editor provider's runner interface, device runs and profiles. The direct test above does not set up a provider runner or player build pipeline. Do not use the larger [example checks map](../examples/checks.json) unchanged: its build methods, runners and app scenarios are placeholders for a project's own integration.
+A command job's PASS means the process exited zero. It does not create a
+`gdv.result/1`, run JSON plan steps inside an application, provide device evidence,
+or feed app metric comparison and verification reports. The check itself must
+assert the behavior you care about. No successful app result is fabricated here.
+
+## Application checks
+
+Unity is the first and only ready application integration. Follow the separate
+[Unity Quick Start](unity-quick-start.md) to add the package and run a plan in the
+Editor. That guide includes full installation, smoke steps and evidence checks;
+its runtime verification status is recorded in [release readiness](release-readiness.md).
+
+Other engines and applications can use an existing external command check when
+that meets the task. They do not yet have a ready in-app integration. Project
+discovery, profiles and metric comparison still contain Unity assumptions; see
+[architecture](ARCHITECTURE.md) and [roadmap](../ROADMAP.md). The
+[AI-agent prompt](ai-agent-setup.md) chooses the appropriate path before changing
+a project.

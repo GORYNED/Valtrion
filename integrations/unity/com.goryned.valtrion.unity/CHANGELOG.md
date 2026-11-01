@@ -1,8 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Move the integration to `integrations/unity/com.goryned.valtrion.unity` and its verification project to `integrations/unity/UnityProject`. Update local and Git installation paths. Package identity, API, GUIDs and version are unchanged.
+
 ## 0.7.1 (2026-10-30)
 
-- Fix: the fixture-based contract tests (`ContractFixtureTests`) now end Ignored, not failed, when no `contracts/fixtures` folder exists above the package folder (a consumer project with the package in `testables` and no repository checkout). They still run and pass in `unity/TestProject`.
+- Fix: the fixture-based contract tests (`ContractFixtureTests`) now end Ignored, not failed, when no `contracts/fixtures` folder exists above the package folder (a consumer project with the package in `testables` and no repository checkout). The repository verification project is now `integrations/unity/UnityProject`; see release readiness for current execution evidence.
 - Document that `PlanTest` and `NUnitXmlResultWriter` live in the test assembly `Valtrion.Unity.PlayModeTests`, which Unity compiles only when the package is in the consumer's `testables`, with the manifest snippet.
 - The Runtime assembly `Valtrion.Unity` is unchanged.
 
@@ -14,7 +18,7 @@ Moved from the previous validation package `com.goryned.unity.validation` 0.6.9 
 - Assemblies: `GORYNED.Validation` -> `Valtrion.Unity`, `GORYNED.Validation.Editor` -> `Valtrion.Unity.Editor`, `GORYNED.Validation.Tests` -> `Valtrion.Unity.Tests`, `GORYNED.Validation.PlayModeTests` -> `Valtrion.Unity.PlayModeTests`. Namespaces `GORYNED.Validation[.X]` -> `Valtrion.Unity[.X]` (`Json`, `Contracts`, `Harness`, `Probes`). `Runtime/link.xml` preserves the renamed assembly.
 - Unchanged: schema ids (`gdv.*/1`), step type names, launch arguments (`-gdv-*`), environment variables (`GDV_*`) and the `GDV-RESULT` log line, so plan files, their SHA-256 and baselines stay valid.
 - The host CLI and the schemas no longer ship inside the package (they live in `core/` and `contracts/` of the repository). The Editor contract tests read the golden fixtures from `contracts/fixtures` of the repository checkout.
-- Add the test project `unity/TestProject`.
+- Add the test project (now `integrations/unity/UnityProject`).
 - Documentation rewritten for Valtrion, with the rename mapping.
 
 ## Earlier history (previous validation package, Runtime and contracts only)

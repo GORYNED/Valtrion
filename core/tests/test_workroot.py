@@ -355,8 +355,11 @@ class CheckoutTests(unittest.TestCase):
         path = workroot.add_checkout(self.roots, "proj", str(self.source), self.sha, "job-1")
         self.assertEqual("one\n", (path / "file.txt").read_text(encoding="utf-8"))
         pointer = (path / ".git").read_text(encoding="utf-8")
-        self.assertIn(str(self.roots.mirrors).replace("\\", "/"), pointer.replace("\\", "/"), "the worktree points into the work root")
-        self.assertNotIn(str(self.source).replace("\\", "/"), pointer.replace("\\", "/"))
+        self.assertTrue(pointer.startswith("gitdir: "))
+        git_directory = Path(pointer.removeprefix("gitdir: ").strip()).resolve()
+        # Git may expand a Windows short-name TEMP path; compare filesystem locations.
+        self.assertTrue(git_directory.is_relative_to(self.roots.mirrors.resolve()), "the worktree points into the work root")
+        self.assertFalse(git_directory.is_relative_to(self.source.resolve()))
         removed = workroot.cleanup_job(self.roots, "job-1")
         self.assertEqual([str(self.roots.job("job-1").base)], removed)
         self.assertFalse(self.roots.job("job-1").base.exists())

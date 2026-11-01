@@ -8,6 +8,7 @@ Valtrion starts the following, and each is chosen by the project, not by Valtrio
 
 | What | Where it comes from | Runs as |
 | --- | --- | --- |
+| **Command jobs** | argv after `job start --`, with the supplied working directory | Invoking user's permissions on the selected host; no Unity dependency |
 | **Build methods** | `executeMethod` of a platform in `validation/device/profiles.json` (or `GDV_MACOS_BUILD_METHOD`) | Unity batch mode, with the user's permissions, with access to the project |
 | **Sign scripts** | `signScript` in the profile, `GDV_MACOS_SIGN_SCRIPT`, or the first `tools/build/sign-macos*.py` found in the project folder or above | The Python that runs `valtrion`, on the Mac, with the login keychain when the job is in the `gui` domain |
 | **Editor test runner** | `editor.runner` in the profile, or the first `tools/validation/run-unity-tests.py` found in the project folder or above | The Python that runs `valtrion` |

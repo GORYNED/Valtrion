@@ -16,13 +16,30 @@ The `valtrion` CLI and library, distribution `valtrion` 0.7.4, Python 3.10 or ne
 
 The core does not require Unity, `adb` or Xcode to run; a missing tool makes only the work that needs it `BLOCKED`.
 
+There are two execution paths. `commands._job_start` creates a command payload;
+`jobs.run_job` supervises its argv directly without Unity project discovery or a
+platform provider. It saves `gdv.job/1`, events and console output, not an app-side
+`gdv.result/1`. See the [command example](../examples/python-check/README.md).
+
+`run` and `pipeline` create pipeline payloads, select a platform provider and use
+app-side plans/results. The documented complete app integration is Unity. Providers
+handle platform lifecycle and transport, while the Unity package executes assertions
+inside the app. A Windows or Android provider alone does not establish support for
+another engine.
+
+Unity assumptions remain in `project.py` (`unityProject`, `GDV_UNITY_PROJECT`),
+project build/test profiles, provider build paths and comparison's required
+`candidate.unity` / `unityVersion` key. The schemas also enumerate platform/evidence
+vocabulary. These contracts are preserved; installing Core without Unity does not
+make every pipeline or comparison application-neutral.
+
 ### Contracts (`contracts/`)
 
 JSON schemas `gdv.*/1` and fixtures. They define every document that crosses a boundary: plans, pipelines, results, heartbeats, jobs, events, hosts, registry, leases, checks and baselines. The core validates against them; app-side runners produce documents that validate against them. See [contracts.md](contracts.md).
 
-### Unity package (`unity/`)
+### Unity package (`integrations/unity/`)
 
-`com.goryned.valtrion.unity` is the app-side runner for Unity: it reads the plan, runs the steps, writes the heartbeat and result. It is a separate component with its own SemVer and release lifecycle, developed under `unity/`. It does not depend on the core to build, and the core does not need Unity to run. The two meet only through the contracts and the file protocol ([protocol.md](protocol.md)).
+`com.goryned.valtrion.unity` is the app-side runner for Unity: it reads the plan, runs the steps, writes the heartbeat and result. It is a separate component with its own SemVer and release lifecycle, developed under `integrations/unity/com.goryned.valtrion.unity/`. Its test project is `integrations/unity/UnityProject/`. It does not depend on the core to build, and the core does not need Unity to run. The two meet only through the contracts and the file protocol ([protocol.md](protocol.md)).
 
 ### Compatibility (`compat.json`)
 

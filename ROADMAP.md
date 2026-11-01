@@ -22,9 +22,12 @@ Implementation is not a claim that every platform passed an end-to-end run on th
 - Core unit tests use fake platform tools. They do not replace Unity compilation, player builds, signing or device tests.
 - The standalone `build`, `install`, `launch`, `push`, `pull`, `screenshot` and `logs` CLI commands are reserved placeholders. Use `run` and `pipeline`.
 - There is no Linux player provider or app-side runner for another engine.
+- Command jobs work without Unity, but do not generate `gdv.result/1` app results. Project discovery (`unityProject`, `GDV_UNITY_PROJECT`), profiles and comparison keys still have Unity assumptions; `run` and `pipeline` are not a general application integration API.
 - There is no dedicated vulnerability-reporting contact or response-time commitment. See [SECURITY.md](SECURITY.md).
 
 ## INTENDED: before a stable release
+
+- Define an application integration boundary beyond Unity, including project discovery and result/comparison metadata. Add a working integration example before claiming support for another engine or application. This release preparation does not redesign those contracts.
 
 - Record reproducible installation and Unity integration checks from fresh environments, including platform-specific prerequisites and blockers.
 - Maintain a tested platform matrix and an upgrade procedure for compatible Core/Unity pairs.

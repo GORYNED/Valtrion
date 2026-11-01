@@ -1,7 +1,7 @@
 # Valtrion Unity
 
-Unity integration of Valtrion, a device validation system: one plan format, one result format, one host CLI for every platform
-and project. This package (0.7.1) ships the **contracts** (C# readers and writers for the Valtrion JSON documents) and the
+Unity is Valtrion's first and currently only ready application integration. Valtrion manages repeatable checks and their
+execution evidence; Core also supervises ordinary processes without Unity. This package (0.7.1) ships the **contracts** (C# readers and writers for the Valtrion JSON documents) and the
 development-only Runtime **harness** (plan inbox, runner, steps, probes, result writer). The host CLI, the JSON Schemas and the
 golden fixtures live in the repository root (`core/` and `contracts/`); see the repository `docs/` for the CLI.
 
@@ -22,18 +22,18 @@ golden fixtures live in the repository root (`core/` and `contracts/`); see the 
 
 ## Install
 
-Start with the repository's [Quick Start](../../../docs/quick-start.md) for a complete Editor smoke test. Install from the
+Start with the repository's [Unity Quick Start](../../../../docs/unity-quick-start.md) for a complete Editor smoke test. Install from the
 same reviewed checkout as Core. Add a local path to `Packages/manifest.json` for a trial (replace the example path):
 
 ```json
-"com.goryned.valtrion.unity": "file:/absolute/path/to/Valtrion/unity/com.goryned.valtrion.unity"
+"com.goryned.valtrion.unity": "file:/absolute/path/to/Valtrion/integrations/unity/com.goryned.valtrion.unity"
 ```
 
-For a shared project, use `https://github.com/GORYNED/Valtrion.git?path=unity/com.goryned.valtrion.unity#<full-reviewed-commit-sha>`
-with the full SHA substituted; do not commit an absolute local path. The repository currently requires access. This package is
+For a shared project, use `https://github.com/GORYNED/Valtrion.git?path=integrations/unity/com.goryned.valtrion.unity#<full-reviewed-commit-sha>`
+with the full SHA substituted; do not commit an absolute local path. Public HTTPS Git installation needs no GitHub account or token; private forks require existing access. This package is
 MIT licensed; the notice is included in `LICENSE.md`. Core 0.7.4 and this package 0.7.1 are paired by `compat.json`; identical
 version numbers are not required. Package tests use Unity Test Framework 1.8.0; the repository's test Editor is specified in
-`unity/TestProject/ProjectSettings/ProjectVersion.txt`.
+`integrations/unity/UnityProject/ProjectSettings/ProjectVersion.txt`.
 
 ## Layout
 
@@ -48,7 +48,7 @@ version numbers are not required. Package tests use Unity Test Framework 1.8.0; 
 The Editor contract tests read the golden fixtures from `contracts/fixtures/valid` and `contracts/fixtures/invalid` of the
 repository: the package folder must sit below a repository checkout (the tests search the parents of the package folder). Without
 a checkout, for example in a consumer project that has the package in `testables`, those tests end as Ignored with a message
-instead of failing. The test project is `unity/TestProject`.
+instead of failing. The test project is `integrations/unity/UnityProject`.
 
 ## Renamed from the previous validation package
 
@@ -205,7 +205,7 @@ references `PlanTest` or `NUnitXmlResultWriter` must therefore list the package 
 ```json
 {
   "dependencies": {
-    "com.goryned.valtrion.unity": "file:../path/to/unity/com.goryned.valtrion.unity",
+    "com.goryned.valtrion.unity": "file:../path/to/Valtrion/integrations/unity/com.goryned.valtrion.unity",
     "com.unity.test-framework": "1.8.0"
   },
   "testables": [

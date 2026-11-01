@@ -39,7 +39,7 @@ def check_sources(root: Path, tracked_paths: list[str]) -> list[str]:
     if project_field(metadata, "license") != "MIT":
         problems.append("core/pyproject.toml must declare the repository's MIT license")
 
-    package_root = root / "unity" / "com.goryned.valtrion.unity"
+    package_root = root / "integrations" / "unity" / "com.goryned.valtrion.unity"
     package = json.loads((package_root / "package.json").read_text(encoding="utf-8"))
     if package.get("license") != "MIT":
         problems.append("Unity package.json must declare the MIT license")
@@ -67,7 +67,7 @@ def check_sources(root: Path, tracked_paths: list[str]) -> list[str]:
     generated = {"library", "temp", "logs", "obj", "usersettings"}
     for name in tracked_paths:
         parts = name.replace("\\", "/").split("/")
-        if parts[0] == "unity" and any(part.lower() in generated for part in parts[1:-1]):
+        if parts[:2] == ["integrations", "unity"] and any(part.lower() in generated for part in parts[2:-1]):
             problems.append(f"generated Unity output is tracked: {name}")
     return problems
 

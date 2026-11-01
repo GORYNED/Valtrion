@@ -1,5 +1,12 @@
 # Providers
 
+Providers handle a platform's build, installation, process lifecycle and file
+transport. They are distinct from an application integration, which executes the
+actual check inside an app. Unity is the only ready application integration in
+this repository; the provider list does not claim support for other engines.
+Ordinary Core command jobs bypass providers and need no Unity project. See the
+[Core Quick Start](quick-start.md) and [architecture boundaries](ARCHITECTURE.md).
+
 This page describes the platform providers (`ios`, `android`, `windows`, `macos`, `editor`, plus the Unity support code they share), the build profiles a project supplies, and the environment variables the providers read. A provider turns "build, install, run, collect" into the tools of one platform and reports an expected condition (a locked device, a missing tool) as `BLOCKED` or `NEEDS_PERMISSION` with a reason, never as an exception.
 
 ## Build profiles
@@ -84,7 +91,7 @@ Runs a plan as a Unity Test Framework PlayMode test in a background batch-mode E
 
 - The runner is `editor.runner` of the profile (relative to the project), else the first `tools/validation/run-unity-tests.py` found in the project folder or above. It runs the test assembly `planAssembly` (or the `--app` value other than `editor`) while holding the project lease and a `unity-editor` slot. Both are taken before the runner starts and given back only when no process of its tree is left: if the processes survive a kill, `terminate` fails and the leases stay held. A lease that cannot be renewed while the Editor runs is taken again (the result lists it under `unverified`); if that fails, the Editor is stopped and the run is `FAIL`.
 - The plan is staged privately and passed through `GDV_PLAN`, `GDV_OUT_ROOT`, `GDV_RUN_ID` (and `GDV_EVIDENCE=editor`). The pipeline adds 15 minutes of startup allowance to the plan budget.
-- The project supplies the Python runner; Valtrion does not ship a universal one. It is invoked with `--editor <executable> --output <folder> --assemblies <assembly> --timeout <seconds>` plus launch arguments, from the runner's own directory. It must know the Unity project path, preserve the `GDV_*` environment, run the selected PlayMode assembly, and write Unity's NUnit XML to `<output>/PlayMode.xml`. Forward useful logs/status to stdout or stderr, return a nonzero code on failure, and bound the Editor process tree. See the [Quick Start](quick-start.md) for a direct Unity invocation before adding this provider wrapper.
+- The project supplies the Python runner; Valtrion does not ship a universal one. It is invoked with `--editor <executable> --output <folder> --assemblies <assembly> --timeout <seconds>` plus launch arguments, from the runner's own directory. It must know the Unity project path, preserve the `GDV_*` environment, run the selected PlayMode assembly, and write Unity's NUnit XML to `<output>/PlayMode.xml`. Forward useful logs/status to stdout or stderr, return a nonzero code on failure, and bound the Editor process tree. See the [Unity Quick Start](unity-quick-start.md) for a direct Unity invocation before adding this provider wrapper.
 - A harness result stays authoritative unless it says `PASS` while the NUnit XML does not. Without a harness result the provider writes the result from the NUnit XML (one step per test case) or the exit code. A runner that ends without a result is read through its `GDV-RESULT` or `STATUS` line, so a missing prerequisite is `BLOCKED`, not a stall.
 
 ## unity-support

@@ -1,6 +1,6 @@
 # Installing
 
-Install Core from a checkout and add the Unity package separately. Start with the [Quick Start](quick-start.md) for a first Editor run or use the [AI-agent setup prompt](ai-agent-setup.md). The repository remains private until publication is explicitly approved; the clone URL currently requires access. These instructions do not depend on a package-index release.
+Install Core from a checkout. Start with the [Quick Start](quick-start.md) for a command check without Unity or use the [AI-agent setup prompt](ai-agent-setup.md). For Unity, add the package separately using the [Unity Quick Start](unity-quick-start.md). Public HTTPS cloning needs no GitHub account or token; private forks require normal repository access. These instructions do not depend on a package-index release.
 
 ## Requirements
 
@@ -25,6 +25,8 @@ This prints `valtrion <version> (contract <n>)`. Here and below, replace `valtri
 The offline installer is the simplest route. Standard Python builds use Hatchling 1.27 or newer as a build-only dependency (`python -m pip wheel ./core`); building from the source archive is supported too. Runtime dependencies remain empty. Both distribution paths include schemas, the compatibility table and the MIT notice. The `Private :: Do Not Upload` classifier is an intentional publication guard: removing it and uploading to an index is a separate release decision.
 
 On macOS, install into a folder that is not protected (not under Documents, Desktop, Downloads or cloud storage): background jobs run the interpreter that runs `valtrion` and are refused otherwise. See [work-root.md](work-root.md).
+
+If an agent sandbox reports a temporary-directory permission error during `venv` or `pip`, use its approved execution mechanism or a private writable temporary directory for that invocation (`TEMP`/`TMP` on Windows, `TMPDIR` on POSIX). Keep normal system paths unchanged and retain the failed diagnostic. A sandbox permission failure does not establish an installer defect; do not bypass approvals or change shared permissions.
 
 ## Several hosts
 

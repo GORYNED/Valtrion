@@ -11,6 +11,9 @@ import sys
 import time
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from valtrion.core import atomic_write_json
+
 ROOT = Path(os.environ["FAKE_ADB_STATE"])
 STATE = ROOT / "state.json"
 
@@ -20,7 +23,7 @@ def load():
 
 
 def save(state):
-    STATE.write_text(json.dumps(state), encoding="utf-8")
+    atomic_write_json(STATE, state)
 
 
 def local(path):
@@ -193,4 +196,5 @@ def shell(state, device, script):
     say(f"unsupported fake shell command: {script}", 2)
 
 
-main(sys.argv[1:])
+if __name__ == "__main__":
+    main(sys.argv[1:])
