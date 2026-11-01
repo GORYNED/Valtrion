@@ -584,9 +584,10 @@ class _PipelineWatch:
         runner = self._runner
         tick = float(runner.spec["watchdog"].get("tickSec", 15.0))
         started = next_pulse = time.monotonic()
+        already_waited = runner.lease_wait_elapsed()  # leases of the job spec were taken before the watch started: not in `now - started`
         while not self._stop.wait(0.25):
             now = time.monotonic()
-            working = now - started - runner.lease_wait_elapsed()
+            working = now - started - (runner.lease_wait_elapsed() - already_waited)
             if working >= runner.timeout_sec and not self.timed_out:
                 self.timed_out = True
                 runner.events.emit("timeout.detected", f"no result within the {runner.timeout_sec:g} s timeout")

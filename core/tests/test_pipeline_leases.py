@@ -336,6 +336,22 @@ class ScopedLeaseTests(unittest.TestCase):
         job = jobs.JobStore(Path(info["dir"])).read_job()
         self.assertEqual(("finished", "PASS"), (job["state"], job["status"]), job["reason"])
 
+    def test_a_wait_for_a_lease_of_the_job_spec_is_not_subtracted_twice(self):
+        manager = LeaseManager(self.home)
+        manager.acquire("device:" + PHONE, "alice", "session-9", 600, "series", os.getpid())
+        self.open_gates("A")
+        self.world.gate("A", "build").clear()
+        threading.Timer(4.0, lambda: manager.release("device:" + PHONE, "session-9", os.getpid())).start()
+        threading.Timer(7.0, self.world.gate("A", "build").set).start()  # builds 3 s after the 4 s spec wait, timeout is 2 s
+        payload = {"type": "pipeline", "file": "<inline>", "inline": self.document(), "baseDir": str(self.base / "plans"),
+                   "devicePollSec": 0.02, "projectDir": str(self.project("A"))}
+        request = jobs.JobRequest(
+            kind="pipeline", project="Sample", sha="c" * 40, label="A", payload=payload,
+            host={"id": "win", "transport": "local", "selectedBy": "local"}, stall_sec=30, timeout_sec=2, owner="tester",
+            lease_wait_sec=30, tick_sec=0.1, leases=({"resource": "device:" + PHONE},))
+        info = jobs.start_job(request, self.root, self.home, foreground=True)
+        self.assertEqual("TIMEOUT", jobs.JobStore(Path(info["dir"])).read_job()["status"], "the 4 s wait did not buy 4 s more work time")
+
     def test_the_job_timeout_still_ends_a_long_build(self):
         self.open_gates("A")
         self.world.gate("A", "build").clear()  # the build does not return within the 2 s timeout, only after 3 s
