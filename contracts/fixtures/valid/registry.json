@@ -13,8 +13,11 @@
       "evidence": "physical",
       "capabilities": ["camera.120fps", "touch"],
       "exclusive": true,
-      "notes": "no UI automation during camera recording"
+      "notes": "no UI automation during camera recording",
+      "online": true,
+      "lastSeen": "2026-11-02T14:00:00Z"
     },
-    { "id": "android:EXAMPLE123", "hostId": "mac-build", "platform": "android", "class": "phone-mid", "capabilities": ["touch"], "exclusive": true }
+    { "id": "android:EXAMPLE123", "hostId": "mac-build", "platform": "android", "class": "phone-mid", "capabilities": ["touch"], "exclusive": true,
+      "online": false, "lastSeen": "2026-10-30T09:15:00Z" }
   ]
 }

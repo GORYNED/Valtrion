@@ -2,7 +2,8 @@
 
 `hosts.json` (`gdv.hosts/1`) lists where work may run; the local machine is added automatically when it is not listed.
 `host.json` holds this machine's own settings (artifacts root, retention). `registry.json` (`gdv.registry/1`) holds the devices
-discovered on this host; discovery refreshes it, only aliases, classes and notes are edited by hand and survive a refresh.
+discovered on this host; discovery refreshes it, aliases, classes, capabilities and notes are edited by hand and survive a refresh.
+A device a refresh does not find stays registered as offline (`online: false`) until `valtrion devices --forget` removes it.
 """
 
 from __future__ import annotations
@@ -329,12 +330,16 @@ def load_registry(home: Path | None = None, validator: Validator | None = None) 
     return {"schema": "gdv.registry/1", "host": {"id": entry.id, "os": entry.os, "roles": []}, "devices": []}
 
 
-def merge_discovered(registry: dict, devices: Sequence[DeviceInfo], platforms: Sequence[str], host_id: str) -> dict:
-    """Replace the devices of the given platforms with the discovered ones, keeping alias, class override and notes by id.
-    A device of another platform stays untouched, and a registered device that is no longer discovered is dropped
-    (a stale entry is never trusted over discovery)."""
+def merge_discovered(registry: dict, devices: Sequence[DeviceInfo], platforms: Sequence[str], host_id: str, seen_at: str | None = None) -> dict:
+    """Refresh the devices of the given platforms from discovery, keeping alias, class override, capabilities and notes by id.
+    A device of another platform stays untouched. A registered device that this discovery did not find is kept, marked
+    `online: false` with what the owner set for it (an idle tunnel or a loose cable must not erase its class and capabilities);
+    only `forget_device` removes it. Selection never uses a registry entry as an attached device: discovery decides that."""
+    seen_at = seen_at or core.utc_now()
     previous = {item["id"]: item for item in registry.get("devices", [])}
+    found = {device.id for device in devices}
     kept = [item for item in registry.get("devices", []) if item["platform"] not in platforms]
+    kept += [{**item, "online": False} for item in registry.get("devices", []) if item["platform"] in platforms and item["id"] not in found]
     for device in devices:
         before = previous.get(device.id, {})
         item: dict[str, Any] = {
@@ -348,8 +353,23 @@ def merge_discovered(registry: dict, devices: Sequence[DeviceInfo], platforms: S
         for optional in ("alias", "notes"):
             if optional in before:
                 item[optional] = before[optional]
+        item["online"] = True
+        item["lastSeen"] = seen_at
         kept.append(item)
     return {**registry, "devices": sorted(kept, key=lambda item: item["id"])}
+
+
+def forget_device(registry: dict, device: str) -> tuple[dict, dict | None]:
+    """The registry without the device named by id or alias, and the entry that was removed (None when no device has that name)."""
+    devices = registry.get("devices", [])
+    gone = next((item for item in devices if item["id"] == device), None) or next((item for item in devices if item.get("alias") == device), None)
+    if gone is None:
+        return registry, None
+    return {**registry, "devices": [item for item in devices if item is not gone]}, gone
+
+
+def is_online(item: dict) -> bool:
+    return item.get("online", True) is not False
 
 
 def save_registry(registry: dict, home: Path | None = None) -> Path:
