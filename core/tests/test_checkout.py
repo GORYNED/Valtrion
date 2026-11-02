@@ -209,6 +209,51 @@ class CheckoutTests(unittest.TestCase):
         self.assertFalse((incremental.folder_of(home, "Game", "idle") / "DerivedData").exists())
         self.assertTrue((incremental.folder_of(home, "Game", "busy") / "DerivedData" / "big.o").exists())
 
+    def test_the_marker_is_written_once_kept_by_every_reset_and_invisible_to_git(self):
+        self.assertIsNone(checkout.mark_managed(self.repo, compare.run_git))
+        self.assertIsNone(checkout.mark_managed(self.repo, compare.run_git))
+        marker = self.repo / checkout.MARKER
+        self.assertIn("working state, not a cache", marker.read_text(encoding="utf-8"))
+        exclude = Path(git(self.repo, "rev-parse", "--path-format=absolute", "--git-path", "info/exclude"))
+        self.assertEqual(1, exclude.read_text(encoding="utf-8").splitlines().count("/" + checkout.MARKER), "excluded once")
+        self.assertEqual("", git(self.repo, "status", "--porcelain"), "the marker does not make the checkout dirty")
+        result = checkout.ensure(self.repo, self.first, compare.run_git)
+        self.assertTrue(result.ok, result.reason)
+        self.assertTrue(marker.is_file(), "git clean keeps the marker")
+
+    def test_doctor_tells_a_lost_checkout_from_one_never_created(self):
+        home = self.base / "home"
+        lost, fresh = self.base / "pool" / "lost", self.base / "pool" / "fresh"
+        checkout.remember(home, lost, "lost", self.first)
+        checkout.remember(home, self.repo, "queue", self.second)
+        first_use = checkout.recorded(home, self.repo)["firstUsed"]
+        checkout.remember(home, self.repo, "queue", self.first)
+        self.assertEqual((first_use, self.first), (checkout.recorded(home, self.repo)["firstUsed"], checkout.recorded(home, self.repo)["sha"]))
+        project = config.ManagedProject("Game", tuple(config.ManagedCheckout(i, p) for i, p in (("queue", self.repo), ("lost", lost), ("fresh", fresh))))
+        by_id = {item["id"]: item for item in doctor.checkouts_report([project], home)["managed"]}
+        self.assertTrue(by_id["lost"]["missing"])
+        self.assertIsNotNone(by_id["lost"]["lastUsed"])
+        self.assertNotIn("missing", by_id["fresh"])
+        self.assertNotIn("missing", by_id["queue"])
+        report = {"host": {"id": "h", "os": "macos"}, "capabilities": {"unityEditors": [], "buildPlatforms": [], "iosSigning": False, "adb": False},
+                  "disk": {"freeGb": 1, "totalGb": 2, "path": "/"}, "githubRunner": {"state": "absent"}, "blocked": {},
+                  "storage": {"workRoot": {"bytes": 0}, "artifactsRoot": {"bytes": 0}, "buildCache": {"bytes": 0, "entries": 0}, "freeBytes": 0},
+                  "checkouts": {"managed": list(by_id.values()), "unmanagedLeases": []}}
+        text = doctor.render(report)
+        self.assertIn("checkout Game/lost", text)
+        self.assertIn("was created, now missing", text)
+        self.assertIn("Game/fresh", text)
+        self.assertIn("not created yet", text)
+
+    def test_a_checkout_without_a_path_lives_in_the_valtrion_home(self):
+        home = self.base / "home"
+        home.mkdir()
+        (home / "host.json").write_text(json.dumps({"projects": {"My Game": {"checkouts": [{"id": "queue"}, {"id": "own", "path": str(self.repo)}]}}}),
+                                        encoding="utf-8")
+        project = config.load_host_settings(home).project("My Game")
+        self.assertEqual(home / "checkouts" / core.safe_segment("My Game") / "queue", project.pick("queue").path)
+        self.assertEqual(self.repo, project.pick("own").path)
+
     def test_doctor_lists_managed_checkouts_and_foreign_project_leases(self):
         home = self.base / "home"
         home.mkdir()
@@ -383,6 +428,8 @@ class QueuedJobsTests(unittest.TestCase):
         self.assertEqual("PASS", store.read_job()["status"], store.read_job()["reason"])
         self.assertEqual(self.first, git(created, "rev-parse", "HEAD"))
         self.assertTrue(core.read_json(store.result)["checkout"]["created"])
+        self.assertTrue((created / checkout.MARKER).is_file(), "the build stage marks the managed checkout")
+        self.assertEqual(self.first, checkout.recorded(self.home, created)["sha"], "and records its use for doctor")
 
     def test_an_unmanaged_folder_whose_head_moved_blocks_naming_both_commits(self):
         _, store = self.run_job("A", self.build_only(self.first), managed=False)
