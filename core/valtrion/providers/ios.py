@@ -51,6 +51,7 @@ APP_DATA_ROOT = "Documents"  # `Application.persistentDataPath` of an iOS player
 #: Bounds of one devicectl call. A copy that stalls longer than the stall window is killed, not waited for.
 DEVICECTL_TIMEOUT_SEC = 120.0
 LIST_TIMEOUT_SEC = 60.0
+WAKE_TIMEOUT_SEC = 30.0  # the lock-state probe that brings the idle tunnel of a wired device up
 INSTALL_TIMEOUT_SEC = 600.0
 LAUNCH_WAIT_SEC = 90.0
 DEFAULT_EXPORT_TIMEOUT_SEC = 3600.0
@@ -161,8 +162,25 @@ def parse_devices(document: Mapping[str, Any]) -> list[dict]:
             "platform": _get(item, "properties", "hardware", "platform") or _get(item, "hardwareProperties", "platform") or "",
             "os": _get(item, "deviceProperties", "osVersionNumber") or _get(item, "properties", "software", "osVersionNumber") or "",
             "state": _get(item, "properties", "connection", "state") or _get(item, "connectionProperties", "tunnelState") or "",
-            "pairing": _get(item, "properties", "connection", "pairingState") or _get(item, "connectionProperties", "pairingState") or ""})
+            "pairing": _get(item, "properties", "connection", "pairingState") or _get(item, "connectionProperties", "pairingState") or "",
+            "transport": _get(item, "properties", "connection", "transportType") or _get(item, "connectionProperties", "transportType") or ""})
     return found
+
+
+def _wired_and_paired(item: Mapping[str, str]) -> bool:
+    """A physical device on the USB cable that trusts this Mac. CoreDevice drops the tunnel of an idle device (`available (paired)`,
+    `tunnelState: disconnected`) and brings it up again for the next `devicectl device` command, so such a device is attached."""
+    return item["transport"] == "wired" and item["pairing"] == "paired" and item["reality"] in ("", "physical")
+
+
+def attachable(item: Mapping[str, str]) -> bool:
+    """Whether a listed device can be used now: connected and paired, or wired and paired with an idle tunnel. A wireless device
+    whose tunnel is down is not: it may be anywhere on the network, or nowhere."""
+    if item["platform"] and item["platform"] != "iOS":
+        return False
+    if item["pairing"] not in ("", "paired"):
+        return False
+    return item["state"] == "connected" or _wired_and_paired(item)
 
 
 def derive_class(product: str, marketing: str) -> str:
@@ -293,19 +311,28 @@ class IosAdapter(PlatformAdapter):
             available.append("unity")
         return Capabilities(PLATFORM, tuple(available), blocked)
 
-    def discover(self) -> Sequence[DeviceInfo]:
+    def _list_devices(self) -> list[dict]:
         listing = self._devicectl_json(["list", "devices"], LIST_TIMEOUT_SEC)
         if listing is None:
             raise RuntimeError("`devicectl list devices` failed or returned no JSON")
+        return parse_devices(listing)
+
+    def discover(self) -> Sequence[DeviceInfo]:
+        items = self._list_devices()
+        idle = [item for item in items if attachable(item) and item["state"] != "connected"]
+        if idle:
+            # Wake the idle tunnels before anyone uses the devices: any `devicectl device` command brings a wired device's tunnel up,
+            # and the lock state is the cheapest one. Listed once more so model, OS and state are those of the woken device.
+            for item in idle:
+                self._devicectl(["device", "info", "lockState", "--device", item["udid"]], WAKE_TIMEOUT_SEC)
+            items = self._list_devices()
         try:
             registry = {d["id"]: d for d in config.load_registry(self._home).get("devices", [])}
         except Exception:  # noqa: BLE001 - a broken registry must not hide a connected device
             registry = {}
         devices = []
-        for item in parse_devices(listing):
-            if item["platform"] and item["platform"] != "iOS":
-                continue
-            if item["state"] != "connected" or item["pairing"] not in ("", "paired"):
+        for item in items:
+            if not attachable(item):
                 continue
             device_id = f"{PLATFORM}:{item['udid']}"
             known = registry.get(device_id, {})

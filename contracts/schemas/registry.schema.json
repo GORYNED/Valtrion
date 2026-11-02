@@ -34,7 +34,9 @@
           "evidence": { "$ref": "common.schema.json#/$defs/evidence" },
           "capabilities": { "$ref": "common.schema.json#/$defs/stringList" },
           "exclusive": { "type": "boolean" },
-          "notes": { "type": "string" }
+          "notes": { "type": "string" },
+          "online": { "type": "boolean", "description": "false when the last discovery did not find the device; absent means online" },
+          "lastSeen": { "$ref": "common.schema.json#/$defs/utc" }
         }
       }
     }
