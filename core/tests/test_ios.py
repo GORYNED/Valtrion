@@ -188,14 +188,14 @@ class IosTests(unittest.TestCase):
 
     def test_the_unity_export_uses_the_configured_accelerator(self):
         self.home.mkdir(parents=True, exist_ok=True)
-        (self.home / "host.json").write_text(json.dumps({"unityAccelerator": {"endpoint": "127.0.0.1:10080", "namespacePrefix": "SensorEdgeApp"}}),
+        (self.home / "host.json").write_text(json.dumps({"unityAccelerator": {"endpoint": "127.0.0.1:10080", "namespacePrefix": "Game"}}),
                                              encoding="utf-8")
         self.recorder.answers["unity"] = self.make_export
         self.recorder.answers["xcodebuild"] = self.make_app
         self.assertTrue(self.adapter.build(self.project, "Internal", self.out).ok)
         argv = self.recorder.named("unity")[0]["argv"]
         start = argv.index("-EnableCacheServer")
-        self.assertEqual(["-EnableCacheServer", "-cacheServerEndpoint", "127.0.0.1:10080", "-cacheServerNamespacePrefix", "SensorEdgeApp",
+        self.assertEqual(["-EnableCacheServer", "-cacheServerEndpoint", "127.0.0.1:10080", "-cacheServerNamespacePrefix", "Game",
                           "-cacheServerEnableDownload", "true", "-cacheServerEnableUpload", "true"], argv[start:start + 9])
 
     # -- incremental builds in a managed checkout (incremental.py) -------------------------------------------------------------
