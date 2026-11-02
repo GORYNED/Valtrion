@@ -334,6 +334,9 @@ class JobDirs:
 @dataclass(frozen=True)
 class WorkRoots:
     root: Path
+    #: Where the staged CLI copies live; the work root's own `tools` when None. The host keeps them in `<valtrion home>/tools`,
+    #: outside the disposable (and, on macOS, purgeable) work root.
+    tools_root: Path | None = None
 
     @property
     def jobs(self) -> Path:
@@ -345,7 +348,7 @@ class WorkRoots:
 
     @property
     def tools(self) -> Path:
-        return self.root / "tools"
+        return self.tools_root if self.tools_root is not None else self.root / "tools"
 
     @property
     def launchd(self) -> Path:

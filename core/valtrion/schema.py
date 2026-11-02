@@ -61,10 +61,14 @@ def _type_matches(value: Any, name: str) -> bool:
     raise SchemaError(f"unknown type {name!r}")
 
 
+#: Schemas read so far, by directory: every `Validator` of a directory shares them, so `preload` serves the validators made later.
+_SHARED: dict[Path, dict[str, dict]] = {}
+
+
 class Validator:
-    def __init__(self, schemas_directory: Path = SCHEMAS_DIRECTORY) -> None:
-        self._directory = Path(schemas_directory)
-        self._cache: dict[str, dict] = {}
+    def __init__(self, schemas_directory: Path | None = None) -> None:
+        self._directory = Path(SCHEMAS_DIRECTORY if schemas_directory is None else schemas_directory)
+        self._cache = _SHARED.setdefault(self._directory, {})
 
     def load(self, file_name: str) -> dict:
         if file_name not in self._cache:
@@ -77,6 +81,23 @@ class Validator:
             except (OSError, ValueError) as error:  # ValueError covers JSONDecodeError and UnicodeDecodeError
                 raise SchemaError(f"schema file {file_name} cannot be loaded: {error}") from error
         return self._cache[file_name]
+
+    def preload(self) -> int:
+        """Read every schema file of the directory now, so that the folder is not needed again (a long-running job whose copy of
+        the CLI is removed under it still validates its results). Returns how many were loaded; a file that cannot be read is
+        left for `load` to report when something asks for it."""
+        loaded = 0
+        try:
+            names = sorted(path.name for path in self._directory.glob("*.schema.json"))
+        except OSError:
+            return 0
+        for name in names:
+            try:
+                self.load(name)
+                loaded += 1
+            except SchemaError:
+                continue
+        return loaded
 
     def schema_file_for(self, schema_id: str) -> str:
         """`gdv.plan/1` is stored as `plan.schema.json`."""

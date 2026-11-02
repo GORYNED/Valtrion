@@ -2,6 +2,10 @@
 
 Core (the `valtrion` Python package) and the Unity package `com.goryned.valtrion.unity` are versioned independently. The Unity changelog is in `integrations/unity/com.goryned.valtrion.unity/CHANGELOG.md`; `compat.json` lists compatible pairs.
 
+## Unreleased
+
+- **A background job no longer fails when its staged CLI copy disappears (#18).** On the macOS host a pipeline job built and published correctly, then ended `FAIL` with `SchemaError: schema file not found: result.schema.json` because the staged copy of the CLI under `<workRoot>/tools` was removed while it ran and the runner read schemas and imported modules lazily. The runner now imports every module and reads every contract schema at start, and the staged copies live in `<valtrion home>/tools` instead of the work root (which is under `~/Library/Caches` on macOS). `valtrion.schema.Validator` instances of a directory share what was read.
+
 ## 0.8.4
 
 Managed build checkouts: queued jobs of different commits no longer depend on a project folder that someone switched by hand.

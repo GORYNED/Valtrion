@@ -81,13 +81,15 @@ class HostSettings:
     keep_days_under_pressure: float = 2.0
     #: `projects`: the projects whose build checkouts valtrion owns (see `checkout.py`).
     projects: tuple["ManagedProject", ...] = ()
+    #: Where the staged CLI copies of background jobs live (`<valtrion home>/tools`); None keeps them in the work root.
+    tools_root: Path | None = None
 
     def project(self, name: str) -> "ManagedProject | None":
         return next((item for item in self.projects if item.name == name), None)
 
     @property
     def roots(self) -> workroot.WorkRoots:
-        return workroot.WorkRoots(self.work_root)
+        return workroot.WorkRoots(self.work_root, self.tools_root)
 
 
 def hosts_path(home: Path | None = None) -> Path:
@@ -134,7 +136,7 @@ def _load_host_settings(home: Path | None = None) -> HostSettings:
     try:
         document = core.read_json(host_json_path(home))
     except FileNotFoundError:
-        return HostSettings(default_root, work_root=default_work)
+        return HostSettings(default_root, work_root=default_work, tools_root=home / "tools")
     except (OSError, ValueError) as error:
         raise ConfigError(f"cannot read {host_json_path(home)}: {error}") from error
     if not isinstance(document, dict):
@@ -163,7 +165,7 @@ def _load_host_settings(home: Path | None = None) -> HostSettings:
     projects = _load_projects(document.get("projects", {}))
     return HostSettings(Path(root).expanduser() if root else default_root, float(days),
                         Path(work).expanduser() if work else default_work, float(minimum) if minimum is not None else None,
-                        float(pressure_days), projects)
+                        float(pressure_days), projects, tools_root=home / "tools")
 
 
 def _load_projects(value: Any) -> tuple[ManagedProject, ...]:
