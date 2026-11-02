@@ -155,26 +155,30 @@ def settle(folder: Path, export: Path, before: dict[str, list]) -> dict:
             row[kind] = row.get(kind, 0) + 1
             row[kind + "Bytes"] = row.get(kind + "Bytes", 0) + size
 
+    present: set[str] = set()
     for rel, path, info in _walk(export):
+        present.add(rel)
         old = before.get(rel)
         try:
-            if old is None:
-                after[rel] = [info.st_size, info.st_mtime_ns, _hash_file(path)]
-                count(rel, "new", info.st_size)
-            elif old[0] == info.st_size and old[1] == info.st_mtime_ns:
+            if old is not None and old[0] == info.st_size and old[1] == info.st_mtime_ns:
                 after[rel] = old  # not touched at all
                 count(rel, "untouched", info.st_size)
-            elif old[0] == info.st_size and _hash_file(path) == old[2]:
+                continue
+            digest = _hash_file(path)
+            if old is None:
+                after[rel] = [info.st_size, info.st_mtime_ns, digest]
+                count(rel, "new", info.st_size)
+            elif old[0] == info.st_size and digest == old[2]:
                 os.utime(path, ns=(info.st_atime_ns, old[1]))  # rewritten with the same bytes: the old mtime is the truth
                 after[rel] = old
                 count(rel, "restored", info.st_size)
             else:
-                after[rel] = [info.st_size, info.st_mtime_ns, _hash_file(path)]
+                after[rel] = [info.st_size, info.st_mtime_ns, digest]
                 count(rel, "changed", info.st_size)
         except OSError:
-            continue
+            count(rel, "unreadable", info.st_size)  # still on disk; the next build hashes it again
     for rel, old in before.items():
-        if rel not in after:
+        if rel not in present:
             count(rel, "deleted", old[0])
     try:
         core.atomic_write_json(folder / MANIFEST, {"files": after, "updatedUtc": core.utc_now()})
