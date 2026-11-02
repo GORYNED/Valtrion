@@ -24,8 +24,8 @@
     "command": { "$ref": "common.schema.json#/$defs/stringList" },
     "resultPath": { "type": "string", "minLength": 1 },
     "phase": {
-      "description": "What a running pipeline job is doing: waiting-build, building, waiting-device or on-device. Absent otherwise and once the job ends.",
-      "enum": ["waiting-build", "building", "waiting-device", "on-device"]
+      "description": "What a running pipeline job is doing: waiting-disk, waiting-build, building, waiting-device or on-device. Absent otherwise and once the job ends.",
+      "enum": ["waiting-disk", "waiting-build", "building", "waiting-device", "on-device"]
     },
     "watchdog": {
       "type": "object",

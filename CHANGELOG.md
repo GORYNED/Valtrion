@@ -2,6 +2,10 @@
 
 Core (the `valtrion` Python package) and the Unity package `com.goryned.valtrion.unity` are versioned independently. The Unity changelog is in `integrations/unity/com.goryned.valtrion.unity/CHANGELOG.md`; `compat.json` lists compatible pairs.
 
+## Unreleased
+
+- **A build can wait for free disk space (#14).** With `disk.minFreeGiB` set, `host.json` `disk.waitSec` (or `--disk-wait SEC` on `pipeline`, `build` and `run`) makes a `build` stage that still finds too little space after the cleanup wait, cleaning up and checking again every 30 s, instead of ending `BLOCKED` at once. The job waits before it takes the `unity-project:` lease and an Editor slot, so it never keeps them from the job whose end would free the space (no wait cycle). While it waits, `job.json` has `phase` `waiting-disk` (new value in `job.schema.json`) and a `log` event reports the free space and the minimum every poll; the wait does not count against `--timeout-sec`. `BLOCKED` (same reason: free space, minimum, largest consumers) when nothing appeared within the limit, or at once when the space would stay below the minimum even if every other active job ended. The default (0) keeps today's behavior.
+
 ## 0.8.4
 
 Managed build checkouts: queued jobs of different commits no longer depend on a project folder that someone switched by hand.
