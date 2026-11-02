@@ -75,25 +75,25 @@ class ConfigTests(HostTestCase):
 
     def test_a_refresh_keeps_an_undiscovered_device_offline_with_its_settings_until_forgotten(self):
         registry = config.load_registry()
-        ipad = DeviceInfo("ios:1", "ios", "ipad-a14", "physical", "iPad13,19", "iPadOS 27.2", ("touch",))
-        first = config.merge_discovered(registry, [ipad], ["ios"], "mac", "2026-11-01T10:00:00Z")
-        first["devices"][0].update(alias="ipad10", capabilities=["camera.120fps", "perf.reference", "touch"], **{"class": "ipad-owner"})
+        tablet = DeviceInfo("ios:1", "ios", "tablet", "physical", "Tablet", "iOS 1.0", ("touch",))
+        first = config.merge_discovered(registry, [tablet], ["ios"], "mac", "2026-11-01T10:00:00Z")
+        first["devices"][0].update(alias="tab1", capabilities=["camera.fast", "perf.baseline", "touch"], **{"class": "tablet-owner"})
         away = config.merge_discovered(first, [], ["ios"], "mac", "2026-11-02T10:00:00Z")
         entry = away["devices"][0]
         self.assertEqual((False, "2026-11-01T10:00:00Z"), (entry["online"], entry["lastSeen"]), "offline, last seen when it was found")
-        self.assertEqual(("ipad-owner", "ipad10", ["camera.120fps", "perf.reference", "touch"]),
+        self.assertEqual(("tablet-owner", "tab1", ["camera.fast", "perf.baseline", "touch"]),
                          (entry["class"], entry["alias"], entry["capabilities"]), "nothing the owner set is lost")
         self.assertEqual([], Validator().validate(away, "gdv.registry/1"))
         self.assertEqual([], remote.devices_from_report({"devices": away["devices"]}), "an offline entry never routes a job as attached")
-        back = config.merge_discovered(away, [ipad], ["ios"], "mac", "2026-11-02T11:00:00Z")
+        back = config.merge_discovered(away, [tablet], ["ios"], "mac", "2026-11-02T11:00:00Z")
         entry = back["devices"][0]
-        self.assertEqual((True, "2026-11-02T11:00:00Z", "ipad-owner"), (entry["online"], entry["lastSeen"], entry["class"]))
-        self.assertIn("camera.120fps", entry["capabilities"])
+        self.assertEqual((True, "2026-11-02T11:00:00Z", "tablet-owner"), (entry["online"], entry["lastSeen"], entry["class"]))
+        self.assertIn("camera.fast", entry["capabilities"])
         config.save_registry(away)
         code, out, _ = run("devices")
         self.assertEqual(0, code)
         self.assertIn("OFFLINE", out)
-        code, out, _ = run("devices", "--forget", "ipad10")
+        code, out, _ = run("devices", "--forget", "tab1")
         self.assertEqual(0, code, out)
         self.assertEqual([], config.load_registry()["devices"])
         code, _, err = run("devices", "--forget", "ios:1")

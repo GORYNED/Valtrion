@@ -153,9 +153,9 @@ class IosTests(unittest.TestCase):
 
     def idle_listing(self, state="disconnected", transport="wired"):
         return {"result": {"devices": [
-            {"identifier": "5F3D", "hardwareProperties": {"udid": UDID, "productType": "iPad13,19", "marketingName": "iPad (10th generation)",
+            {"identifier": "5F3D", "hardwareProperties": {"udid": UDID, "productType": "Tablet1,1", "marketingName": "Tablet",
                                                           "reality": "physical", "platform": "iOS"},
-             "deviceProperties": {"name": "iPad", "osVersionNumber": "27.2"},
+             "deviceProperties": {"name": "Tablet", "osVersionNumber": "1.0"},
              "connectionProperties": {"tunnelState": state, "pairingState": "paired", "transportType": transport}}]}}
 
     def test_a_wired_paired_device_with_an_idle_tunnel_is_woken_and_discovered(self):

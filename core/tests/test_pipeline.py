@@ -722,19 +722,19 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual("android:ZY22", pipeline.select_device(devices, {"id": "android:ZY22"}, {"kind": "smoke"})[0].id)
 
     def test_select_device_tells_an_offline_device_from_one_that_does_not_exist(self):
-        ipad = DeviceInfo("ios:IPAD", "ios", "ipad-a14", "physical", capabilities=("touch", "camera.120fps"))
-        plan = {"kind": "functional", "requires": {"capabilities": ["camera.120fps"]}}
-        found, why = pipeline.select_device([], {"class": "ipad-a14"}, plan, known=[ipad])
+        tablet = DeviceInfo("ios:TABLET", "ios", "tablet", "physical", capabilities=("touch", "camera.fast"))
+        plan = {"kind": "functional", "requires": {"capabilities": ["camera.fast"]}}
+        found, why = pipeline.select_device([], {"class": "tablet"}, plan, known=[tablet])
         self.assertIsNone(found)
-        self.assertTrue(why.startswith("device offline: ios:IPAD"), why)
-        found, why = pipeline.select_device([], {"class": "ipad-a14"}, {"requires": {"capabilities": ["camera.240fps"]}}, known=[ipad])
+        self.assertTrue(why.startswith("device offline: ios:TABLET"), why)
+        found, why = pipeline.select_device([], {"class": "tablet"}, {"requires": {"capabilities": ["camera.faster"]}}, known=[tablet])
         self.assertIsNone(found)
-        self.assertIn("no attached device satisfies: ipad-a14, camera.240fps", why)
+        self.assertIn("no attached device satisfies: tablet, camera.faster", why)
         self.assertIn("no device with these settings is known", why)
-        found, _ = pipeline.select_device([ipad], {"class": "ipad-a14"}, plan, known=[ipad])
-        self.assertEqual("ios:IPAD", found.id, "a registry entry only explains a failure; the attached device is selected")
-        weak = DeviceInfo("ios:IPAD", "ios", "ipad-a14", "physical", capabilities=("touch",))
-        _, why = pipeline.select_device([weak], {"class": "ipad-a14"}, plan, known=[ipad])
+        found, _ = pipeline.select_device([tablet], {"class": "tablet"}, plan, known=[tablet])
+        self.assertEqual("ios:TABLET", found.id, "a registry entry only explains a failure; the attached device is selected")
+        weak = DeviceInfo("ios:TABLET", "ios", "tablet", "physical", capabilities=("touch",))
+        _, why = pipeline.select_device([weak], {"class": "tablet"}, plan, known=[tablet])
         self.assertNotIn("offline", why, "an attached device is never reported offline")
 
 
