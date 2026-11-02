@@ -17,7 +17,7 @@ import subprocess
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
-from .. import constants, core, doctor, retention, supervise
+from .. import config, constants, core, doctor, retention, supervise
 from ..adapter import Capabilities, DeviceHealth, DeviceInfo, PlatformAdapter, StepOutcome
 from . import register
 from .unity import support
@@ -139,7 +139,7 @@ class WindowsAdapter(PlatformAdapter):
         exe = out / exe_name
         log = out.parent / "logs" / "unity-build.log"
         log.parent.mkdir(parents=True, exist_ok=True)
-        argv = [editor["path"], "-batchmode", "-quit", "-projectPath", str(project), "-buildTarget", "Win64",
+        argv = [editor["path"], "-batchmode", "-quit", "-projectPath", str(project), *config.unity_accelerator_args(), "-buildTarget", "Win64",
                 "-executeMethod", str(entry["executeMethod"]), "-buildOutput", str(exe), "-gdvProductName", product,
                 "-gdvCompanyName", company, "-gdvBackend", backend, "-gdvDevelopment", "-logFile", str(log), *[str(a) for a in entry.get("extraArgs", [])]]
         outcome = support.run_unity(argv, log, float(entry.get("timeoutSec", BUILD_TIMEOUT_SEC)), float(entry.get("stallSec", BUILD_STALL_SEC)))

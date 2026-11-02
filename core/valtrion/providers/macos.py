@@ -32,7 +32,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Mapping, Sequence
 
-from .. import constants, core, doctor, retention, supervise
+from .. import config, constants, core, doctor, retention, supervise
 from ..adapter import Capabilities, DeviceHealth, DeviceInfo, PlatformAdapter, StepOutcome
 from . import register
 
@@ -271,7 +271,7 @@ class MacOSAdapter(PlatformAdapter):
         app = out / f"{identity.product}.app"
         log = out.parent / "logs" / "unity-build.log"
         log.parent.mkdir(parents=True, exist_ok=True)
-        argv = [editor["path"], "-batchmode", "-quit", "-projectPath", str(project), "-buildTarget", "StandaloneOSX",
+        argv = [editor["path"], "-batchmode", "-quit", "-projectPath", str(project), *config.unity_accelerator_args(), "-buildTarget", "StandaloneOSX",
                 "-executeMethod", method, "-buildOutput", str(app), "-gdvCompanyName", identity.company,
                 "-gdvProductName", identity.product, "-logFile", str(log)]
         settings = _snapshot_settings(project)

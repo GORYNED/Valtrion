@@ -152,6 +152,25 @@ class WindowsAdapterTests(unittest.TestCase):
         self.assertEqual("Dev Product Validation.exe", outcome.artifacts[0].name)
         self.assertEqual({"layer.compile", "layer.export", "layer.nativeBuild"}, set(outcome.details))
 
+    def test_the_unity_build_uses_the_configured_accelerator(self):
+        env = build_hub(self.base / "hub-acc")
+        home = self.base / "gdv-home"
+        home.mkdir()
+        (home / "host.json").write_text(json.dumps({"unityAccelerator": {"endpoint": "127.0.0.1:10080", "namespacePrefix": "Game"}}),
+                                        encoding="utf-8")
+        seen = []
+
+        def capture(argv, *rest, **options):
+            seen.append(list(argv))
+            return supervise.SuperviseResult(constants.FAIL, "stopped by the test", 1, 0.0, 0.0)
+
+        with mock.patch.dict(os.environ, {core.HOME_ENV: str(home)}), mock.patch.object(support, "run_unity", capture):
+            self.adapter(env).build(self.project, "Validation", self.base / "job-acc" / "build")
+        argv = seen[0]
+        self.assertEqual("127.0.0.1:10080", argv[argv.index("-cacheServerEndpoint") + 1])
+        self.assertEqual("Game", argv[argv.index("-cacheServerNamespacePrefix") + 1])
+        self.assertIn("-EnableCacheServer", argv)
+
     def test_failed_build_names_compile_errors_and_is_never_installable(self):
         env = build_hub(self.base / "hub")
         adapter = self.adapter(env)

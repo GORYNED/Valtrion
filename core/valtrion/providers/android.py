@@ -34,7 +34,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Mapping, Sequence
 
-from .. import constants, core, doctor, supervise
+from .. import config, constants, core, doctor, supervise
 from ..adapter import Capabilities, DeviceHealth, DeviceInfo, PlatformAdapter, StepOutcome
 from . import register
 
@@ -398,7 +398,7 @@ class AndroidAdapter(PlatformAdapter):
         logs = out.parent / "build-logs"  # outside `out`: the pipeline removes `out` after the run, and a failed build needs its log
         logs.mkdir(parents=True, exist_ok=True)
         log = logs / "unity-build.log"
-        argv = [*self._unity_command(editor), "-batchmode", "-quit", "-nographics", "-projectPath", str(project), "-buildTarget", "Android",
+        argv = [*self._unity_command(editor), "-batchmode", "-quit", "-nographics", "-projectPath", str(project), *config.unity_accelerator_args(), "-buildTarget", "Android",
                 "-logFile", str(log), "-executeMethod", str(entry["executeMethod"]), "-buildOutput", str(apk),
                 "-gdvProfile", profile, "-gdvBackend", backend, *[str(a) for a in entry.get("extraArgs", [])]]
         timeout = float(entry.get("timeoutSec", DEFAULT_BUILD_TIMEOUT_SEC))

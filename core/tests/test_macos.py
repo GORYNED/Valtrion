@@ -184,6 +184,20 @@ class BuildTests(MacOSTestCase):
         self.assertTrue(self.run_tool.calls[1][0][1].endswith("sign-macos-sample.py"))
         self.assertEqual({"layer.export": "PASS", "layer.sign": "PASS"}, {k: v for k, v in outcome.details.items() if k.startswith("layer.")})
 
+    def test_the_unity_build_uses_the_configured_accelerator_and_none_without_it(self):
+        self.run_tool.on_unity = self.unity_builds
+        self.adapter().build(self.project, "Validation", self.base / "run" / "build")
+        self.assertNotIn("-EnableCacheServer", self.run_tool.calls[0][0])
+        home = Path(os.environ[core.HOME_ENV])
+        home.mkdir(parents=True, exist_ok=True)
+        (home / "host.json").write_text(json.dumps({"unityAccelerator": {"endpoint": "build-cache.local:10080", "upload": False}}),
+                                        encoding="utf-8")
+        self.run_tool.calls.clear()
+        self.adapter().build(self.project, "Validation", self.base / "run2" / "build")
+        argv = self.run_tool.calls[0][0]
+        self.assertEqual(["-EnableCacheServer", "-cacheServerEndpoint", "build-cache.local:10080", "-cacheServerEnableDownload", "true",
+                          "-cacheServerEnableUpload", "false"], argv[argv.index("-EnableCacheServer"):argv.index("-EnableCacheServer") + 7])
+
     def test_the_build_leaves_the_project_settings_as_they_were(self):
         settings = self.project / "ProjectSettings" / "ProjectSettings.asset"
         settings.write_bytes(b"applicationIdentifier:\n    iPhone: x\n")
