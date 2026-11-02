@@ -45,6 +45,7 @@ DEFAULT_UNITY_EDITORS = "/Applications/Unity/Hub/Editor"
 TOOL_PATH = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 #: Result detail naming what `xcodebuild` was given to build: `workspace` (CocoaPods export) or `project`.
 INCREMENTAL_DETAIL = "incremental.note"
+INCREMENTAL_EXPORT_DETAIL = "incremental.export"
 XCODE_CONTAINER_DETAIL = "xcodebuild.container"
 APP_DATA_ROOT = "Documents"  # `Application.persistentDataPath` of an iOS player, relative to the app data container
 
@@ -418,6 +419,7 @@ class IosAdapter(PlatformAdapter):
             # The export method adds BuildOptions.AcceptExternalModificationsToPlayer (Append) when it is given this switch, so Unity
             # changes the Xcode project in place and Xcode recompiles only what changed.
             argv += ["-gdv-export-append", "1"]
+        before = incremental.snapshot(persistent.folder, export) if persistent is not None else {}  # hashes of the previous export
         # A hung export is TIMEOUT or STALL (the Unity log and the CPU of the editor both stopped), not a wait without end.
         exported = self._run(argv, min(settings.export_timeout_sec, remaining()), settings.stall_sec, str(project), _tool_env(),
                              logs / "unity-export.out", progress_files=(unity_log,), cpu_counts=True)
@@ -427,6 +429,14 @@ class IosAdapter(PlatformAdapter):
                 incremental.discard(persistent.folder)  # killed half way: the export cannot be trusted
             return done(exported.status, f"Unity export {exported.status.lower()}: "
                                          f"{exported.reason or 'exit code ' + str(exported.returncode)}; see {unity_log}")
+        if persistent is not None:
+            # Unity rewrote the generated sources; those with the same bytes get their old mtime back so the native build skips them.
+            stats = incremental.settle(persistent.folder, export, before)
+            notes[INCREMENTAL_EXPORT_DETAIL] = incremental.summary(stats)
+            try:
+                core.atomic_write_json(logs / "export-identity.json", stats)
+            except OSError:
+                pass
         xcodeproj = self._find_xcodeproj(export, settings.xcode_project)
         if xcodeproj is None:
             layers["export"] = constants.FAIL

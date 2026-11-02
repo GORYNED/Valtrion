@@ -217,6 +217,29 @@ class IosTests(unittest.TestCase):
         self.assertTrue(marker.exists(), "DerivedData of the previous build is still there")
         self.assertTrue((plan.folder / "export" / "Classes.cpp").exists(), "the export is not wiped")
 
+    def test_a_source_unity_rewrites_with_the_same_bytes_keeps_its_mtime_across_builds(self):
+        old = 1_700_000_000_000_000_000
+        state = {"n": 0}
+
+        def export_again(argv, call):
+            self.make_export(argv, call)
+            export = Path(argv[argv.index("-gdv-export-path") + 1])
+            state["n"] += 1
+            (export / "Classes.cpp").write_text("same", encoding="utf-8")  # fresh mtime, same bytes
+            (export / "Other.cpp").write_text(f"v{state['n']}", encoding="utf-8")  # really different
+            if state["n"] == 1:
+                os.utime(export / "Classes.cpp", ns=(old, old))
+            return result()
+
+        self.recorder.answers["unity"] = export_again
+        self.recorder.answers["xcodebuild"] = self.make_app
+        plan = self.incremental_plan()
+        self.incremental_build(plan)
+        second = self.incremental_build(plan)
+        self.assertEqual(old, (plan.folder / "export" / "Classes.cpp").stat().st_mtime_ns)
+        self.assertIn("1 restored", second.details[ios.INCREMENTAL_EXPORT_DETAIL])
+        self.assertIn("1 changed", second.details[ios.INCREMENTAL_EXPORT_DETAIL])
+
     def test_a_changed_key_or_a_clean_request_starts_from_nothing(self):
         self.recorder.answers["unity"] = self.make_export
         self.recorder.answers["xcodebuild"] = self.make_app
