@@ -309,14 +309,16 @@ def _doctor(arguments: argparse.Namespace) -> int:
     else:
         print(doctor.render(report))
         for item in report["devices"]:
-            print(f"  device {item['id']} ({item['class']}, {item.get('evidence', 'physical')})")
+            print(f"  device {item['id']} ({item['class']}, {item.get('evidence', 'physical')})" + ("" if config.is_online(item) else " OFFLINE"))
         if check is not None:
             print(f"  project: {check['status']} - {check['reason']}")
     return code
 
 
 def _configure_devices(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--refresh", action="store_true", help="run discovery through the adapters and update the registry")
+    parser.add_argument("--refresh", action="store_true", help="run discovery through the adapters and update the registry; a registered "
+                        "device that is not found stays registered as offline, with its class, capabilities and alias")
+    parser.add_argument("--forget", metavar="DEVICE", help="remove a device (id or alias) and everything set for it from the registry")
     parser.add_argument("--json", action="store_true")
     _add_host_options(parser)
 
@@ -325,9 +327,19 @@ def _devices(arguments: argparse.Namespace) -> int:
     entry = _entry(arguments)
     if entry is not None:
         return _forward(arguments, entry, timeout=180)
+    if arguments.forget and arguments.refresh:
+        return _blocked("devices", "--forget and --refresh are separate actions; run them one after the other")
     try:
         registry = config.load_registry()
         errors: dict[str, str] = {}
+        if arguments.forget:
+            registry, gone = config.forget_device(registry, arguments.forget)
+            if gone is None:
+                _err(f"valtrion devices: no registered device is named {arguments.forget}")
+                return constants.EXIT_FAIL
+            config.save_registry(registry)
+            print(f"forgot {gone['id']} ({gone['class']}, capabilities {', '.join(gone.get('capabilities', [])) or '-'})")
+            return constants.EXIT_PASS
         if arguments.refresh:
             devices, errors, done = discover_all()
             registry = config.merge_discovered(registry, devices, done, core.local_host_id())
@@ -338,7 +350,8 @@ def _devices(arguments: argparse.Namespace) -> int:
         _out({"devices": registry["devices"], "errors": errors})
     else:
         for item in registry["devices"]:
-            print(f"{item['id']:<32} {item['platform']:<8} {item['class']:<16} {item.get('evidence', 'physical'):<9} {item.get('os', '')}")
+            state = "" if config.is_online(item) else f"  OFFLINE (last seen {item.get('lastSeen', 'unknown')})"
+            print(f"{item['id']:<32} {item['platform']:<8} {item['class']:<16} {item.get('evidence', 'physical'):<9} {item.get('os', '')}{state}")
         for platform, message in errors.items():
             _err(f"discovery {platform}: {message}")
         if not registry["devices"]:

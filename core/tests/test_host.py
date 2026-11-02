@@ -73,7 +73,34 @@ class ConfigTests(HostTestCase):
         self.assertEqual(2, code)
         self.assertIn("BLOCKED", err)
 
-    def test_registry_merge_keeps_alias_and_notes_and_drops_vanished_devices(self):
+    def test_a_refresh_keeps_an_undiscovered_device_offline_with_its_settings_until_forgotten(self):
+        registry = config.load_registry()
+        tablet = DeviceInfo("ios:1", "ios", "tablet", "physical", "Tablet", "iOS 1.0", ("touch",))
+        first = config.merge_discovered(registry, [tablet], ["ios"], "mac", "2026-11-01T10:00:00Z")
+        first["devices"][0].update(alias="tab1", capabilities=["camera.fast", "perf.baseline", "touch"], **{"class": "tablet-owner"})
+        away = config.merge_discovered(first, [], ["ios"], "mac", "2026-11-02T10:00:00Z")
+        entry = away["devices"][0]
+        self.assertEqual((False, "2026-11-01T10:00:00Z"), (entry["online"], entry["lastSeen"]), "offline, last seen when it was found")
+        self.assertEqual(("tablet-owner", "tab1", ["camera.fast", "perf.baseline", "touch"]),
+                         (entry["class"], entry["alias"], entry["capabilities"]), "nothing the owner set is lost")
+        self.assertEqual([], Validator().validate(away, "gdv.registry/1"))
+        self.assertEqual([], remote.devices_from_report({"devices": away["devices"]}), "an offline entry never routes a job as attached")
+        back = config.merge_discovered(away, [tablet], ["ios"], "mac", "2026-11-02T11:00:00Z")
+        entry = back["devices"][0]
+        self.assertEqual((True, "2026-11-02T11:00:00Z", "tablet-owner"), (entry["online"], entry["lastSeen"], entry["class"]))
+        self.assertIn("camera.fast", entry["capabilities"])
+        config.save_registry(away)
+        code, out, _ = run("devices")
+        self.assertEqual(0, code)
+        self.assertIn("OFFLINE", out)
+        code, out, _ = run("devices", "--forget", "tab1")
+        self.assertEqual(0, code, out)
+        self.assertEqual([], config.load_registry()["devices"])
+        code, _, err = run("devices", "--forget", "ios:1")
+        self.assertEqual(1, code)
+        self.assertIn("no registered device", err)
+
+    def test_registry_merge_keeps_alias_and_notes_and_keeps_vanished_devices_offline(self):
         registry = config.load_registry()
         first = config.merge_discovered(registry, [DeviceInfo("ios:1", "ios", "ipad-a14", "physical", "iPad13,19", "iPadOS 27.2", ("touch",))],
                                         ["ios"], "mac")
@@ -87,7 +114,8 @@ class ConfigTests(HostTestCase):
         ipad = next(d for d in third["devices"] if d["id"] == "ios:1")
         self.assertEqual(("ipad10", "no XCUITest while recording", "iPadOS 27.3"), (ipad["alias"], ipad["notes"], ipad["os"]))
         gone = config.merge_discovered(third, [], ["ios"], "mac")
-        self.assertEqual(["android:1"], [d["id"] for d in gone["devices"]])
+        self.assertEqual(["android:1", "ios:1"], [d["id"] for d in gone["devices"]])
+        self.assertEqual([True, False], [d["online"] for d in gone["devices"]], "a vanished device is kept offline, not dropped")
         self.assertEqual([], Validator().validate(config.merge_discovered(registry, [android], ["android"], "mac"), "gdv.registry/1"))
 
 

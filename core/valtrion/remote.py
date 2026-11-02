@@ -215,6 +215,8 @@ def remote_for(entry: HostEntry, project_dir: str | None, transport: Transport |
 def devices_from_report(report: dict) -> list[DeviceInfo]:
     devices = []
     for item in report.get("devices", []):
+        if item.get("online", True) is False:  # kept in the registry for its settings, but the last discovery did not find it
+            continue
         try:
             devices.append(DeviceInfo(
                 item["id"], item["platform"], item["class"], item.get("evidence", "physical"), item.get("model", ""), item.get("os", ""),
