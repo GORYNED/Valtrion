@@ -857,6 +857,14 @@ def execute(pipeline: Mapping[str, Any], pipeline_path: Path | None, ctx: JobCon
             record = {**done.describe(options.checkout_id), "folder": str(project_dir)}
             if done.created:
                 events.emit("log", f"created the managed checkout {options.checkout_id} in {options.checkout_root}", step=name)
+            if done.ok:
+                unmarked = checkout.mark_managed(options.checkout_root, options.git)
+                if unmarked:
+                    events.emit("log", f"the managed checkout has no marker file: {unmarked}", step=name)
+                try:
+                    checkout.remember(ctx.home or core.valtrion_home(), options.checkout_root, options.checkout_id, done.sha)
+                except OSError as error:  # the record only feeds `doctor`; it never stops a build
+                    events.emit("log", f"cannot record the use of the managed checkout: {error}", step=name)
             if done.removed:
                 events.emit("log", f"removed stray build output from the checkout: {', '.join(done.removed)}", step=name,
                             data={"removed": list(done.removed)})

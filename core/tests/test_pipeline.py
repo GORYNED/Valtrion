@@ -72,7 +72,7 @@ class FakeAdapter(PlatformAdapter):
                 core.atomic_write_json(run / "result.json", {
                     "status": "PASS", "reason": None,
                     "steps": [{"type": "wait", "status": "PASS", "startMs": 0, "durationMs": 10}],
-                    "metrics": [{"name": "openMs", "unit": "ms", "samples": list(FakeAdapter.current_samples)}], "unverified": ["Golf flow"]})
+                    "metrics": [{"name": "openMs", "unit": "ms", "samples": list(FakeAdapter.current_samples)}], "unverified": ["Sample flow"]})
         return StepOutcome(constants.PASS)
 
     def launch(self, device, app, args, log):
@@ -182,7 +182,7 @@ class PipelineTests(unittest.TestCase):
         metric = result["metrics"][0]
         self.assertEqual([900, 100, 101, 99], metric["samples"])
         self.assertEqual(4, metric["stats"]["n"])
-        self.assertIn("Golf flow", result["unverified"])
+        self.assertIn("Sample flow", result["unverified"])
         self.assertTrue(any(a["path"] == "console.log" or a["path"].endswith("console.log") for a in result["artifacts"]))
         self.assertEqual(["build", "install", "push:gdv/inbox/plan.json", "pull", "launch"], FakeAdapter.calls[:5],
                          "the device output is listed before the launch so earlier runs are recognised")

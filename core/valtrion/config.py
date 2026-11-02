@@ -168,13 +168,19 @@ def _load_host_settings(home: Path | None = None) -> HostSettings:
     wait_sec = disk.get("waitSec", 0)
     if isinstance(wait_sec, bool) or not isinstance(wait_sec, (int, float)) or not math.isfinite(wait_sec) or wait_sec < 0:
         raise ConfigError("host.json: disk.waitSec must be a non-negative number")
-    projects = _load_projects(document.get("projects", {}))
+    projects = _load_projects(document.get("projects", {}), home)
     return HostSettings(Path(root).expanduser() if root else default_root, float(days),
                         Path(work).expanduser() if work else default_work, float(minimum) if minimum is not None else None,
                         float(pressure_days), projects, float(wait_sec), tools_root=home / "tools")
 
 
-def _load_projects(value: Any) -> tuple[ManagedProject, ...]:
+def default_checkout_path(home: Path, project: str, checkout_id: str) -> Path:
+    """Where a managed checkout lives when `host.json` names no `path`: in the valtrion home, beside the other working state (registry,
+    leases, incremental build folders), outside folders macOS guards with permission prompts and outside purgeable caches."""
+    return home / "checkouts" / core.safe_segment(project) / checkout_id
+
+
+def _load_projects(value: Any, home: Path) -> tuple[ManagedProject, ...]:
     if not isinstance(value, dict):
         raise ConfigError("host.json: projects must be an object")
     found: list[ManagedProject] = []
@@ -188,11 +194,11 @@ def _load_projects(value: Any) -> tuple[ManagedProject, ...]:
             path = entry.get("path") if isinstance(entry, dict) else None
             if not isinstance(identifier, str) or not re.fullmatch(r"[A-Za-z0-9._-]{1,40}", identifier) or identifier == "auto":
                 raise ConfigError(f"{where}.checkouts: every entry needs an id of letters, digits, '.', '_' and '-'")
-            if not isinstance(path, str) or not path or not Path(path).expanduser().is_absolute():
-                raise ConfigError(f"{where}.checkouts[{identifier}].path must be an absolute path (or start with ~)")
+            if path is not None and (not isinstance(path, str) or not path or not Path(path).expanduser().is_absolute()):
+                raise ConfigError(f"{where}.checkouts[{identifier}].path must be an absolute path (or start with ~), or be left out")
             if any(existing.id == identifier for existing in checkouts):
                 raise ConfigError(f"{where}.checkouts: the id {identifier} is used twice")
-            checkouts.append(ManagedCheckout(identifier, Path(path).expanduser()))
+            checkouts.append(ManagedCheckout(identifier, Path(path).expanduser() if path else default_checkout_path(home, name, identifier)))
         remote = item.get("remote")
         if remote is not None and (not isinstance(remote, str) or not remote):
             raise ConfigError(f"{where}.remote must be a non-empty string")
