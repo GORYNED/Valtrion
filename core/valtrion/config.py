@@ -81,6 +81,8 @@ class HostSettings:
     keep_days_under_pressure: float = 2.0
     #: `projects`: the projects whose build checkouts valtrion owns (see `checkout.py`).
     projects: tuple["ManagedProject", ...] = ()
+    #: `disk.waitSec`: how long a build waits for free space before it is BLOCKED (0, the default, blocks at once). `--disk-wait` wins.
+    disk_wait_sec: float = 0.0
 
     def project(self, name: str) -> "ManagedProject | None":
         return next((item for item in self.projects if item.name == name), None)
@@ -160,10 +162,13 @@ def _load_host_settings(home: Path | None = None) -> HostSettings:
     pressure_days = disk.get("keepDaysUnderPressure", 2.0)
     if isinstance(pressure_days, bool) or not isinstance(pressure_days, (int, float)) or not math.isfinite(pressure_days) or pressure_days < 0:
         raise ConfigError("host.json: disk.keepDaysUnderPressure must be a non-negative number")
+    wait_sec = disk.get("waitSec", 0)
+    if isinstance(wait_sec, bool) or not isinstance(wait_sec, (int, float)) or not math.isfinite(wait_sec) or wait_sec < 0:
+        raise ConfigError("host.json: disk.waitSec must be a non-negative number")
     projects = _load_projects(document.get("projects", {}))
     return HostSettings(Path(root).expanduser() if root else default_root, float(days),
                         Path(work).expanduser() if work else default_work, float(minimum) if minimum is not None else None,
-                        float(pressure_days), projects)
+                        float(pressure_days), projects, float(wait_sec))
 
 
 def _load_projects(value: Any) -> tuple[ManagedProject, ...]:

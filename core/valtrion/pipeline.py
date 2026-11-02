@@ -775,6 +775,45 @@ def execute(pipeline: Mapping[str, Any], pipeline_path: Path | None, ctx: JobCon
         stage_results.append(early(constants.BLOCKED, outcome.reason or "low disk space"))
         return fail(constants.BLOCKED, outcome.reason or "low disk space")
 
+    def wait_for_disk(name: str) -> PipelineOutcome | None:
+        """Before the build takes the project and Editor leases: with a disk wait (`--disk-wait`, else host.json `disk.waitSec`) and
+        `disk.minFreeGiB`, wait for the free space to appear, cleaning up and checking again every poll. The job holds no lease while it
+        waits, so it cannot keep the project or the slot from a job whose end would free the space; the check under the leases
+        (`check_disk`) stays as the last word. BLOCKED when no space appears in time, or at once when waiting cannot help."""
+        try:
+            settings = config.load_host_settings(ctx.home)
+        except config.ConfigError:
+            return None  # `check_disk` reports the broken file
+        wanted = ctx.spec.get("diskWaitSec")
+        wait = settings.disk_wait_sec if wanted is None else float(wanted)
+        if not settings.min_free_gib or wait <= 0:
+            return None
+
+        def waiting(outcome: diskspace.Outcome, waited: float) -> None:
+            ctx.set_phase("waiting-disk")
+            events.emit("log", f"waiting for disk space: {outcome.free_after / diskspace.GIB:.1f} GiB free, {settings.min_free_gib:g} GiB "
+                        f"minimum; waited {waited:.0f} s of {wait:g} s", step=name,
+                        data={"freeBytes": outcome.free_after, "minFreeBytes": int(settings.min_free_gib * diskspace.GIB),
+                              "waitedSec": round(waited, 1)})
+
+        try:
+            with ctx.wait_clock():
+                outcome = diskspace.wait_for_space(settings, ctx.home, ctx.spec.get("protectedPaths", []), wait, ctx.job_id,
+                                                   on_wait=waiting, cancelled=ctx.cancelled)
+        finally:
+            ctx.set_phase(None)
+        if outcome.removed:
+            events.emit("log", f"low disk space: removed {len(outcome.removed)} abandoned or expired item(s), "
+                        f"{outcome.free_after / diskspace.GIB:.1f} GiB free now", data={"removed": list(outcome.removed)})
+        if outcome.ok:
+            return None
+        if outcome.cancelled:
+            overall.cancelled = True
+            return fail(constants.BLOCKED, "cancelled by request")
+        events.emit("step.finished", outcome.reason, step=name, status=constants.BLOCKED)
+        stage_results.append(early(constants.BLOCKED, outcome.reason or "low disk space"))
+        return fail(constants.BLOCKED, outcome.reason or "low disk space")
+
     def adopt_cached(cached: buildcache.Entry, name: str) -> None:
         """The job uses a build from the cache instead of building."""
         nonlocal artifact, used_entry, build_outcome, build_info
@@ -900,6 +939,9 @@ def execute(pipeline: Mapping[str, Any], pipeline_path: Path | None, ctx: JobCon
             # so another job can build while this one is on the device, and no job holds them while it waits for a device. A
             # platform with nothing to build in the Editor (the Editor target itself) takes its slot where it launches. The lease
             # order inside the stage is always project, then slot, and the slots are the host's, not the platform's.
+            blocked = wait_for_disk(name)
+            if blocked is not None:
+                return blocked
             reason = None
             taken: list[dict[str, Any]] = []
             lost_before = set(ctx.lost_leases())  # `lost_leases` is cumulative: only losses after this point concern this build

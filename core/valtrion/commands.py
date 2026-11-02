@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import getpass
 import json
+import math
 import os
 import re
 import sys
@@ -729,7 +730,7 @@ def _start_pipeline(arguments: argparse.Namespace, pipeline: dict, payload: dict
     request = jobs.JobRequest(
         kind="pipeline", project=candidate["repo"], sha=sha, label=label, payload=payload, host=host,
         stall_sec=arguments.stall_sec, timeout_sec=arguments.timeout_sec, owner=_owner(), purpose=f"valtrion {arguments.command} {label}",
-        lease_wait_sec=arguments.lease_wait, protected_paths=tuple(arguments.protect))
+        lease_wait_sec=arguments.lease_wait, protected_paths=tuple(arguments.protect), disk_wait_sec=getattr(arguments, "disk_wait", None))
     domain = arguments.domain
     if domain == "auto" and _request_for(pipeline, base, project_dir).platform in SIGNING_PLATFORMS:
         domain = "gui"  # signing needs the login keychain, which only the GUI session has
@@ -791,11 +792,23 @@ def _start_remote_pipeline(arguments: argparse.Namespace, entry: config.HostEntr
     return constants.EXIT_PASS
 
 
+def _finite_seconds(text: str) -> float:
+    try:
+        value = float(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"{text!r} is not a number") from None
+    if not math.isfinite(value) or value < 0:
+        raise argparse.ArgumentTypeError("must be a finite number of seconds, 0 or more")
+    return value
+
+
 def _common_run_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--project-dir", type=Path, help="Unity project folder (Unity version, git state, builds); default: GDV_UNITY_PROJECT or the project named by the nearest valtrion.json")
     parser.add_argument("--stall-sec", type=float, default=supervise.DEFAULT_STALL_SEC)
     parser.add_argument("--timeout-sec", type=float, default=7200)
     parser.add_argument("--lease-wait", type=float, default=0, help="seconds to wait for a leased device or editor slot")
+    parser.add_argument("--disk-wait", type=_finite_seconds, default=None, metavar="SEC",
+                        help="seconds a build waits for free disk space (host.json disk.minFreeGiB) before it is BLOCKED; default: disk.waitSec of host.json, 0")
     parser.add_argument("--protect", action="append", default=[], help="path cleanup must never remove (repeatable)")
     parser.add_argument("--domain", choices=("auto", "user", "gui"), default="auto", help="macOS launchd domain (see `job start`)")
     parser.add_argument("--foreground", action="store_true")
