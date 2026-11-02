@@ -2,6 +2,7 @@
 
 import json
 import os
+import shutil
 import tempfile
 import time
 import unittest
@@ -9,7 +10,7 @@ from datetime import timedelta
 from pathlib import Path
 from unittest import mock
 
-from valtrion import artifacts, buildcache, config, core, diskspace, doctor, jobs, pipeline, providers, workroot
+from valtrion import artifacts, buildcache, config, core, diskspace, doctor, jobs, pipeline, providers, schema, workroot
 from tests.test_pipeline_leases import PLAN, World, adapter_class  # noqa: E402
 
 GIB = diskspace.GIB
@@ -193,6 +194,58 @@ class PipelineDiskTests(unittest.TestCase):
         info = jobs.start_job(request, self.root, self.home, foreground=True, work_roots=workroot.WorkRoots(self.work))
         return jobs.JobStore(Path(info["dir"]))
 
+    def test_a_job_survives_the_removal_of_its_schema_folder_while_it_builds(self):
+        # The runner executes from a staged copy of the CLI that something may remove under a long job (#18).
+        copy = self.base / "schemas-copy"
+        shutil.copytree(schema.SCHEMAS_DIRECTORY, copy)
+        original = adapter_class(self.world)
+
+        class Removing(original):
+            def build(self, project, profile, out):
+                shutil.rmtree(copy)
+                return super().build(project, profile, out)
+
+        providers.register("android", Removing)
+        schema._SHARED.pop(copy, None)
+        self.addCleanup(schema._SHARED.pop, copy, None)
+        with mock.patch.object(schema, "SCHEMAS_DIRECTORY", copy):
+            store = self.run_job()
+        job = store.read_job()
+        self.assertEqual("PASS", job["status"], job["reason"])
+        self.assertTrue(store.result.exists(), "the result was written and validated after the folder was gone")
+
+    def test_the_job_does_not_survive_without_the_preload(self):
+        copy = self.base / "schemas-copy2"
+        shutil.copytree(schema.SCHEMAS_DIRECTORY, copy)
+        original = adapter_class(self.world)
+
+        class Removing(original):
+            def build(self, project, profile, out):
+                shutil.rmtree(copy)
+                return super().build(project, profile, out)
+
+        providers.register("android", Removing)
+        schema._SHARED.pop(copy, None)
+        self.addCleanup(schema._SHARED.pop, copy, None)
+        with mock.patch.object(schema, "SCHEMAS_DIRECTORY", copy), mock.patch.object(jobs, "preload_runtime", lambda: None):
+            store = self.run_job()
+        self.assertIn("schema file not found", store.read_job()["reason"], "the test would not catch a missing preload otherwise")
+
+    def test_preload_reads_every_schema_and_serves_later_validators_after_the_folder_is_gone(self):
+        copy = self.base / "schemas-copy3"
+        shutil.copytree(schema.SCHEMAS_DIRECTORY, copy)
+        self.addCleanup(schema._SHARED.pop, copy, None)
+        schema._SHARED.pop(copy, None)
+        count = schema.Validator(copy).preload()
+        self.assertGreaterEqual(count, 10)
+        shutil.rmtree(copy)
+        self.assertEqual("gdv.result/1", schema.Validator(copy).load("result.schema.json")["properties"]["schema"]["const"])
+
+    def test_the_staged_cli_lives_in_the_valtrion_home_not_in_the_work_root(self):
+        self.settings({})
+        roots = config.load_host_settings(self.home).roots
+        self.assertEqual(self.home / "tools", roots.tools)
+        self.assertEqual(self.work / "jobs", roots.jobs)
     def events_of(self, store):
         return [json.loads(line) for line in store.events.read_text(encoding="utf-8").splitlines()]
 

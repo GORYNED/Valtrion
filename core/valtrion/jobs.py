@@ -672,8 +672,31 @@ class _PipelineWatch:
                 runner.flush(force=True)
 
 
+def preload_runtime() -> None:
+    """Import every module of the package and read every contract schema now. The runner executes from a staged copy of the CLI that
+    lives outside the repository and that something may remove while a long job runs; a module imported or a schema read lazily
+    after that point would fail the job after its work was done (#18). Nothing here may raise: a module that cannot be imported
+    on this platform is left for whoever needs it."""
+    import importlib
+    import pkgutil
+    package = sys.modules[__package__ or "valtrion"]
+    for module in pkgutil.walk_packages(package.__path__, package.__name__ + "."):
+        if module.name.endswith(".__main__"):
+            continue  # importing it runs the CLI
+        if module.name.startswith(package.__name__ + ".providers."):
+            continue  # adapters register themselves when imported; `load_known` below imports the ones nobody registered
+        try:
+            importlib.import_module(module.name)
+        except Exception:  # noqa: BLE001 - e.g. a provider of another platform
+            continue
+    from . import providers, schema
+    providers.load_known()
+    schema.Validator().preload()
+
+
 def run_job(directory: Path, home: Path | None = None, leases: lease.LeaseManager | None = None) -> int:
     """Entry of the detached runner. Always leaves job.json in a final state and releases every lease it took."""
+    preload_runtime()
     runner = _Runner(directory, home, leases)
     _install_cancel_signals(runner.store.cancel)
     core.atomic_write_json(directory / "runner.json", {"pid": os.getpid(), "token": core.process_start_token(os.getpid())})

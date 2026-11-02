@@ -67,7 +67,7 @@ Both warnings name the fix: set `workRoot` in host.json, or `GDV_WORK_ROOT` for 
 <workRoot>/jobs/<jobId>/{checkout,build,export,derived-data,tmp}   everything one job creates
 <workRoot>/jobs/inbox-<id>/                                         files a caller sent to run a plan or pipeline here (`valtrion workroot inbox`); removed with its job; otherwise swept when idle for hours and no active job uses it
 <workRoot>/mirrors/<project>.git                                   bare clone the checkouts hang off (kept: it is the cache)
-<workRoot>/tools/valtrion-<hash>/                                  the CLI staged for background jobs
+<valtrion home>/tools/valtrion-<hash>/                              the CLI staged for background jobs (not in the work root: it must outlive a purge of the cache folder)
 <workRoot>/launchd/                                                job definitions and logs of macOS background jobs
 ```
 
@@ -91,7 +91,7 @@ A job runs in its own detached process in the run folder `<artifactsRoot>/<proje
 
 - Windows: `DETACHED_PROCESS`, breaking away from a parent Job Object when allowed.
 - Other systems: `setsid`.
-- macOS: a one-shot launchd agent, tried in the `user` domain and then the `gui` domain (`--domain` chooses; `gui` is needed for signing). The label is `com.valtrion.<jobId>`. The job definition, its log and its working directory are under `<workRoot>/launchd`, and the job runs the staged CLI (copied once per content hash to `<workRoot>/tools/valtrion-<hash>`).
+- macOS: a one-shot launchd agent, tried in the `user` domain and then the `gui` domain (`--domain` chooses; `gui` is needed for signing). The label is `com.valtrion.<jobId>`. The job definition, its log and its working directory are under `<workRoot>/launchd`, and the job runs the staged CLI (copied once per content hash to `<valtrion home>/tools/valtrion-<hash>`; the runner also imports its modules and reads every contract schema at start, so it does not depend on that copy staying in place).
 
 On macOS the job runs **the interpreter that runs `valtrion`** (the pipx or virtual environment interpreter it was installed with), not the system one. The job is refused if that interpreter lies in a folder macOS protects (Documents, Desktop, Downloads, cloud storage); install with pipx or `python tools/install.py` into an unprotected folder.
 
