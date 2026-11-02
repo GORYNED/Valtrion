@@ -12,6 +12,7 @@ systems use `setsid`.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import math
 import os
@@ -25,7 +26,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, Mapping, Sequence
+from typing import Any, Callable, ContextManager, Mapping, Sequence
 
 from . import artifacts, constants, core, lease, remote, supervise, workroot
 from .artifacts import RunLayout
@@ -337,6 +338,9 @@ class JobContext:
     #: Record what the job is doing (`waiting-build`, `building`, `waiting-device`, `on-device`) in job.json and as an event;
     #: None clears it.
     set_phase: Callable[["str | None"], None] = field(default=lambda phase: None)
+    #: A context manager around a wait for something other than a lease (free disk space): its time does not count against the
+    #: pipeline timeout, like the time spent waiting for a lease.
+    wait_clock: Callable[[], ContextManager] = field(default=contextlib.nullcontext)
 
 
 class _Runner:
@@ -392,6 +396,16 @@ class _Runner:
         is bounded by `--lease-wait` alone, and work that has not started cannot use up the time meant for it."""
         since = self._wait_since
         return self._waited_sec + (time.monotonic() - since if since is not None else 0.0)
+
+    @contextlib.contextmanager
+    def waiting(self):
+        """A wait that is not work (free disk space): counted like a lease wait, so the pipeline timeout does not run during it."""
+        self._wait_since = time.monotonic()
+        try:
+            yield
+        finally:
+            since, self._wait_since = self._wait_since, None
+            self._waited_sec += time.monotonic() - since
 
     def command_environment(self) -> dict | None:
         """The payload's own `env` (which replaces the environment, as before) or, for a job with a work root, this process's
@@ -530,7 +544,7 @@ class _Runner:
                 self.store, self.events, self.spec, self.job_id, self.flush, lambda: self.store.cancel.exists(),
                 RunLayout(Path(self.spec["artifactsRoot"]), self.spec["project"], self.spec["sha8"], self.job_id), self.acquire_one,
                 self.home, work=self.work_dirs(), lost_leases=self.lost_leases, release=self.release_one, probe=self.probe_lease,
-                set_phase=self.set_phase)
+                set_phase=self.set_phase, wait_clock=self.waiting)
             with _PipelineWatch(self) as guard:
                 outcome = pipeline.run_pipeline_job(context)
             if guard.timed_out:
@@ -785,6 +799,8 @@ class JobRequest:
     purpose: str = ""
     cleanup: bool = True
     protected_paths: tuple[str, ...] = ()
+    #: Seconds a build waits for free disk space (`--disk-wait`); None leaves it to `disk.waitSec` of host.json.
+    disk_wait_sec: float | None = None
     extra: dict = field(default_factory=dict)
 
 
@@ -817,6 +833,8 @@ def create_job(request: JobRequest, artifacts_root: Path, home: Path | None = No
         "contractExitCodes": request.contract_exit_codes, "leases": list(request.leases), "leaseWaitSec": request.lease_wait_sec,
         "leaseTtlSec": request.lease_ttl_sec, "owner": request.owner, "purpose": request.purpose, "cleanup": request.cleanup,
         "protectedPaths": list(request.protected_paths), **request.extra}
+    if request.disk_wait_sec is not None:
+        spec["diskWaitSec"] = request.disk_wait_sec
     if work_roots is not None:
         dirs = work_roots.job(job_id)
         dirs.create()

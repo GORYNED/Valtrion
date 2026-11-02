@@ -55,7 +55,7 @@ GDV-RESULT <STATUS> run=<id>
 
 The app never sees these; they are listed because they extend documents that watchers and result readers parse. All are optional additions to `gdv.*/1`, so a reader that ignores unknown fields keeps working.
 
-- `job.json` (`gdv.job/1`): `phase` is `waiting-build`, `building`, `waiting-device` or `on-device` while a pipeline job runs that stage, and absent otherwise. Each change is also a `progress` event whose `data.phase` is the new phase (`null` when cleared).
+- `job.json` (`gdv.job/1`): `phase` is `waiting-disk`, `waiting-build`, `building`, `waiting-device` or `on-device` while a pipeline job runs that stage, and absent otherwise. Each change is also a `progress` event whose `data.phase` is the new phase (`null` when cleared).
 - `lease.acquired` / `lease.released` events now occur per stage: the `unity-project` and `unity-editor` leases around the `build` stage, the `device:<id>` lease around the device stages. See [cli.md](cli.md#leases-by-stage-build-reuse) for the order and why it cannot deadlock.
 - `result.json` (`gdv.result/1`): `build` describes the build artifact the run used: `path`, `sha256` (of the file, or over the sorted relative paths and file hashes of a folder), `sizeBytes`, `candidateSha`, `dirty`, `profile`, and `key`, `kind`, `platform`, `toolchain`, `reused`, `builtByJob`. A `progress` event with `data.build` carries the same object when the artifact is published or reused.
 - Job notes: `incremental build: reused the previous export and DerivedData` or `incremental build: clean build (<why>)` for a managed iOS build.

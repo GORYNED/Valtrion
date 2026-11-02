@@ -137,7 +137,8 @@ class DiskTests(unittest.TestCase):
 
     def test_config_rejects_bad_disk_settings(self):
         for bad in ({"minFreeGiB": 0}, {"minFreeGiB": "5"}, {"keepDaysUnderPressure": -1}, [], {"minFreeGiB": float("nan")},
-                    {"minFreeGiB": float("inf")}, {"keepDaysUnderPressure": float("inf")}):
+                    {"minFreeGiB": float("inf")}, {"keepDaysUnderPressure": float("inf")}, {"waitSec": -1}, {"waitSec": "5"},
+                    {"waitSec": True}, {"waitSec": float("inf")}):
             (self.home / "host.json").write_text(json.dumps({"disk": bad}), encoding="utf-8")
             with self.assertRaises(config.ConfigError, msg=bad):
                 config.load_host_settings(self.home)
@@ -180,7 +181,7 @@ class PipelineDiskTests(unittest.TestCase):
     def settings(self, document):
         (self.home / "host.json").write_text(json.dumps({"workRoot": str(self.work), **document}), encoding="utf-8")
 
-    def run_job(self, stages=None):
+    def run_job(self, stages=None, **options):
         document = {"schema": "gdv.pipeline/1", "id": "p1", "candidate": {"repo": "Sample", "sha": "c" * 40, "profile": "Validation"},
                     "device": {"platform": "android"}, "stages": stages or [
                         {"stage": "build"}, {"stage": "install"},
@@ -188,8 +189,8 @@ class PipelineDiskTests(unittest.TestCase):
         payload = {"type": "pipeline", "file": "<inline>", "inline": document, "baseDir": str(self.base / "plans"), "devicePollSec": 0.02,
                    "projectDir": str(self.base / "A")}
         request = jobs.JobRequest(kind="pipeline", project="Sample", sha="c" * 40, label="A", payload=payload,
-                                  host={"id": "win", "transport": "local", "selectedBy": "local"}, stall_sec=30, timeout_sec=60,
-                                  owner="tester")
+                                  host={"id": "win", "transport": "local", "selectedBy": "local"}, owner="tester",
+                                  **{"stall_sec": 30, "timeout_sec": 60, **options})
         info = jobs.start_job(request, self.root, self.home, foreground=True, work_roots=workroot.WorkRoots(self.work))
         return jobs.JobStore(Path(info["dir"]))
 
@@ -245,6 +246,118 @@ class PipelineDiskTests(unittest.TestCase):
         roots = config.load_host_settings(self.home).roots
         self.assertEqual(self.home / "tools", roots.tools)
         self.assertEqual(self.work / "jobs", roots.jobs)
+    def events_of(self, store):
+        return [json.loads(line) for line in store.events.read_text(encoding="utf-8").splitlines()]
+
+    def test_a_build_waits_for_space_that_appears_and_then_builds_without_holding_a_lease_meanwhile(self):
+        self.settings({"disk": {"minFreeGiB": 10}})
+        calls = []
+        low, high = FakeVolume(1), FakeVolume(50)
+
+        def volume(path):  # a neighbour's build ends after a few checks (each check reads the volume twice)
+            calls.append(1)
+            return low(path) if len(calls) < 9 else high(path)
+
+        with mock.patch.object(diskspace, "free_bytes", volume), mock.patch.object(diskspace, "POLL_SEC", 0.05), \
+                mock.patch.object(diskspace, "releasable_bytes", lambda *_: 40 * GIB):
+            store = self.run_job(disk_wait_sec=30)
+        job = store.read_job()
+        self.assertEqual("PASS", job["status"], job["reason"])
+        self.assertIn(("A", "build.start"), self.world.timeline)
+        events = self.events_of(store)
+        phases = [e["data"]["phase"] for e in events if e["type"] == "progress" and "phase" in e.get("data", {})]
+        self.assertEqual("waiting-disk", phases[0])
+        self.assertIn("waiting-build", phases)
+        first_wait = next(i for i, e in enumerate(events) if e["message"].startswith("waiting for disk space"))
+        first_lease = next(i for i, e in enumerate(events) if e["type"] == "lease.acquired")
+        self.assertLess(first_wait, first_lease, "the project and slot leases are taken only after the space is there")
+        data = events[first_wait]["data"]
+        self.assertEqual(10 * GIB, data["minFreeBytes"])
+        self.assertLess(data["freeBytes"], 10 * GIB)
+
+    def test_space_that_never_appears_ends_blocked_after_the_limit(self):
+        self.settings({"disk": {"minFreeGiB": 10}})
+        began = time.monotonic()
+        with mock.patch.object(diskspace, "free_bytes", FakeVolume(1)), mock.patch.object(diskspace, "POLL_SEC", 0.05), \
+                mock.patch.object(diskspace, "releasable_bytes", lambda *_: 40 * GIB):
+            store = self.run_job(disk_wait_sec=0.4)
+        job = store.read_job()
+        self.assertEqual("BLOCKED", job["status"])
+        self.assertGreaterEqual(time.monotonic() - began, 0.4)
+        self.assertIn("minimum", job["reason"])
+        self.assertIn("no space appeared within the 0.4 s wait", job["reason"])
+        self.assertNotIn(("A", "build.start"), self.world.timeline)
+        self.assertEqual([], self.world.held())
+
+    def test_space_that_could_never_suffice_ends_blocked_at_once(self):
+        self.settings({"disk": {"minFreeGiB": 10}})
+        began = time.monotonic()
+        with mock.patch.object(diskspace, "free_bytes", FakeVolume(1)):  # no other active job: nothing can bring the volume up
+            store = self.run_job(disk_wait_sec=300)
+        job = store.read_job()
+        self.assertEqual("BLOCKED", job["status"])
+        self.assertLess(time.monotonic() - began, 20)
+        self.assertIn("waiting cannot help", job["reason"])
+        self.assertFalse(any(e["message"].startswith("waiting for disk space") for e in self.events_of(store)))
+        self.assertNotIn(("A", "build.start"), self.world.timeline)
+
+    def test_the_host_setting_enables_the_wait_and_the_default_does_not(self):
+        self.settings({"disk": {"minFreeGiB": 10, "waitSec": 0.3}})
+        with mock.patch.object(diskspace, "free_bytes", FakeVolume(1)), mock.patch.object(diskspace, "POLL_SEC", 0.05), \
+                mock.patch.object(diskspace, "releasable_bytes", lambda *_: 40 * GIB):
+            store = self.run_job()
+        self.assertIn("no space appeared within the 0.3 s wait", store.read_job()["reason"])
+        with mock.patch.object(diskspace, "free_bytes", FakeVolume(1)), mock.patch.object(diskspace, "releasable_bytes", lambda *_: 40 * GIB):
+            store = self.run_job(disk_wait_sec=0)  # the job's own 0 wins over the host's wait
+        self.assertNotIn("no space appeared", store.read_job()["reason"])
+        self.assertNotIn("waiting cannot help", store.read_job()["reason"])
+
+    def test_the_wait_does_not_count_against_the_job_timeout(self):
+        self.settings({"disk": {"minFreeGiB": 10}})
+        started = {}
+        low, high = FakeVolume(1), FakeVolume(50)
+
+        def volume(path):  # low until 2.5 s after the first check, however long the job took to start
+            started.setdefault("at", time.monotonic())
+            return low(path) if time.monotonic() - started["at"] < 2.5 else high(path)
+
+        with mock.patch.object(diskspace, "free_bytes", volume), mock.patch.object(diskspace, "POLL_SEC", 0.05), \
+                mock.patch.object(diskspace, "releasable_bytes", lambda *_: 40 * GIB):
+            store = self.run_job(disk_wait_sec=30, timeout_sec=2, tick_sec=0.1)  # the wait is longer than the timeout
+        self.assertEqual("PASS", store.read_job()["status"], store.read_job()["reason"])
+
+    def test_an_idle_incremental_folder_that_could_close_the_gap_is_left_to_the_check_under_the_leases(self):
+        self.settings({"disk": {"minFreeGiB": 10}})
+        folder = self.home / "incremental" / "Sample" / "queue"
+        folder.mkdir(parents=True)
+        core.atomic_write_json(folder / "owner.json", {"leaseResource": "unity-project:idle"})
+        settings = config.load_host_settings(self.home)
+        with mock.patch.object(diskspace, "free_bytes", FakeVolume(1)), mock.patch.object(diskspace, "folder_bytes", lambda path: 20 * GIB), \
+                mock.patch.object(diskspace.incremental, "folders", lambda home=None: [folder]), \
+                mock.patch.object(diskspace.incremental, "OWNER", "owner.json"):
+            outcome = diskspace.wait_for_space(settings, self.home, [], 60, "me", poll_sec=0.01)
+        self.assertTrue(outcome.ok, "not BLOCKED by the wait: the build resources are taken and the last check releases the folder")
+        self.assertTrue(folder.exists(), "the wait itself removes nothing of the persistent build folders")
+
+    def test_a_bad_disk_wait_option_is_rejected(self):
+        from valtrion import cli  # noqa: F401 - commands is imported through cli
+        from valtrion import commands
+        for bad in ("nan", "inf", "-1", "x"):
+            with self.assertRaises(Exception, msg=bad):
+                commands._finite_seconds(bad)
+        self.assertEqual(30.0, commands._finite_seconds("30"))
+
+    def test_a_cancel_ends_the_wait(self):
+        self.settings({"disk": {"minFreeGiB": 10}})
+        calls = []
+
+        def cancelled():
+            calls.append(1)
+            return len(calls) > 2
+
+        with mock.patch.object(diskspace, "free_bytes", FakeVolume(1)), mock.patch.object(diskspace, "releasable_bytes", lambda *_: 40 * GIB):
+            outcome = diskspace.wait_for_space(config.load_host_settings(self.home), self.home, [], 60, "me", cancelled=cancelled, poll_sec=0.01)
+        self.assertEqual((False, True), (outcome.ok, outcome.cancelled))
 
     def test_low_space_ends_the_build_blocked_before_any_toolchain_starts(self):
         self.settings({"disk": {"minFreeGiB": 10}})
