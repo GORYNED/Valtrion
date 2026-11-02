@@ -34,6 +34,10 @@ CI configures Core tests on Windows, macOS and Linux with Python 3.10 through 3.
 
 For Unity changes, use the Editor specified in `integrations/unity/UnityProject/ProjectSettings/ProjectVersion.txt` and run both EditMode and PlayMode tests in `integrations/unity/UnityProject`. Use batch mode and retain the logs and test XML. A skipped test or a missing Editor is unverified, not a pass. For provider changes, also test the affected platform when tools and a target are available. State every missing check in the pull request.
 
+## Brand and website materials
+
+Logos, banners and the project facts shown on goryned.com live in [publishing](publishing). The README banners are `publishing/assets/valtrion-readme-*.png`. The folder follows the contract in the goryned.com `docs/publishing.md`; the website pins a commit of it, so keep file names stable.
+
 ## Preserve compatibility
 
 - Treat [contracts/schemas](contracts/schemas) and their fixtures as the source of truth. Update fixtures and validators together with a contract change; see [contracts](docs/contracts.md).

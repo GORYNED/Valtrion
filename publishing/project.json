@@ -1,0 +1,46 @@
+{
+  "schemaVersion": 1,
+  "slug": "valtrion",
+  "title": "Valtrion",
+  "summary": {
+    "en": "A cross-platform device validation framework that runs tests and app checks as supervised jobs with time limits, hang detection and saved logs.",
+    "ru": "Кроссплатформенный фреймворк проверки на устройствах: запускает тесты и проверки приложений как контролируемые задачи с лимитом времени, обнаружением зависаний и сохранёнными журналами."
+  },
+  "category": "Tools",
+  "tags": ["Python", "CLI", "Unity", "Developer Tools"],
+  "ownership": "GORYNED",
+  "relationship": "Personal",
+  "status": "Active",
+  "access": "openSource",
+  "platforms": ["GitHub"],
+  "released": "2026-11",
+  "links": {
+    "github": "https://github.com/GORYNED/Valtrion"
+  },
+  "descriptions": {
+    "en": "descriptions/en.md",
+    "ru": "descriptions/ru.md"
+  },
+  "images": {
+    "icon": {
+      "path": "assets/valtrion-symbol-square-light.png",
+      "width": 1024,
+      "height": 1024
+    },
+    "cover": {
+      "path": "assets/valtrion-website-light.png",
+      "width": 1920,
+      "height": 640,
+      "alt": {
+        "en": "Valtrion: Build. Run. Prove the result. Cross-platform device validation, backed by evidence.",
+        "ru": "Valtrion: собрать, запустить, доказать результат. Кроссплатформенная проверка на устройствах с подтверждением."
+      }
+    },
+    "social": {
+      "path": "assets/valtrion-opengraph-light.png",
+      "width": 1200,
+      "height": 630
+    }
+  },
+  "legal": {}
+}

@@ -1,7 +1,7 @@
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/valtrion-readme-dark.png">
-    <img src="docs/assets/valtrion-readme-light.png" alt="Valtrion: cross-platform device validation. Build, run, verify." width="100%">
+    <source media="(prefers-color-scheme: dark)" srcset="publishing/assets/valtrion-readme-dark.png">
+    <img src="publishing/assets/valtrion-readme-light.png" alt="Valtrion: cross-platform device validation. Build, run, verify." width="100%">
   </picture>
 </p>
 
