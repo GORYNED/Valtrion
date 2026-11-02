@@ -181,27 +181,39 @@ def unity_version(project_dir: Path | None) -> str:
     return match.group(1) if match else "unknown"
 
 
-def select_device(devices: Sequence[DeviceInfo], wanted: Mapping[str, Any], plan: Mapping[str, Any]) -> tuple[DeviceInfo | None, str | None]:
-    """Pick the device that satisfies the pipeline and the plan, or say why none does."""
+def select_device(devices: Sequence[DeviceInfo], wanted: Mapping[str, Any], plan: Mapping[str, Any],
+                  known: Sequence[DeviceInfo] = ()) -> tuple[DeviceInfo | None, str | None]:
+    """Pick the device that satisfies the pipeline and the plan, or say why none does. `known` are the devices of the host's registry:
+    they are never selected (discovery decides what is attached), they only tell an offline device from one that does not exist."""
     requires = plan.get("requires", {})
-    candidates = list(devices)
-    if wanted.get("id"):
-        candidates = [d for d in candidates if d.id == wanted["id"]]
-    # A device that waits for an owner action (an unauthorized adb connection) reveals neither its class nor its capabilities,
-    # so it is not filtered by them: the run reaches it and ends NEEDS_PERMISSION with the action, not a misleading "no device".
-    waiting = [d for d in candidates if NEEDS_PERMISSION_CAPABILITY in d.capabilities]
-    if wanted.get("class"):  # a waiting device whose class is known still has to match; only an unknown class is let through
-        candidates = [d for d in candidates if d.device_class == wanted["class"] or (d in waiting and d.device_class.endswith("-unknown"))]
-    candidates = [d for d in candidates if set(requires.get("capabilities", [])) <= set(d.capabilities) or d in waiting]
     allowed = requires.get("evidence")
     if plan.get("kind") == "performance":
         allowed = [e for e in (allowed or _PERFORMANCE_EVIDENCE) if e in _PERFORMANCE_EVIDENCE] or list(_PERFORMANCE_EVIDENCE)
-    if allowed:
-        candidates = [d for d in candidates if d.evidence in allowed]
+
+    def matching(pool: Sequence[DeviceInfo]) -> list[DeviceInfo]:
+        candidates = list(pool)
+        if wanted.get("id"):
+            candidates = [d for d in candidates if d.id == wanted["id"]]
+        # A device that waits for an owner action (an unauthorized adb connection) reveals neither its class nor its capabilities,
+        # so it is not filtered by them: the run reaches it and ends NEEDS_PERMISSION with the action, not a misleading "no device".
+        waiting = [d for d in candidates if NEEDS_PERMISSION_CAPABILITY in d.capabilities]
+        if wanted.get("class"):  # a waiting device whose class is known still has to match; only an unknown class is let through
+            candidates = [d for d in candidates if d.device_class == wanted["class"] or (d in waiting and d.device_class.endswith("-unknown"))]
+        candidates = [d for d in candidates if set(requires.get("capabilities", [])) <= set(d.capabilities) or d in waiting]
+        if allowed:
+            candidates = [d for d in candidates if d.evidence in allowed]
+        return candidates
+
+    candidates = matching(devices)
     if not candidates:
         needs = ", ".join(filter(None, [wanted.get("id"), wanted.get("class"), *requires.get("capabilities", []),
                                         f"evidence {'/'.join(allowed)}" if allowed else None])) or "any device"
-        return None, f"no attached device satisfies: {needs}"
+        attached = {d.id for d in devices}
+        offline = sorted(d.id for d in matching([d for d in known if d.id not in attached]))
+        if offline:
+            return None, (f"device offline: {', '.join(offline)} satisfies {needs} but is not attached or not reachable now "
+                          "(check the cable, unlock it and trust this computer, then `valtrion devices --refresh`)")
+        return None, f"no attached device satisfies: {needs} (no device with these settings is known on this host)"
     return sorted(candidates, key=lambda d: (NEEDS_PERMISSION_CAPABILITY in d.capabilities, d.id))[0], None
 
 
@@ -707,7 +719,11 @@ def execute(pipeline: Mapping[str, Any], pipeline_path: Path | None, ctx: JobCon
             return None
         plan_for_device = load_plan(first_plan)[1] if first_plan else {}
         try:
-            found, why = select_device(adapter.discover(), pipeline["device"], plan_for_device)
+            known = [d for d in config.registry_devices(config.load_registry(ctx.home)) if d.platform == platform]
+        except Exception:  # noqa: BLE001 - the registry only improves the reason; a broken one must not stop selection
+            known = []
+        try:
+            found, why = select_device(adapter.discover(), pipeline["device"], plan_for_device, known)
         except Exception as error:  # noqa: BLE001 - discovery is adapter code
             found, why = None, f"device discovery failed: {type(error).__name__}: {error}"
         if found is None:
@@ -841,6 +857,14 @@ def execute(pipeline: Mapping[str, Any], pipeline_path: Path | None, ctx: JobCon
             record = {**done.describe(options.checkout_id), "folder": str(project_dir)}
             if done.created:
                 events.emit("log", f"created the managed checkout {options.checkout_id} in {options.checkout_root}", step=name)
+            if done.ok:
+                unmarked = checkout.mark_managed(options.checkout_root, options.git)
+                if unmarked:
+                    events.emit("log", f"the managed checkout has no marker file: {unmarked}", step=name)
+                try:
+                    checkout.remember(ctx.home or core.valtrion_home(), options.checkout_root, options.checkout_id, done.sha)
+                except OSError as error:  # the record only feeds `doctor`; it never stops a build
+                    events.emit("log", f"cannot record the use of the managed checkout: {error}", step=name)
             if done.removed:
                 events.emit("log", f"removed stray build output from the checkout: {', '.join(done.removed)}", step=name,
                             data={"removed": list(done.removed)})

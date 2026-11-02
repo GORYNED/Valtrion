@@ -151,6 +151,44 @@ class IosTests(unittest.TestCase):
         self.assertIn("camera.120fps", devices[f"ios:{UDID}"].capabilities)
         self.assertNotIn("ios:GONE", devices, "a stale registry entry is never trusted over discovery")
 
+    def idle_listing(self, state="disconnected", transport="wired"):
+        return {"result": {"devices": [
+            {"identifier": "5F3D", "hardwareProperties": {"udid": UDID, "productType": "Tablet1,1", "marketingName": "Tablet",
+                                                          "reality": "physical", "platform": "iOS"},
+             "deviceProperties": {"name": "Tablet", "osVersionNumber": "1.0"},
+             "connectionProperties": {"tunnelState": state, "pairingState": "paired", "transportType": transport}}]}}
+
+    def test_a_wired_paired_device_with_an_idle_tunnel_is_woken_and_discovered(self):
+        listings = [self.idle_listing(), self.idle_listing("connected")]
+
+        def listing(argv, call):
+            Path(argv[argv.index("--json-output") + 1]).write_text(json.dumps(listings.pop(0)), encoding="utf-8")
+            return result()
+
+        self.recorder.answers["list devices"] = listing
+        devices = self.adapter.discover()
+        self.assertEqual([f"ios:{UDID}"], [d.id for d in devices])
+        probes = self.recorder.named("device info lockState")
+        self.assertEqual(1, len(probes), "the idle tunnel is brought up with one cheap lock-state probe")
+        self.assertIn(UDID, probes[0]["argv"])
+        self.assertEqual(2, len(self.recorder.named("list devices")), "listed once more after the wake, never more")
+
+    def test_a_wired_device_whose_tunnel_stays_idle_is_still_attachable(self):
+        self.recorder.json["list devices"] = self.idle_listing()
+        self.assertEqual([f"ios:{UDID}"], [d.id for d in self.adapter.discover()],
+                         "CoreDevice brings the tunnel up for the next devicectl command")
+        self.assertEqual(2, len(self.recorder.named("list devices")))
+
+    def test_a_wireless_device_with_an_idle_tunnel_is_not_woken_or_attached(self):
+        self.recorder.json["list devices"] = self.idle_listing(transport="localNetwork")
+        self.assertEqual([], list(self.adapter.discover()))
+        self.assertEqual([], self.recorder.named("device info lockState"))
+
+    def test_connected_devices_are_not_probed(self):
+        self.adapter.discover()
+        self.assertEqual([], self.recorder.named("device info lockState"))
+        self.assertEqual(1, len(self.recorder.named("list devices")))
+
     def test_discovery_failure_is_reported_not_swallowed(self):
         self.recorder.answers["list devices"] = result(constants.TIMEOUT, "", None, "timed out")
         with self.assertRaises(RuntimeError):

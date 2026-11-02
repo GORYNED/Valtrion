@@ -9,17 +9,30 @@ cannot be at every job's commit while they wait. Two kinds of folder exist:
   stray build folders (`Builds/`). Ignored files such as `Library/` stay: they are the import cache. Clients never create or switch
   it by hand.
 - Any other folder (`--project-dir`) is never switched. `verify_head` refuses to build when its `HEAD` is not the job's commit.
+
+A managed checkout is working state, not a cache: its `Library/` is the import cache a reclone has to rebuild. Each one carries a
+marker file (`.valtrion-managed`, excluded from git through `.git/info/exclude`) so cleanup tools and people recognise it, and the
+valtrion home keeps a record of every checkout a job used (`checkout-records/`), so `doctor` can tell a lost checkout from one that
+was never created.
 """
 
 from __future__ import annotations
 
+import hashlib
+import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Sequence
 
-from . import gitstate
+from . import core, gitstate
 from .compare import GitRunner
+
+MARKER = ".valtrion-managed"
+MARKER_TEXT = ("This folder is a managed build checkout of Valtrion (host.json projects). It is working state, not a cache: its\n"
+               "Library/ is the Unity import cache. Valtrion resets it to each job's commit; do not edit it and do not remove it\n"
+               "while jobs may use it. Removing it costs a full reclone and Library import on the next build.\n")
+RECORDS = "checkout-records"
 
 _FULL_SHA = re.compile(r"[0-9a-f]{40}")
 LFS_FILTER = "filter=lfs"
@@ -96,6 +109,51 @@ def _uses_lfs(folder: Path, git: GitRunner) -> bool:
         except OSError:
             continue
     return False
+
+
+def mark_managed(folder: Path, git: GitRunner) -> str | None:
+    """Write the marker file into the managed checkout `folder` and exclude it from git there (so `clean` keeps it and the dirty check
+    ignores it). Returns why it could not be written, or None; a missing marker never stops a build."""
+    code, output = git(folder, ["rev-parse", "--path-format=absolute", "--git-path", "info/exclude"])
+    if code != 0:
+        return f"the git folder of {folder} cannot be read: {' '.join(output.split())[:160]}"
+    exclude = Path(output.strip())
+    pattern = "/" + escape_pattern(MARKER)
+    try:
+        current = exclude.read_text(encoding="utf-8") if exclude.is_file() else ""
+        if pattern not in current.splitlines():
+            exclude.parent.mkdir(parents=True, exist_ok=True)
+            core.atomic_write_text(exclude, current + ("" if not current or current.endswith("\n") else "\n") + pattern + "\n")
+        marker = folder / MARKER
+        if not marker.is_file() or marker.read_text(encoding="utf-8", errors="replace") != MARKER_TEXT:
+            core.atomic_write_text(marker, MARKER_TEXT)
+    except OSError as error:
+        return f"cannot write {folder / MARKER}: {error}"
+    return None
+
+
+def _record_path(home: Path, folder: Path) -> Path:
+    key = os.path.normcase(os.path.abspath(Path(folder).expanduser()))
+    return home / RECORDS / f"{hashlib.sha256(key.encode('utf-8')).hexdigest()[:24]}.json"
+
+
+def remember(home: Path, folder: Path, checkout_id: str | None, sha: str | None) -> None:
+    """Record in the valtrion home that a job used the managed checkout `folder` (once created, a checkout that disappears is a loss
+    that `doctor` reports). One file per checkout, so jobs on different checkouts never write the same file."""
+    path = _record_path(home, folder)
+    previous = recorded(home, folder) or {}
+    moment = core.utc_now()
+    core.atomic_write_json(path, {"path": str(folder), "id": checkout_id, "firstUsed": previous.get("firstUsed", moment),
+                                  "lastUsed": moment, "sha": sha})
+
+
+def recorded(home: Path, folder: Path) -> dict | None:
+    """The record `remember` wrote for `folder`, or None when no job has used it (or the record is unreadable)."""
+    try:
+        document = core.read_json(_record_path(home, folder))
+    except (OSError, ValueError):
+        return None
+    return document if isinstance(document, dict) else None
 
 
 def preflight(folder: Path, sha: str, remote: str | None, git: GitRunner, slow_git: GitRunner | None = None) -> str | None:

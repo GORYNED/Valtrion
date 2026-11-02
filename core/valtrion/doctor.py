@@ -15,7 +15,7 @@ import subprocess
 from pathlib import Path
 from typing import Callable, Sequence
 
-from . import __version__, buildcache, compare, core, diskspace, incremental, lease, workroot
+from . import __version__, buildcache, checkout, compare, core, diskspace, incremental, lease, workroot
 from .resolver import HostCapabilities
 
 PROBE_TIMEOUT_SEC = 20
@@ -248,8 +248,14 @@ def checkouts_report(projects: Sequence, home: Path | None = None, sizes: bool =
             if exists:
                 code, output = compare.run_git(item.path, ["rev-parse", "HEAD"])
                 head = output.strip() if code == 0 else None
-            listed.append({"project": project.name, "id": item.id, "path": str(item.path), "exists": exists, "commit": head,
-                           "bytes": diskspace.folder_bytes(item.path) if exists and sizes else None, "lease": held.get(resource)})
+            entry = {"project": project.name, "id": item.id, "path": str(item.path), "exists": exists, "commit": head,
+                     "bytes": diskspace.folder_bytes(item.path) if exists and sizes else None, "lease": held.get(resource),
+                     "marked": exists and (item.path / checkout.MARKER).is_file()}
+            record = None if exists else checkout.recorded(home or core.valtrion_home(), item.path)
+            if record is not None:  # a job used it before: it was created and is gone now, not "not created yet"
+                entry["missing"] = True
+                entry["lastUsed"] = record.get("lastUsed")
+            listed.append(entry)
     return {"managed": listed, "unmanagedLeases": [{"resource": resource, **info} for resource, info in sorted(held.items())
                                                     if resource not in managed_resources]}
 
@@ -317,6 +323,10 @@ def probe_local(
         "iosSigning": bool(signing), "adb": bool(adb_facts)}
     if xcode_ok:
         capabilities["xcode"] = apple["xcode"]
+    checkouts = checkouts_report(projects, sizes=checkout_sizes)
+    lost = [f"managed checkout {item['project']}/{item['id']} at {item['path']} was created and is missing now (last used "
+            f"{item.get('lastUsed') or 'unknown'}): the next build reclones it and Unity imports Library again; managed checkouts are "
+            "working state, not cache" for item in checkouts["managed"] if item.get("missing")]
     return {
         "host": {"id": core.local_host_id(), "os": os_name}, "core": {"version": __version__}, "capabilities": capabilities, "tools": tools,
         "editors": [{"version": e["version"], "path": e["path"]} for e in editors], "gui": {
@@ -324,8 +334,8 @@ def probe_local(
         "disk": disk_report(artifacts_root or core.valtrion_home()), "githubRunner": probe_runner(os_name, run), "blocked": blocked,
         "workRoot": work_root_report(work_root),
         "storage": storage_report(work_root, artifacts_root or core.valtrion_home() / "artifacts", min_free_gib),
-        "checkouts": checkouts_report(projects, sizes=checkout_sizes),
-        "warnings": protected_path_warnings(os_name, {
+        "checkouts": checkouts,
+        "warnings": lost + protected_path_warnings(os_name, {
             "work root": work_root, "artifacts root": artifacts_root or core.valtrion_home() / "artifacts", "valtrion home": core.valtrion_home()},
             virtualized={"work root": virtual_work_root})
         + work_root_length_warnings(os_name, work_root, workroot.windows_long_paths_enabled() if os_name == "windows" else None,
@@ -371,7 +381,8 @@ def render(report: dict) -> str:
         for item in storage.get("incremental", []):
             lines.append(f"  incremental build folder {item['path']}: {item['bytes'] / gib:.1f} GiB")
         for item in (report.get("checkouts") or {}).get("managed", []):
-            state = f"at {item['commit'][:12]}" if item["commit"] else ("not a git checkout" if item["exists"] else "not created yet")
+            state = (f"at {item['commit'][:12]}" if item["commit"] else "not a git checkout" if item["exists"] else
+                     f"was created, now missing (last used {item.get('lastUsed') or 'unknown'})" if item.get("missing") else "not created yet")
             holder = f", leased by {item['lease']['owner']} ({item['lease']['purpose']})" if item.get("lease") else ""
             lines.append(f"  checkout {item['project']}/{item['id']}: {item['path']} {state}, {(item['bytes'] or 0) / gib:.1f} GiB{holder}")
         for item in (report.get("checkouts") or {}).get("unmanagedLeases", []):

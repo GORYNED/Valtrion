@@ -15,7 +15,7 @@ Every document has a `schema` property holding its id. Closed objects reject unk
 | `gdv.job/1` | `job.json` | State of a detached job: `state`, `status` (null until finished), `watchdog`, `eventsOffset` |
 | `gdv.event/1` | one line of `events.jsonl` | Append-only log a watcher follows |
 | `gdv.hosts/1` | `hosts.json` | Machine-local host inventory: per host `id`, `transport` (`local`, or `ssh` with `sshTarget` and `connectTimeoutSec`), `os`, `roles`, declared `capabilities`, `projectsRoot`, `worktreePolicy`, `artifactsRoot`, `valtrionCommand`, `python` (absolute path of the host's Python 3.10+). Ids are unique, at most one host is local. Kept outside git. |
-| `gdv.registry/1` | `registry.json` | Machine-local device registry: class, capabilities, exclusivity; each device belongs to a `hostId` |
+| `gdv.registry/1` | `registry.json` | Machine-local device registry: class, capabilities, exclusivity; each device belongs to a `hostId`; `online: false` marks a device the last discovery did not find |
 | `gdv.lease/1` | lease file | Owner, session, pid, host, TTL, renewal |
 | `gdv.checks/1` | project `checks.json` | Path globs to kinds; kinds to checks per level `L0` to `L4`; `unclassified` is `widest` or `fail` |
 | `gdv.baseline/1` | project `baselines/...` | Summary statistics per metric under a comparability key; editor evidence cannot be a baseline. Several baselines of one plan may share its folder; they are told apart by `planId`, `key` and `source.evidence`, not by file name (see [cli.md](cli.md)) |

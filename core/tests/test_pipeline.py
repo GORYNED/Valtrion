@@ -72,7 +72,7 @@ class FakeAdapter(PlatformAdapter):
                 core.atomic_write_json(run / "result.json", {
                     "status": "PASS", "reason": None,
                     "steps": [{"type": "wait", "status": "PASS", "startMs": 0, "durationMs": 10}],
-                    "metrics": [{"name": "openMs", "unit": "ms", "samples": list(FakeAdapter.current_samples)}], "unverified": ["Golf flow"]})
+                    "metrics": [{"name": "openMs", "unit": "ms", "samples": list(FakeAdapter.current_samples)}], "unverified": ["Sample flow"]})
         return StepOutcome(constants.PASS)
 
     def launch(self, device, app, args, log):
@@ -182,7 +182,7 @@ class PipelineTests(unittest.TestCase):
         metric = result["metrics"][0]
         self.assertEqual([900, 100, 101, 99], metric["samples"])
         self.assertEqual(4, metric["stats"]["n"])
-        self.assertIn("Golf flow", result["unverified"])
+        self.assertIn("Sample flow", result["unverified"])
         self.assertTrue(any(a["path"] == "console.log" or a["path"].endswith("console.log") for a in result["artifacts"]))
         self.assertEqual(["build", "install", "push:gdv/inbox/plan.json", "pull", "launch"], FakeAdapter.calls[:5],
                          "the device output is listed before the launch so earlier runs are recognised")
@@ -720,6 +720,22 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual("android:2", pipeline.select_device(devices, {}, plan)[0].id)
         self.assertIsNone(pipeline.select_device(devices, {"class": "tablet"}, plan)[0])
         self.assertEqual("android:ZY22", pipeline.select_device(devices, {"id": "android:ZY22"}, {"kind": "smoke"})[0].id)
+
+    def test_select_device_tells_an_offline_device_from_one_that_does_not_exist(self):
+        tablet = DeviceInfo("ios:TABLET", "ios", "tablet", "physical", capabilities=("touch", "camera.fast"))
+        plan = {"kind": "functional", "requires": {"capabilities": ["camera.fast"]}}
+        found, why = pipeline.select_device([], {"class": "tablet"}, plan, known=[tablet])
+        self.assertIsNone(found)
+        self.assertTrue(why.startswith("device offline: ios:TABLET"), why)
+        found, why = pipeline.select_device([], {"class": "tablet"}, {"requires": {"capabilities": ["camera.faster"]}}, known=[tablet])
+        self.assertIsNone(found)
+        self.assertIn("no attached device satisfies: tablet, camera.faster", why)
+        self.assertIn("no device with these settings is known", why)
+        found, _ = pipeline.select_device([tablet], {"class": "tablet"}, plan, known=[tablet])
+        self.assertEqual("ios:TABLET", found.id, "a registry entry only explains a failure; the attached device is selected")
+        weak = DeviceInfo("ios:TABLET", "ios", "tablet", "physical", capabilities=("touch",))
+        _, why = pipeline.select_device([weak], {"class": "tablet"}, plan, known=[tablet])
+        self.assertNotIn("offline", why, "an attached device is never reported offline")
 
 
 if __name__ == "__main__":

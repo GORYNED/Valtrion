@@ -2,7 +2,8 @@
 
 `hosts.json` (`gdv.hosts/1`) lists where work may run; the local machine is added automatically when it is not listed.
 `host.json` holds this machine's own settings (artifacts root, retention). `registry.json` (`gdv.registry/1`) holds the devices
-discovered on this host; discovery refreshes it, only aliases, classes and notes are edited by hand and survive a refresh.
+discovered on this host; discovery refreshes it, aliases, classes, capabilities and notes are edited by hand and survive a refresh.
+A device a refresh does not find stays registered as offline (`online: false`) until `valtrion devices --forget` removes it.
 """
 
 from __future__ import annotations
@@ -217,14 +218,20 @@ def _load_host_settings(home: Path | None = None) -> HostSettings:
     wait_sec = disk.get("waitSec", 0)
     if isinstance(wait_sec, bool) or not isinstance(wait_sec, (int, float)) or not math.isfinite(wait_sec) or wait_sec < 0:
         raise ConfigError("host.json: disk.waitSec must be a non-negative number")
-    projects = _load_projects(document.get("projects", {}))
+    projects = _load_projects(document.get("projects", {}), home)
     return HostSettings(Path(root).expanduser() if root else default_root, float(days),
                         Path(work).expanduser() if work else default_work, float(minimum) if minimum is not None else None,
                         float(pressure_days), projects, float(wait_sec), tools_root=home / "tools",
                         unity_accelerator=_load_unity_accelerator(document.get("unityAccelerator")))
 
 
-def _load_projects(value: Any) -> tuple[ManagedProject, ...]:
+def default_checkout_path(home: Path, project: str, checkout_id: str) -> Path:
+    """Where a managed checkout lives when `host.json` names no `path`: in the valtrion home, beside the other working state (registry,
+    leases, incremental build folders), outside folders macOS guards with permission prompts and outside purgeable caches."""
+    return home / "checkouts" / core.safe_segment(project) / checkout_id
+
+
+def _load_projects(value: Any, home: Path) -> tuple[ManagedProject, ...]:
     if not isinstance(value, dict):
         raise ConfigError("host.json: projects must be an object")
     found: list[ManagedProject] = []
@@ -238,11 +245,11 @@ def _load_projects(value: Any) -> tuple[ManagedProject, ...]:
             path = entry.get("path") if isinstance(entry, dict) else None
             if not isinstance(identifier, str) or not re.fullmatch(r"[A-Za-z0-9._-]{1,40}", identifier) or identifier == "auto":
                 raise ConfigError(f"{where}.checkouts: every entry needs an id of letters, digits, '.', '_' and '-'")
-            if not isinstance(path, str) or not path or not Path(path).expanduser().is_absolute():
-                raise ConfigError(f"{where}.checkouts[{identifier}].path must be an absolute path (or start with ~)")
+            if path is not None and (not isinstance(path, str) or not path or not Path(path).expanduser().is_absolute()):
+                raise ConfigError(f"{where}.checkouts[{identifier}].path must be an absolute path (or start with ~), or be left out")
             if any(existing.id == identifier for existing in checkouts):
                 raise ConfigError(f"{where}.checkouts: the id {identifier} is used twice")
-            checkouts.append(ManagedCheckout(identifier, Path(path).expanduser()))
+            checkouts.append(ManagedCheckout(identifier, Path(path).expanduser() if path else default_checkout_path(home, name, identifier)))
         remote = item.get("remote")
         if remote is not None and (not isinstance(remote, str) or not remote):
             raise ConfigError(f"{where}.remote must be a non-empty string")
@@ -380,12 +387,16 @@ def load_registry(home: Path | None = None, validator: Validator | None = None) 
     return {"schema": "gdv.registry/1", "host": {"id": entry.id, "os": entry.os, "roles": []}, "devices": []}
 
 
-def merge_discovered(registry: dict, devices: Sequence[DeviceInfo], platforms: Sequence[str], host_id: str) -> dict:
-    """Replace the devices of the given platforms with the discovered ones, keeping alias, class override and notes by id.
-    A device of another platform stays untouched, and a registered device that is no longer discovered is dropped
-    (a stale entry is never trusted over discovery)."""
+def merge_discovered(registry: dict, devices: Sequence[DeviceInfo], platforms: Sequence[str], host_id: str, seen_at: str | None = None) -> dict:
+    """Refresh the devices of the given platforms from discovery, keeping alias, class override, capabilities and notes by id.
+    A device of another platform stays untouched. A registered device that this discovery did not find is kept, marked
+    `online: false` with what the owner set for it (an idle tunnel or a loose cable must not erase its class and capabilities);
+    only `forget_device` removes it. Selection never uses a registry entry as an attached device: discovery decides that."""
+    seen_at = seen_at or core.utc_now()
     previous = {item["id"]: item for item in registry.get("devices", [])}
+    found = {device.id for device in devices}
     kept = [item for item in registry.get("devices", []) if item["platform"] not in platforms]
+    kept += [{**item, "online": False} for item in registry.get("devices", []) if item["platform"] in platforms and item["id"] not in found]
     for device in devices:
         before = previous.get(device.id, {})
         item: dict[str, Any] = {
@@ -399,8 +410,23 @@ def merge_discovered(registry: dict, devices: Sequence[DeviceInfo], platforms: S
         for optional in ("alias", "notes"):
             if optional in before:
                 item[optional] = before[optional]
+        item["online"] = True
+        item["lastSeen"] = seen_at
         kept.append(item)
     return {**registry, "devices": sorted(kept, key=lambda item: item["id"])}
+
+
+def forget_device(registry: dict, device: str) -> tuple[dict, dict | None]:
+    """The registry without the device named by id or alias, and the entry that was removed (None when no device has that name)."""
+    devices = registry.get("devices", [])
+    gone = next((item for item in devices if item["id"] == device), None) or next((item for item in devices if item.get("alias") == device), None)
+    if gone is None:
+        return registry, None
+    return {**registry, "devices": [item for item in devices if item is not gone]}, gone
+
+
+def is_online(item: dict) -> bool:
+    return item.get("online", True) is not False
 
 
 def save_registry(registry: dict, home: Path | None = None) -> Path:
