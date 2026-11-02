@@ -163,7 +163,7 @@ Jobs wait in the queue for a long time, and jobs of different commits cannot saf
 
 ```
 valtrion pipeline FILE --host mac --sha SHA --checkout queue        # or: reference, auto
-valtrion build --repo SensorEdgeApp --platform ios --sha SHA --checkout queue --host mac
+valtrion build --repo MyGame --platform ios --sha SHA --checkout queue --host mac
 ```
 
 When the `build` stage starts and holds the checkout's `unity-project:` lease (then an Editor slot), valtrion makes the checkout be at the job's commit, whatever job used it before: a missing checkout is created (clone of the project's `remote`); a commit that is not there is fetched from `origin` (an unknown commit is `BLOCKED` at once, with the reason); the commit is checked out detached and forced, untracked files are removed (`clean -fd`; ignored files such as `Library/`, the import cache, stay; the folders the run itself keeps are never cleaned), `git lfs pull` runs when any tracked `.gitattributes` uses LFS, and stray build output in `Builds/*` is removed. `HEAD` is verified and the tree is read again (the result's dirty flag, the Unity version and the build-cache key are the commit's own). No other job can switch the checkout while the lease is held. A cancelled job stops between the git steps. A build that is reused from the cache still checks out first (the cache key needs the commit's profile settings).

@@ -31,7 +31,7 @@ def harness(status):
     with open(os.path.join(out, "heartbeat.json"), "w") as handle:
         json.dump({"seq": 1}, handle)
     with open(os.path.join(out, "result.json"), "w") as handle:
-        json.dump({"status": status, "reason": None if status == "PASS" else "plan failed", "steps": [], "metrics": [], "unverified": ["Golf flow"]}, handle)
+        json.dump({"status": status, "reason": None if status == "PASS" else "plan failed", "steps": [], "metrics": [], "unverified": ["Sample flow"]}, handle)
 if mode == "pass":
     harness("PASS"); xml(True)
 elif mode == "harness-pass-xml-fail":
@@ -220,7 +220,7 @@ class EditorAdapterTests(unittest.TestCase):
         self.assertEqual(constants.PASS, result["status"])
         self.assertTrue(beats and max(beats) >= 1, "progress is visible from the runner's output before the harness starts")
         self.assertIn(editor_module.EDITOR_NOTE, result["unverified"])
-        self.assertIn("Golf flow", result["unverified"])
+        self.assertIn("Sample flow", result["unverified"])
         self.assertEqual(constants.PASS, adapter.terminate(device, "editor").status)
         self.assertEqual("free", lease.LeaseManager(self.home).status("unity-editor:slot1").state)
 
