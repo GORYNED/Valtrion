@@ -2,7 +2,7 @@
 
 Core (the `valtrion` Python package) and the Unity package `com.goryned.valtrion.unity` are versioned independently. The Unity changelog is in `integrations/unity/com.goryned.valtrion.unity/CHANGELOG.md`; `compat.json` lists compatible pairs.
 
-## Unreleased
+## 0.8.6
 
 - **A wired iOS device with an idle tunnel is attached (#22).** CoreDevice drops the tunnel of an idle device, and `devicectl list devices` then shows a wired, paired device as `available (paired)`; iOS discovery skipped it, so pipelines ended `BLOCKED: no attached device satisfies ...` with the device on the cable. Discovery now treats a wired, paired physical device as attachable and wakes its tunnel first with `devicectl device info lockState` (one bounded probe per idle device, then one more listing). Wireless devices whose tunnel is down are still not used. When no attached device fits, the reason says `device offline: <id> ...` for a registered device that would fit, or `no attached device satisfies: ... (no device with these settings is known on this host)`.
 - **A refresh no longer erases what the owner set for a device (#23).** `devices --refresh` and `doctor --devices` keep a registered device that discovery did not find, marked `online: false` with its class, capabilities, alias and notes; it is online again (`lastSeen` updated) when it is found. `valtrion devices --forget DEVICE` (id or alias) removes one. `gdv.registry/1` gains the optional `online` and `lastSeen`; older registries stay valid. The host resolver does not count offline entries as attached devices.
