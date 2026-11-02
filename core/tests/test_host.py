@@ -73,6 +73,29 @@ class ConfigTests(HostTestCase):
         self.assertEqual(2, code)
         self.assertIn("BLOCKED", err)
 
+    def test_unity_accelerator_settings_are_validated_and_reported(self):
+        self.home.mkdir(exist_ok=True)
+        path = self.home / "host.json"
+        self.assertEqual([], config.unity_accelerator_args(self.home))
+        path.write_text(json.dumps({"unityAccelerator": {"endpoint": "[::1]:10080"}}), encoding="utf-8")
+        self.assertEqual(["-EnableCacheServer", "-cacheServerEndpoint", "[::1]:10080", "-cacheServerEnableDownload", "true",
+                          "-cacheServerEnableUpload", "true"], config.unity_accelerator_args(self.home))
+        for broken in ({"endpoint": "localhost"}, {"endpoint": "host:0"}, {"endpoint": "host:70000"}, {"endpoint": "-x:1"},
+                       {"endpoint": "h:1", "namespacePrefix": "a b"}, {"endpoint": "h:1", "upload": "yes"}, {"endpoint": "h:1", "port": 1}, "h:1"):
+            path.write_text(json.dumps({"unityAccelerator": broken}), encoding="utf-8")
+            with self.assertRaises(config.ConfigError, msg=broken):
+                config.load_host_settings(self.home)
+        import socket
+        with socket.socket() as server:
+            server.bind(("127.0.0.1", 0))
+            server.listen(1)
+            port = server.getsockname()[1]
+            report = doctor.accelerator_report(config.UnityAccelerator(f"127.0.0.1:{port}", "Game"))
+        self.assertEqual((True, "Game"), (report["reachable"], report["namespacePrefix"]))
+        closed = doctor.accelerator_report(config.UnityAccelerator(f"127.0.0.1:{port}"), timeout_sec=1)
+        self.assertFalse(closed["reachable"])
+        self.assertIsNone(doctor.accelerator_report(None))
+
     def test_a_refresh_keeps_an_undiscovered_device_offline_with_its_settings_until_forgotten(self):
         registry = config.load_registry()
         tablet = DeviceInfo("ios:1", "ios", "tablet", "physical", "Tablet", "iOS 1.0", ("touch",))

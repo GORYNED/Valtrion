@@ -229,6 +229,9 @@ def local_report(with_devices: bool, home: Path | None = None) -> dict:
     settings = config.load_host_settings(home)
     report = doctor.probe_local(artifacts_root=settings.artifacts_root, work_root=settings.work_root, min_free_gib=settings.min_free_gib,
                                   projects=settings.projects, checkout_sizes=True)
+    accelerator = doctor.accelerator_report(settings.unity_accelerator)
+    if accelerator is not None:
+        report["unityAccelerator"] = accelerator
     registry = config.load_registry(home)
     if with_devices:
         devices, errors, done = discover_all()

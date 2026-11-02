@@ -10,6 +10,7 @@ from __future__ import annotations
 import os
 import re
 import shutil
+import socket
 import subprocess
 from pathlib import Path
 from typing import Callable, Sequence
@@ -259,6 +260,23 @@ def checkouts_report(projects: Sequence, home: Path | None = None, sizes: bool =
                                                     if resource not in managed_resources]}
 
 
+def accelerator_report(accelerator, timeout_sec: float = 2.0) -> dict | None:
+    """The configured Unity Accelerator (`host.json` `unityAccelerator`) and whether its endpoint accepts a TCP connection now."""
+    if accelerator is None:
+        return None
+    host, _, port = accelerator.endpoint.rpartition(":")
+    try:
+        with socket.create_connection((host.strip("[]"), int(port)), timeout=timeout_sec):
+            reachable, reason = True, None
+    except OSError as error:
+        reachable, reason = False, str(error)
+    report = {"endpoint": accelerator.endpoint, "namespacePrefix": accelerator.namespace_prefix, "download": accelerator.download,
+              "upload": accelerator.upload, "reachable": reachable}
+    if reason:
+        report["reason"] = reason
+    return report
+
+
 def build_platforms(os_name: str, editors: Sequence[dict], apple_ok: bool) -> list[str]:
     if not editors:
         return []
@@ -346,6 +364,10 @@ def render(report: dict) -> str:
     work = report.get("workRoot")  # absent in a report cached from a host that runs an older valtrion
     if work:
         lines.append(f"  work root: {work['path']} ({work['usage']['jobDirectories']} job dir(s), {work['disk']['freeGb']} GB free)")
+    accelerator = report.get("unityAccelerator")
+    if accelerator:
+        state = "reachable" if accelerator["reachable"] else f"NOT reachable ({accelerator.get('reason', 'no answer')}); Unity builds import locally"
+        lines.append(f"  unity accelerator: {accelerator['endpoint']} namespace {accelerator.get('namespacePrefix') or '(default)'}, {state}")
     for name, reason in sorted(report["blocked"].items()):
         lines.append(f"  BLOCKED {name}: {reason}")
     for warning in report.get("warnings", []):

@@ -473,6 +473,18 @@ class BuildTests(AndroidTestCase):
                          f"-buildOutput {apk}", "-batchmode"):
             self.assertIn(expected, arguments)
         self.assertEqual("PASS", outcome.details["layer.nativeBuild"])
+        self.assertNotIn("-EnableCacheServer", arguments)
+
+    def test_a_build_uses_the_configured_accelerator(self):
+        home = self.base / "home"
+        home.mkdir(parents=True, exist_ok=True)
+        (home / "host.json").write_text(json.dumps({"unityAccelerator": {"endpoint": "10.0.0.5:10080", "namespacePrefix": "Game"}}),
+                                        encoding="utf-8")
+        outcome = self.adapter.build(self.project, "Validation", self.base / "out-acc")
+        self.assertTrue(outcome.ok, outcome.reason)
+        arguments = outcome.artifacts[0].read_bytes().decode()
+        self.assertIn("-EnableCacheServer -cacheServerEndpoint 10.0.0.5:10080 -cacheServerNamespacePrefix Game "
+                      "-cacheServerEnableDownload true -cacheServerEnableUpload true", arguments)
 
     def test_the_adb_server_outlives_a_build_install_launch_terminate_sequence(self):
         """A server started by `adb start-server` stays up while the supervised calls (each ends by killing its process tree) run

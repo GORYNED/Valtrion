@@ -72,6 +72,54 @@ class ManagedProject:
 
 
 @dataclass(frozen=True)
+class UnityAccelerator:
+    """`host.json` `unityAccelerator`: a Unity Accelerator (cache server) for imported assets, given to Unity on the command line."""
+    endpoint: str  # host:port
+    namespace_prefix: str | None = None
+    download: bool = True
+    upload: bool = True
+
+    def unity_args(self) -> list[str]:
+        """The switches of a Unity batch-mode command line; batch mode does not reliably take them from the Editor preferences."""
+        argv = ["-EnableCacheServer", "-cacheServerEndpoint", self.endpoint]
+        if self.namespace_prefix:
+            argv += ["-cacheServerNamespacePrefix", self.namespace_prefix]
+        return argv + ["-cacheServerEnableDownload", "true" if self.download else "false",
+                       "-cacheServerEnableUpload", "true" if self.upload else "false"]
+
+
+_ENDPOINT = re.compile(r"(?:[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?|\[[0-9A-Fa-f:.]+\]):([0-9]{1,5})")
+_NAMESPACE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
+
+
+def _load_unity_accelerator(value: Any) -> UnityAccelerator | None:
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise ConfigError("host.json: unityAccelerator must be an object")
+    unknown = sorted(set(value) - {"endpoint", "namespacePrefix", "download", "upload"})
+    if unknown:
+        raise ConfigError(f"host.json: unityAccelerator has unknown keys: {', '.join(unknown)}")
+    endpoint = value.get("endpoint")
+    match = _ENDPOINT.fullmatch(endpoint) if isinstance(endpoint, str) else None
+    if match is None or not 1 <= int(match.group(1)) <= 65535:
+        raise ConfigError("host.json: unityAccelerator.endpoint must be host:port (for example 127.0.0.1:10080)")
+    prefix = value.get("namespacePrefix")
+    if prefix is not None and (not isinstance(prefix, str) or not _NAMESPACE.fullmatch(prefix)):
+        raise ConfigError("host.json: unityAccelerator.namespacePrefix must be 1-64 letters, digits, '.', '_' or '-'")
+    for key in ("download", "upload"):
+        if not isinstance(value.get(key, True), bool):
+            raise ConfigError(f"host.json: unityAccelerator.{key} must be true or false")
+    return UnityAccelerator(endpoint, prefix, value.get("download", True), value.get("upload", True))
+
+
+def unity_accelerator_args(home: Path | None = None) -> list[str]:
+    """The cache-server switches for a Unity batch build on this host (empty when `host.json` names no `unityAccelerator`)."""
+    accelerator = load_host_settings(home).unity_accelerator
+    return accelerator.unity_args() if accelerator is not None else []
+
+
+@dataclass(frozen=True)
 class HostSettings:
     artifacts_root: Path
     retention_days: float = DEFAULT_RETENTION_DAYS
@@ -86,6 +134,8 @@ class HostSettings:
     disk_wait_sec: float = 0.0
     #: Where the staged CLI copies of background jobs live (`<valtrion home>/tools`); None keeps them in the work root.
     tools_root: Path | None = None
+    #: `unityAccelerator`: the cache server every Unity batch build of the platform adapters uses; None (the default) uses none.
+    unity_accelerator: "UnityAccelerator | None" = None
 
     def project(self, name: str) -> "ManagedProject | None":
         return next((item for item in self.projects if item.name == name), None)
@@ -171,7 +221,8 @@ def _load_host_settings(home: Path | None = None) -> HostSettings:
     projects = _load_projects(document.get("projects", {}), home)
     return HostSettings(Path(root).expanduser() if root else default_root, float(days),
                         Path(work).expanduser() if work else default_work, float(minimum) if minimum is not None else None,
-                        float(pressure_days), projects, float(wait_sec), tools_root=home / "tools")
+                        float(pressure_days), projects, float(wait_sec), tools_root=home / "tools",
+                        unity_accelerator=_load_unity_accelerator(document.get("unityAccelerator")))
 
 
 def default_checkout_path(home: Path, project: str, checkout_id: str) -> Path:

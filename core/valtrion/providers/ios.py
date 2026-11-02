@@ -435,7 +435,7 @@ class IosAdapter(PlatformAdapter):
                 return done(lfs.status, f"git lfs pull failed: {lfs.reason or lfs.output.strip()[-200:]}")
 
         unity_log = logs / "unity-export.log"
-        argv = [str(unity), "-batchmode", "-quit", "-projectPath", str(project)]
+        argv = [str(unity), "-batchmode", "-quit", "-projectPath", str(project), *config.unity_accelerator_args(self._home)]
         if settings.build_profile:
             argv += ["-activeBuildProfile", settings.build_profile]
         # `-buildOutput` is the switch other Unity build methods already read; `-gdv-export-path` is the neutral name.
