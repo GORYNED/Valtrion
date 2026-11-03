@@ -13,6 +13,7 @@ validated before it is written. Everything the run registered as temporary is re
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import tempfile
@@ -833,7 +834,8 @@ def execute(pipeline: Mapping[str, Any], pipeline_path: Path | None, ctx: JobCon
     def adopt_cached(cached: buildcache.Entry, name: str) -> None:
         """The job uses a build from the cache instead of building."""
         nonlocal artifact, used_entry, build_outcome, build_info
-        buildcache.touch(cached)
+        buildcache.touch(cached, source=_build_source(pipeline["candidate"]["repo"], options.checkout_id, project_dir))
+        cached = buildcache.find(buildcache.builds_root(ctx.home), cached.key) or cached  # the manifest as written, for the install stage
         artifact, used_entry, build_outcome = cached.path, cached, StepOutcome(constants.PASS)
         build_info = {**cached.describe(), "reused": True, "builtByJob": cached.manifest.get("builtByJob", "unknown")}
         diskspace.remember_build(directory, cached.key)
@@ -1059,6 +1061,7 @@ def execute(pipeline: Mapping[str, Any], pipeline_path: Path | None, ctx: JobCon
                         buildcache.builds_root(ctx.home), cache_key, artifact, out=out, project=pipeline["candidate"]["repo"], platform=platform,
                         sha=candidate_sha, profile=profile, dirty=dirty, toolchain=toolchain, job_id=ctx.job_id,
                         cacheable=not cache_key.startswith("dirty-"), replace=stage.get("args", {}).get("reuse") is False,
+                        source=_build_source(pipeline["candidate"]["repo"], options.checkout_id, project_dir),
                         config_hash=config_hash_seen[0] or buildcache.profile_config_hash(project_dir, profile))
                 except (OSError, ValueError) as error:
                     head_note.append(f"the build artifact could not be published outside the work folder: {error}")
@@ -1238,11 +1241,20 @@ def _merge_runs(runs: list[dict], plan: Mapping[str, Any], plan_sha: str) -> dic
     return base
 
 
+def _build_source(project: str, checkout_id: str | None, project_dir: Path) -> str:
+    """Where a published build came from, for the `buildCache.perSource` limit: the managed checkout, or else the project folder."""
+    if checkout_id is not None:
+        return f"checkout:{project}/{checkout_id}"
+    return "dir:" + os.path.normcase(str(project_dir.resolve()))
+
+
 def _collect_build_cache(ctx: JobContext, keep_key: str) -> None:
     """Retention of the published builds, applied after each publish (the new build is never removed by it)."""
     try:
-        report = buildcache.gc(buildcache.builds_root(ctx.home), protect=[keep_key, *diskspace.active_build_keys(ctx.home)])
-    except (OSError, ValueError):
+        limits = config.load_host_settings(ctx.home).build_cache.limits()
+        report = buildcache.gc(buildcache.builds_root(ctx.home), protect=[keep_key, *diskspace.active_build_keys(ctx.home)], **limits)
+    except (OSError, ValueError, config.ConfigError) as error:
+        ctx.events.emit("log", f"build cache: retention skipped: {type(error).__name__}: {error}")
         return
     if report.removed:
         ctx.events.emit("log", "build cache: removed " + ", ".join(report.removed), data={"removed": list(report.removed)})
