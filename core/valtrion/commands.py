@@ -78,8 +78,9 @@ def _strip_host_options(raw: Sequence[str]) -> list[str]:
 
 
 def _forward(arguments: argparse.Namespace, entry: config.HostEntry, extra: Sequence[str] = (), timeout: int = REMOTE_TIMEOUT_SEC,
-             retry: bool = True) -> int:
-    """Run the same command on the SSH host and relay its output and exit code. Only idempotent commands use this with `retry`."""
+             retry: bool = True, lost_hint: str = "") -> int:
+    """Run the same command on the SSH host and relay its output and exit code. Only idempotent commands use this with `retry`.
+    `lost_hint` is added to the message when the answer is lost (a command that may still run on the host says so)."""
     try:
         target = _remote(entry, arguments, retry)
     except ValueError as error:
@@ -88,9 +89,9 @@ def _forward(arguments: argparse.Namespace, entry: config.HostEntry, extra: Sequ
     sys.stdout.write(result.stdout)
     sys.stderr.write(result.stderr)
     if result.timed_out:
-        return _blocked(arguments.command, f"host {entry.id} did not answer within {timeout} s")
+        return _blocked(arguments.command, f"host {entry.id} did not answer within {timeout} s{lost_hint}")
     if result.returncode == remote.SSH_FAILURE:
-        return _blocked(arguments.command, f"host {entry.id} is unreachable ({_failure_evidence(target, result)})")
+        return _blocked(arguments.command, f"host {entry.id} is unreachable ({_failure_evidence(target, result)}){lost_hint}")
     if remote.is_tool_missing(result):
         _err(f"valtrion {arguments.command}: host {entry.id} is reachable, but the valtrion command is missing there; run `valtrion hosts sync`")
     return result.returncode if result.returncode is not None else constants.EXIT_BLOCKED
@@ -1226,6 +1227,8 @@ def _workroot(arguments: argparse.Namespace) -> int:
 
 REMOTE_UNITY_NO_TIMEOUT_SEC = 24 * 3600
 REMOTE_UNITY_MARGIN_SEC = 300
+REMOTE_UNITY_LOST_HINT = ("; if the connection broke during the run its result is unknown: the host stops Unity and releases the leases when "
+                          "the session ends (a host that cannot do so frees them after their 300 s TTL); see `valtrion lease list --host`")
 
 
 def _configure_unity(parser: argparse.ArgumentParser) -> None:
@@ -1258,7 +1261,8 @@ def _unity(arguments: argparse.Namespace) -> int:
     if entry is not None:
         # Starting Unity is not idempotent, so the transport does not retry; the output arrives when the run has ended.
         limit = arguments.timeout_sec if arguments.timeout_sec > 0 else REMOTE_UNITY_NO_TIMEOUT_SEC
-        return _forward(arguments, entry, timeout=int(arguments.lease_wait + limit + REMOTE_UNITY_MARGIN_SEC), retry=False)
+        return _forward(arguments, entry, timeout=int(arguments.lease_wait + limit + REMOTE_UNITY_MARGIN_SEC), retry=False,
+                        lost_hint=REMOTE_UNITY_LOST_HINT)
     from . import unityrun
 
     try:

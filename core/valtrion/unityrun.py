@@ -9,16 +9,18 @@ lost lease each end in killing the whole process tree. The last line printed on 
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import signal
 import sys
 import tempfile
+import _thread
 import threading
 import time
 from pathlib import Path
-from typing import Sequence, TextIO
+from typing import Callable, Sequence, TextIO
 
-from . import config, constants, core, lease, supervise
+from . import config, constants, core, lease, supervise, unityguard
 from .providers.unity import support
 
 DEFAULT_LEASE_WAIT_SEC = 1800.0
@@ -56,6 +58,18 @@ def option_value(args: Sequence[str], name: str) -> str | None:
 
 def has_option(args: Sequence[str], *prefixes: str) -> bool:
     return any(item.lower().startswith(tuple(prefix.lower() for prefix in prefixes)) for item in args)
+
+
+def normalize_assembly_names(args: Sequence[str]) -> list[str]:
+    """Unity's `-assemblyNames` takes names separated by `;`. A united list from `valtrion select` (`{assemblies}`) is comma separated
+    (a `;` would end the command in a shell), so the value of `-assemblyNames` is rewritten with `;`. Only this option: the
+    names of `-testFilter` may hold commas (test parameters)."""
+    result = list(args)
+    for position, item in enumerate(result[:-1]):
+        if item.lower() == "-assemblynames":
+            names = [name.strip() for name in re.split(r"[;,]", result[position + 1]) if name.strip()]
+            result[position + 1] = ";".join(names)
+    return result
 
 
 def _absolute(text: str) -> Path:
@@ -109,13 +123,65 @@ def classify(result: supervise.SuperviseResult, log: Path | None) -> tuple[str, 
     return status, reason
 
 
-class _Handlers:
-    """Turns termination signals into `Interrupted` for the duration of the run (only possible on the main thread)."""
+#: Windows console events that end the process: Ctrl+Break, the console window (or an SSH/ConPTY session) closing, log off, shutdown.
+#: Ctrl+C is left to Python (`KeyboardInterrupt`). Windows ends the process a few seconds after a handler returns for these.
+CONSOLE_STOP_EVENTS = frozenset({1, 2, 5, 6})
+CONSOLE_CLEANUP_WAIT_SEC = 4.0
 
-    def __init__(self) -> None:
+
+def console_stop_handler(interrupt: Callable[[], None], finished: threading.Event,
+                         wait_sec: float = CONSOLE_CLEANUP_WAIT_SEC) -> Callable[[int], bool]:
+    """The Windows console control handler: on a stop event interrupt the main thread (which kills Unity and releases the leases)
+    and hold the handler until that is done or the wait ends. Returns whether it handled the event."""
+    def handle(event: int) -> bool:
+        if event not in CONSOLE_STOP_EVENTS:
+            return False
+        interrupt()
+        finished.wait(wait_sec)
+        return True
+
+    return handle
+
+
+def install_console_handler(handler: Callable[[int], bool]) -> Callable[[], None]:  # pragma: no cover - needs Windows
+    """Register `handler` with SetConsoleCtrlHandler; returns the function that removes it."""
+    import ctypes
+    from ctypes import wintypes
+
+    routine_type = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.DWORD)
+    routine = routine_type(lambda event: bool(handler(int(event))))
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.SetConsoleCtrlHandler.argtypes = [routine_type, wintypes.BOOL]
+    if not kernel32.SetConsoleCtrlHandler(routine, True):
+        raise OSError(ctypes.get_last_error(), "SetConsoleCtrlHandler failed")
+
+    def remove() -> None:
+        kernel32.SetConsoleCtrlHandler(routine, False)
+
+    remove.keep = routine  # type: ignore[attr-defined]  # the callback must outlive the registration
+    return remove
+
+
+class _Handlers:
+    """Turns termination signals into `Interrupted` for the duration of the run (only possible on the main thread). On Windows it also
+    handles the console events that carry no Python signal (window or session closing). `finished` is set by the caller once the
+    leases are released, which lets a waiting console handler return."""
+
+    def __init__(self, windows: bool | None = None, install: Callable[[Callable[[int], bool]], Callable[[], None]] = install_console_handler,
+                 interrupt: Callable[[], None] = _thread.interrupt_main) -> None:
         self._saved: dict[int, object] = {}
+        self._windows = os.name == "nt" if windows is None else windows
+        self._install = install
+        self._interrupt = interrupt
+        self._remove: Callable[[], None] | None = None
+        self.finished = threading.Event()
 
     def __enter__(self) -> "_Handlers":
+        if self._windows:
+            try:
+                self._remove = self._install(console_stop_handler(self._interrupt, self.finished))
+            except OSError:  # no console to hook (a service); the signals below still apply
+                self._remove = None
         names = ("SIGTERM", "SIGBREAK", "SIGHUP")
         for name in names:
             number = getattr(signal, name, None)
@@ -132,6 +198,9 @@ class _Handlers:
         raise Interrupted(f"signal {number}")
 
     def __exit__(self, *_: object) -> None:
+        if self._remove is not None:
+            self._remove()
+            self._remove = None
         for number, previous in self._saved.items():
             try:
                 signal.signal(number, previous)  # type: ignore[arg-type]
@@ -143,11 +212,12 @@ def run(
         unity_args: Sequence[str], project_dir: Path | None = None, unity: str | None = None,
         lease_wait_sec: float = DEFAULT_LEASE_WAIT_SEC, timeout_sec: float = 0.0, stall_sec: float = DEFAULT_STALL_SEC,
         purpose: str = "", home: Path | None = None, out: TextIO | None = None, err: TextIO | None = None,
-        ttl_sec: int = LEASE_TTL_SEC, poll_sec: float = 1.0, cancel_poll_sec: float = 1.0) -> int:
+        ttl_sec: int = LEASE_TTL_SEC, poll_sec: float = 1.0, cancel_poll_sec: float = 1.0,
+        probe: unityguard.Probe | None = None) -> int:
     """Run Unity with `unity_args`; returns the exit code of the final status (already printed as the last stdout line)."""
     out = out or sys.stdout
     err = err or sys.stderr
-    args = list(unity_args)
+    args = normalize_assembly_names(unity_args)
 
     # -- the project, the Editor and the Accelerator ---------------------------------------------------------------------
     given = option_value(args, "-projectPath")
@@ -172,6 +242,8 @@ def run(
     try:
         if not has_option(args, "-EnableCacheServer", "-cacheServer"):
             args += config.unity_accelerator_args(home)
+        guard_settings = unityguard.load_settings(home)
+        probe = probe or unityguard.SystemProbe()
         capacity = lease.unity_editor_capacity(home)
         manager = lease.LeaseManager(home)
         project_resource = lease.unity_project_resource(project)
@@ -191,12 +263,13 @@ def run(
     keeper = lease.LeaseKeeper(manager, session, pid, ttl_sec / 3, owner)
     held: list[str] = []
     stop_watching = threading.Event()
+    handlers = _Handlers()
 
     def waiting(reason: str, waited_sec: float) -> None:
         print(lease.waiting_message(reason, waited_sec), file=err)
 
     try:
-        with _Handlers():
+        with handlers:
             try:
                 taken = manager.acquire(project_resource, owner, session, ttl_sec, what, pid, wait_sec=max(0.0, deadline - time.monotonic()),
                                         poll_sec=poll_sec, on_wait=waiting)
@@ -211,8 +284,27 @@ def run(
                     return _result(out, constants.BLOCKED, slot.reason)
                 held.append(slot.lease.resource)
                 keeper.add(slot.lease.resource)
-                if keeper.lost:
-                    return _result(out, constants.BLOCKED, f"the lease(s) {', '.join(keeper.lost)} were lost before Unity started")
+                # Holding both leases, wait (within the same budget) until no Editor runs outside a lease and enough memory is free.
+                noted: set[str] = set()
+                last_notice = None
+                while True:
+                    if keeper.lost:
+                        return _result(out, constants.BLOCKED, f"the lease(s) {', '.join(keeper.lost)} were lost before Unity started")
+                    holders = [s.record.pid for s in manager.list_all() if s.state == "held" and s.record is not None]
+                    problem, notes = unityguard.check(probe, guard_settings, holders)
+                    for note in notes:
+                        if note not in noted:
+                            noted.add(note)
+                            print(f"valtrion unity run: note: {note}", file=err)
+                    if problem is None:
+                        break
+                    now = time.monotonic()
+                    if now >= deadline:
+                        return _result(out, constants.BLOCKED, problem)
+                    if last_notice is None or now - last_notice >= lease.WAIT_NOTICE_SEC:
+                        last_notice = now
+                        print(f"waiting: {problem}", file=err)
+                    time.sleep(min(poll_sec, max(0.0, deadline - now)))
 
                 console = work / "console.log"
                 cancel = work / "cancel"
@@ -254,6 +346,7 @@ def run(
             except OSError:
                 pass
         shutil.rmtree(work, ignore_errors=True)
+        handlers.finished.set()
 
 
 def _user() -> str:

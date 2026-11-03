@@ -13,7 +13,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from valtrion import cli, commands, config, constants, core, lease, remote, supervise, unityrun  # noqa: F401  (cli first: it registers the commands)
+from valtrion import cli, commands, config, constants, core, lease, remote, supervise, unityguard, unityrun  # noqa: F401  (cli first: it registers the commands)
 from valtrion.transport import CommandResult, Transport
 
 from .test_host import HostTestCase, run as run_cli
@@ -21,6 +21,23 @@ from .test_platform_editor import make_hub
 
 FAKE = str(Path(__file__).with_name("fake_unity.py"))
 OTHER = "other@host"
+
+
+class FakeProbe(unityguard.Probe):
+    """A machine without Editors and with plenty of memory, unless a test says otherwise."""
+
+    def __init__(self, processes=(), memory=64000.0, os_name="macos"):
+        self.os_name = os_name
+        self.process_list = None if processes is None else list(processes)
+        self.memory = memory
+        self.reads = 0
+
+    def processes(self):
+        self.reads += 1
+        return self.process_list
+
+    def free_memory_mib(self):
+        return self.memory
 
 
 class UnityRunTestCase(unittest.TestCase):
@@ -54,6 +71,7 @@ class UnityRunTestCase(unittest.TestCase):
         args += list(fake_args)
         options.setdefault("unity", sys.executable)
         options.setdefault("lease_wait_sec", 0)
+        options.setdefault("probe", FakeProbe())
         code = unityrun.run(args, home=self.home, out=out, err=err, poll_sec=0.1, cancel_poll_sec=0.1, **options)
         return code, out.getvalue().splitlines(), err.getvalue()
 
@@ -398,6 +416,186 @@ class RemoteTests(HostTestCase):
         code, out, err, host, _ = self.run_remote(CommandResult(remote.SSH_FAILURE, "", "ssh: connect failed"))
         self.assertEqual(constants.EXIT_BLOCKED, code)
         self.assertIn("unreachable", err)
+
+
+class GuardTests(UnityRunTestCase):
+    EDITOR = unityguard.Proc(4242, 1, "/Applications/Unity/Hub/Editor/6000.6.7f1/Unity.app/Contents/MacOS/Unity",
+                             "/Applications/Unity/Hub/Editor/6000.6.7f1/Unity.app/Contents/MacOS/Unity -batchmode")
+
+    def test_an_editor_outside_any_lease_blocks_naming_it_and_unity_does_not_start(self):
+        dump = self.base / "dump"
+        probe = FakeProbe([self.EDITOR])
+        code, lines, _ = self.unity("--dump", str(dump), probe=probe)
+        self.assertEqual((constants.EXIT_BLOCKED, "STATUS BLOCKED"), (code, lines[-1]))
+        self.assertIn("pid 4242", lines[0])
+        self.assertIn("outside any lease", lines[0])
+        self.assertFalse(dump.exists())
+        self.assertNoLeases()
+
+    def test_an_editor_below_the_holder_of_a_live_lease_is_not_an_orphan(self):
+        other = self.occupy("other-resource")  # a live lease held by this process
+        child = unityguard.Proc(4243, os.getpid(), self.EDITOR.path, self.EDITOR.command)
+        code, lines, _ = self.unity(probe=FakeProbe([unityguard.Proc(os.getpid(), 1, "valtrion", "valtrion"), child]))
+        self.assertEqual("STATUS PASS", lines[-1])
+
+    def test_the_run_waits_for_the_editor_to_go_away_within_the_lease_wait(self):
+        probe = FakeProbe([self.EDITOR])
+        threading.Timer(0.6, lambda: setattr(probe, "process_list", [])).start()
+        code, lines, err = self.unity(probe=probe, lease_wait_sec=10)
+        self.assertEqual("STATUS PASS", lines[-1])
+        self.assertIn("waiting:", err)
+        self.assertNoLeases()
+
+    def test_too_little_free_memory_blocks_with_the_numbers(self):
+        code, lines, _ = self.unity(probe=FakeProbe(memory=512.0))
+        self.assertEqual("STATUS BLOCKED", lines[-1])
+        self.assertIn("only 512 MiB of memory are free, 2048 MiB are needed", lines[0])
+        self.assertNoLeases()
+
+    def test_host_json_sets_the_threshold_and_can_turn_both_checks_off(self):
+        (self.home / "host.json").write_text(json.dumps({"unityGuard": {"minFreeMemoryMiB": 100}}), encoding="utf-8")
+        self.assertEqual("STATUS PASS", self.unity(probe=FakeProbe(memory=512.0))[1][-1])
+        (self.home / "host.json").write_text(json.dumps({"unityGuard": {"orphanEditors": False, "minFreeMemoryMiB": 0}}), encoding="utf-8")
+        probe = FakeProbe([self.EDITOR], memory=1.0)
+        self.assertEqual("STATUS PASS", self.unity(probe=probe)[1][-1])
+        self.assertEqual(0, probe.reads)
+
+    def test_a_bad_unity_guard_setting_is_blocked_before_any_lease(self):
+        for bad in ({"orphanEditors": "yes"}, {"minFreeMemoryMiB": -1}, {"minFreeMemoryMiB": True}, {"other": 1}, []):
+            (self.home / "host.json").write_text(json.dumps({"unityGuard": bad}), encoding="utf-8")
+            code, lines, _ = self.unity()
+            self.assertEqual("STATUS BLOCKED", lines[-1], bad)
+            self.assertNoLeases()
+
+    def test_what_cannot_be_read_is_a_note_not_a_block(self):
+        probe = FakeProbe(None, memory=None)
+        code, lines, err = self.unity(probe=probe)
+        self.assertEqual("STATUS PASS", lines[-1])
+        self.assertIn("process list could not be read", err)
+        self.assertIn("free memory could not be read", err)
+
+    def test_the_wait_budget_is_shared_with_the_leases(self):
+        resource = self.occupy(lease.unity_project_resource(self.project))
+        threading.Timer(0.5, lambda: self.manager.release(resource, "other", os.getpid())).start()
+        started = time.monotonic()
+        code, lines, _ = self.unity(probe=FakeProbe([self.EDITOR]), lease_wait_sec=1.5)
+        self.assertEqual("STATUS BLOCKED", lines[-1])
+        self.assertLess(time.monotonic() - started, 5)
+
+
+class AssemblyNamesTests(UnityRunTestCase):
+    def test_a_united_comma_list_reaches_unity_as_one_semicolon_list(self):
+        # Regression: `valtrion select` substitutes {assemblies} as `A,B`; Unity reads `-assemblyNames` as `A;B` and took `A,B` as one name.
+        dump = self.base / "dump"
+        code, lines, _ = self.unity("-assemblyNames", "Game.Runtime.Tests,Game.Playback.Tests", "--dump", str(dump))
+        self.assertEqual("STATUS PASS", lines[-1])
+        argv = json.loads((dump / "argv.json").read_text())
+        self.assertEqual("Game.Runtime.Tests;Game.Playback.Tests", argv[argv.index("-assemblyNames") + 1])
+
+    def test_separators_spaces_case_and_empty_names_are_handled(self):
+        for given, expected in (("A;B", "A;B"), ("A, B", "A;B"), ("A,,B;", "A;B"), ("A", "A")):
+            self.assertEqual(["-AssemblyNames", expected], unityrun.normalize_assembly_names(["-AssemblyNames", given]), given)
+
+    def test_other_options_are_untouched(self):
+        args = ["-testFilter", "Ns.Test(1,2);Ns.Other", "-runTests", "-assemblyNames"]  # a trailing option without a value
+        self.assertEqual(args, unityrun.normalize_assembly_names(args))
+
+    def test_the_runner_command_of_select_carries_the_comma_list_that_unity_run_accepts(self):
+        from valtrion import select
+
+        runner = "valtrion unity run -- -assemblyNames {assemblies}"
+        selection = select.Selection.__new__(select.Selection)
+        selection.checks = [select.Check("editmode:B", select.EDITMODE, "B", "L2", runner), select.Check("editmode:A", select.EDITMODE, "A", "L2", runner)]
+        command = selection.editor_commands()[0]["command"]
+        self.assertTrue(command.endswith("-assemblyNames A,B"), command)
+
+
+class SignalTests(unittest.TestCase):
+    @unittest.skipUnless(hasattr(__import__("signal"), "SIGHUP") and os.name != "nt", "POSIX signals")
+    def test_a_hangup_and_a_termination_signal_unwind_through_the_cleanup(self):
+        import signal
+
+        for number in (signal.SIGHUP, signal.SIGTERM):
+            handlers = unityrun._Handlers()
+            with self.assertRaises(unityrun.Interrupted):
+                with handlers:
+                    os.kill(os.getpid(), number)
+                    time.sleep(2)
+
+    def test_the_windows_console_events_interrupt_the_main_thread_and_wait_for_the_cleanup(self):
+        installed, removed, interrupts = [], [], []
+        handlers = unityrun._Handlers(windows=True, install=lambda handler: (installed.append(handler), lambda: removed.append(True))[1],
+                                      interrupt=lambda: interrupts.append(True))
+        with handlers:
+            (handler,) = installed
+            self.assertFalse(handler(0))  # Ctrl+C belongs to Python's KeyboardInterrupt
+            self.assertEqual([], interrupts)
+            handlers.finished.set()  # the cleanup is done, so the handler does not hold the process
+            for event in (1, 2, 5, 6):
+                self.assertTrue(handler(event))
+            self.assertEqual(4, len(interrupts))
+        self.assertEqual([True], removed)
+
+    def test_a_console_handler_holds_the_process_until_the_cleanup_is_done(self):
+        finished = threading.Event()
+        handle = unityrun.console_stop_handler(lambda: None, finished, wait_sec=0.3)
+        started = time.monotonic()
+        self.assertTrue(handle(2))
+        self.assertGreaterEqual(time.monotonic() - started, 0.25)
+        finished.set()
+        started = time.monotonic()
+        handle(2)
+        self.assertLess(time.monotonic() - started, 0.25)
+
+    def test_a_host_without_a_console_still_runs(self):
+        def refuse(handler):
+            raise OSError("no console")
+
+        with unityrun._Handlers(windows=True, install=refuse):
+            pass
+
+    def test_other_platforms_do_not_install_a_console_handler(self):
+        def fail(handler):
+            raise AssertionError("not on this platform")
+
+        with unityrun._Handlers(windows=False, install=fail):
+            pass
+
+
+class ConnectionLossTests(HostTestCase):
+    """The caller's view of a `--host` run whose connection ends: the result is unknown and the message says what the host does."""
+
+    def run_with(self, result):
+        config.add_ssh_host("win", "me@win", "windows", "C:/art")
+
+        class Lost(Transport):
+            kind = "ssh"
+
+            def run(self, command, timeout_sec, cwd=None):
+                return result
+
+            def put(self, *_):
+                return CommandResult(0)
+
+            def get(self, *_):
+                return CommandResult(0)
+
+        with mock.patch.object(commands, "_remote", side_effect=lambda entry, arguments, retry=True: remote.Remote(Lost(), ("valtrion",), None)):
+            return run_cli("unity", "run", "--host", "win", "--", "-batchmode")
+
+    def test_a_dropped_connection_is_blocked_with_the_hint_not_a_pass_or_a_fail(self):
+        code, out, err = self.run_with(CommandResult(remote.SSH_FAILURE, "partial output\n", "Connection reset"))
+        self.assertEqual(constants.EXIT_BLOCKED, code)
+        self.assertIn("partial output", out)
+        self.assertNotIn("STATUS", out)
+        self.assertIn("result is unknown", err)
+        self.assertIn("lease list --host", err)
+
+    def test_an_answer_that_never_came_is_blocked_with_the_same_hint(self):
+        code, out, err = self.run_with(CommandResult(None, "", "", timed_out=True))
+        self.assertEqual(constants.EXIT_BLOCKED, code)
+        self.assertIn("did not answer", err)
+        self.assertIn("result is unknown", err)
 
 
 if __name__ == "__main__":
