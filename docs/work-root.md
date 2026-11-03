@@ -50,7 +50,7 @@ All keys are optional. `artifactsRoot` and `workRoot` must be non-empty; `workRo
 
 **`leasesDir` (temporary).** An absolute path (or one starting with `~`) that replaces `<home>/leases`. It exists for the move from the earlier tool: set it to the absolute path of the old tool's leases folder, and the old and new CLIs share one lease directory, so they never both hold the same device. The lease file format is unchanged. Remove the setting once the old tool is no longer used.
 
-**`unityEditorSlots`.** A positive integer: how many Unity processes (the `unity-editor` slots) the host runs at once. Without it the host allows 2, and 1 on macOS. Every provider counts this one total. Slots above the total are not looked at: when you lower it (or on macOS, where it is 1), a holder from an older version that still sits on a higher slot is ignored until it ends, so during a mixed-version transition one more Unity can run than the new total. `PlatformAdapter.unity_editor_slots` no longer exists; a third-party provider that set it loses that limit and must use `unityEditorSlots` here.
+**`unityEditorSlots`.** A positive integer: how many Unity processes (the `unity-editor` slots) the host runs at once. Without it the host allows 2, on every platform. Every provider counts this one total. Slots above the total are not looked at: when you lower it, a holder from an older version that still sits on a higher slot is ignored until it ends, so during a mixed-version transition one more Unity can run than the new total. `PlatformAdapter.unity_editor_slots` no longer exists; a third-party provider that set it loses that limit and must use `unityEditorSlots` here.
 
 ## Work root
 

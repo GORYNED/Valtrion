@@ -33,7 +33,7 @@ class CapacityTests(unittest.TestCase):
     def test_the_default_depends_on_the_host_only(self):
         self.assertEqual(2, self.capacity("windows"))
         self.assertEqual(2, self.capacity("linux"))
-        self.assertEqual(1, self.capacity("macos"))
+        self.assertEqual(2, self.capacity("macos"))
 
     def test_host_json_overrides_the_default_and_a_bad_value_is_refused(self):
         (self.home / "host.json").write_text(json.dumps({"unityEditorSlots": 3}), encoding="utf-8")
