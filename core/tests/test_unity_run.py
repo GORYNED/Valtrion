@@ -429,7 +429,8 @@ class SubprocessTests(unittest.TestCase):
         self.process.stdin.flush()
         time.sleep(0.6)
         self.process.stdin.close()  # what the host sees when the SSH connection ends
-        out, _ = self.process.communicate(timeout=60)
+        self.process.wait(timeout=60)  # not communicate(): after the manual close it would flush the closed stdin (ValueError on 3.12)
+        out = self.process.stdout.read()
         self.assertEqual(constants.EXIT_BLOCKED, self.process.returncode)
         self.assertEqual("STATUS BLOCKED", out.decode().splitlines()[-1])
         self.assertGone(pid)
@@ -463,7 +464,8 @@ class SubprocessTests(unittest.TestCase):
     def test_without_the_option_a_closed_input_changes_nothing(self):
         self.start(sleep="3")
         self.process.stdin.close()
-        out, _ = self.process.communicate(timeout=60)
+        self.process.wait(timeout=60)
+        out = self.process.stdout.read()
         self.assertEqual(constants.EXIT_PASS, self.process.returncode)
         self.assertEqual("STATUS PASS", out.decode().splitlines()[-1])
 
