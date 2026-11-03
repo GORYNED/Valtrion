@@ -834,7 +834,7 @@ def execute(pipeline: Mapping[str, Any], pipeline_path: Path | None, ctx: JobCon
     def adopt_cached(cached: buildcache.Entry, name: str) -> None:
         """The job uses a build from the cache instead of building."""
         nonlocal artifact, used_entry, build_outcome, build_info
-        buildcache.touch(cached)
+        buildcache.touch(cached, source=_build_source(pipeline["candidate"]["repo"], options.checkout_id, project_dir))
         artifact, used_entry, build_outcome = cached.path, cached, StepOutcome(constants.PASS)
         build_info = {**cached.describe(), "reused": True, "builtByJob": cached.manifest.get("builtByJob", "unknown")}
         diskspace.remember_build(directory, cached.key)
@@ -1059,7 +1059,8 @@ def execute(pipeline: Mapping[str, Any], pipeline_path: Path | None, ctx: JobCon
                     published = buildcache.publish(
                         buildcache.builds_root(ctx.home), cache_key, artifact, out=out, project=pipeline["candidate"]["repo"], platform=platform,
                         sha=candidate_sha, profile=profile, dirty=dirty, toolchain=toolchain, job_id=ctx.job_id,
-                        cacheable=not cache_key.startswith("dirty-"), replace=stage.get("args", {}).get("reuse") is False, source=_build_source(pipeline["candidate"]["repo"], options.checkout_id, project_dir),
+                        cacheable=not cache_key.startswith("dirty-"), replace=stage.get("args", {}).get("reuse") is False,
+                        source=_build_source(pipeline["candidate"]["repo"], options.checkout_id, project_dir),
                         config_hash=config_hash_seen[0] or buildcache.profile_config_hash(project_dir, profile))
                 except (OSError, ValueError) as error:
                     head_note.append(f"the build artifact could not be published outside the work folder: {error}")
@@ -1251,7 +1252,8 @@ def _collect_build_cache(ctx: JobContext, keep_key: str) -> None:
     try:
         limits = config.load_host_settings(ctx.home).build_cache.limits()
         report = buildcache.gc(buildcache.builds_root(ctx.home), protect=[keep_key, *diskspace.active_build_keys(ctx.home)], **limits)
-    except (OSError, ValueError, config.ConfigError):
+    except (OSError, ValueError, config.ConfigError) as error:
+        ctx.events.emit("log", f"build cache: retention skipped: {type(error).__name__}: {error}")
         return
     if report.removed:
         ctx.events.emit("log", "build cache: removed " + ", ".join(report.removed), data={"removed": list(report.removed)})

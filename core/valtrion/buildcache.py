@@ -115,6 +115,16 @@ class Entry:
         """The moved build output (the artifact itself, or the folder that holds it)."""
         return self.directory / ARTIFACT_FOLDER / self.manifest["name"]
 
+    def sources(self) -> dict[str, str]:
+        """The sources that published or reused this build, each with the time of its latest publication or reuse (`sources` of the
+        manifest; a manifest with only the older single `source` counts as that source at the publication time)."""
+        found = self.manifest.get("sources")
+        if isinstance(found, dict):
+            return {str(name): str(stamp) for name, stamp in found.items() if name}
+        if self.manifest.get("source"):
+            return {str(self.manifest["source"]): str(self.manifest.get("publishedUtc", ""))}
+        return {}
+
     @property
     def cacheable(self) -> bool:
         return bool(self.manifest.get("cacheable"))
@@ -171,10 +181,14 @@ def _quick_shape(path: Path) -> tuple[str, int, str]:
     return "", sum(p.stat().st_size for p in path.rglob("*") if p.is_file()), "directory"
 
 
-def touch(entry: Entry, clock: Callable[[], str] = core.utc_now) -> None:
-    """Record a use (a reuse or an install by key), which keeps the entry from `gc`."""
+def touch(entry: Entry, clock: Callable[[], str] = core.utc_now, source: str | None = None) -> None:
+    """Record a use (a reuse or an install by key), which keeps the entry from `gc`. With `source` the build also counts as the
+    latest build of that source for the `per_source` limit (a job that reuses the build from another folder)."""
     try:
-        manifest = {**entry.manifest, "lastUsedUtc": clock()}
+        stamp = clock()
+        manifest = {**entry.manifest, "lastUsedUtc": stamp}
+        if source:
+            manifest["sources"] = {**entry.sources(), source: stamp}
         core.atomic_write_json(entry.directory / MANIFEST, manifest)
     except OSError:
         pass  # a failed bookkeeping write must not fail the run that uses the build
@@ -202,7 +216,8 @@ def publish(root: Path, key: str, artifact: Path, *, out: Path, project: str, pl
     if final.exists():
         existing = _read_entry(final)
         if existing is not None and cacheable and not replace and is_intact(existing):
-            return existing
+            touch(existing, source=source)
+            return _read_entry(final) or existing
         shutil.rmtree(final, ignore_errors=True)  # a broken, rejected, forced or one-off entry in the way (publishing is an atomic rename)
     incoming = Path(tempfile.mkdtemp(prefix=_INCOMING, dir=root))
     moved = incoming / ARTIFACT_FOLDER / item.name
@@ -215,7 +230,7 @@ def publish(root: Path, key: str, artifact: Path, *, out: Path, project: str, pl
         shutil.move(str(item), str(moved))
         stamp = core.utc_now()
         core.atomic_write_json(incoming / MANIFEST, {
-            **({"source": source} if source else {}), "schema": SCHEMA, "key": key, "name": item.name, "entry": entry_path, "kind": kind, "sha256": digest, "sizeBytes": size,
+            **({"source": source, "sources": {source: stamp}} if source else {}), "schema": SCHEMA, "key": key, "name": item.name, "entry": entry_path, "kind": kind, "sha256": digest, "sizeBytes": size,
             "itemSizeBytes": item_size, "project": project, "platform": platform, "sha": sha, "profile": profile, "dirty": dirty,
             "cacheable": cacheable, "toolchain": dict(toolchain), "configHash": config_hash, "builtByJob": job_id, "publishedUtc": stamp,
             "lastUsedUtc": stamp})
@@ -227,7 +242,8 @@ def publish(root: Path, key: str, artifact: Path, *, out: Path, project: str, pl
                 raise
             shutil.rmtree(incoming, ignore_errors=True)
             done = True
-            return raced
+            touch(raced, source=source)
+            return _read_entry(final) or raced
         done = True
     finally:
         if not done:
@@ -291,16 +307,17 @@ def gc(root: Path, keep_days: float = DEFAULT_KEEP_DAYS, dirty_keep_days: float 
     removed: list[str] = []
     kept: list[tuple[str, str]] = []
 
-    def remove(entry: Entry, why: str) -> None:
+    def remove(entry: Entry, why: str) -> bool:
         if dry_run:
             removed.append(f"{entry.key} ({why})")
-            return
+            return True
         try:
             shutil.rmtree(entry.directory)
         except OSError as error:
             kept.append((entry.key, f"could not be removed: {error}"))
-            return
+            return False
         removed.append(f"{entry.key} ({why})")
+        return True
 
     survivors: list[Entry] = []
     for entry in sorted(entries(root), key=_last_used):
@@ -315,17 +332,24 @@ def gc(root: Path, keep_days: float = DEFAULT_KEEP_DAYS, dirty_keep_days: float 
         else:
             survivors.append(entry)
     if per_source is not None:
-        groups: dict[tuple[str, str], list[Entry]] = {}
+        # A build stays while it is among the newest `per_source` of at least one of its sources (a build reused by another worktree
+        # belongs to both); a build with no recorded source is not limited.
+        groups: dict[tuple[str, str], list[tuple[datetime, Entry]]] = {}
         for entry in survivors:
-            if entry.manifest.get("source"):
-                groups.setdefault((entry.manifest["source"], str(entry.manifest.get("platform"))), []).append(entry)
+            for name, stamp in entry.sources().items():
+                try:
+                    when = core.parse_utc(stamp)
+                except (ValueError, TypeError):
+                    when = _published(entry)
+                groups.setdefault((name, str(entry.manifest.get("platform"))), []).append((when, entry))
+        wanted = {entry.key for group in groups.values() for _, entry in sorted(group, key=lambda item: item[0], reverse=True)[:per_source]}
         replaced: set[str] = set()
-        for group in groups.values():
-            group.sort(key=_published, reverse=True)
-            for entry in group[per_source:]:
-                if entry.key in protected or now - _last_used(entry) < timedelta(seconds=GUARD_SEC):
-                    continue
-                remove(entry, f"replaced by a newer build of the same source (keeping {per_source})")
+        for entry in survivors:
+            if not entry.sources() or entry.key in wanted:
+                continue
+            if entry.key in protected or now - _last_used(entry) < timedelta(seconds=GUARD_SEC):
+                continue
+            if remove(entry, f"replaced by newer builds of its source (keeping {per_source})"):
                 replaced.add(entry.key)
         survivors = [entry for entry in survivors if entry.key not in replaced]
     surplus = len(survivors) - max_entries

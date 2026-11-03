@@ -625,16 +625,16 @@ class BuildCacheTests(unittest.TestCase):
         self.root = self.base / "builds"
         self.number = 0
 
-    def publish(self, key, content=b"apk", cacheable=True, dirty=False):
+    def publish(self, key, content=b"apk", cacheable=True, dirty=False, origin=None):
         self.number += 1
         source = self.base / f"out{self.number}" / "app.apk"
         source.parent.mkdir()
         source.write_bytes(content)
-        return self.publish_artifact(key, source, source.parent, cacheable, dirty)
+        return self.publish_artifact(key, source, source.parent, cacheable, dirty, origin)
 
-    def publish_artifact(self, key, artifact, out, cacheable=True, dirty=False):
+    def publish_artifact(self, key, artifact, out, cacheable=True, dirty=False, origin=None):
         return buildcache.publish(self.root, key, artifact, out=out, project="P", platform="android", sha="a" * 40, profile="Prof",
-                                  dirty=dirty, toolchain={"unity": "6"}, config_hash="none", job_id=f"job-{self.number}", cacheable=cacheable)
+                                  dirty=dirty, toolchain={"unity": "6"}, config_hash="none", job_id=f"job-{self.number}", cacheable=cacheable, source=origin)
 
     def test_a_file_artifact_takes_its_sibling_files_along_and_a_folder_artifact_moves_alone(self):
         out = self.base / "win"
@@ -824,7 +824,8 @@ class BuildCacheTests(unittest.TestCase):
             entry = buildcache.publish(self.root, key, out / "app.apk", out=out, project="P", platform=platform, sha="a" * 40, profile="Prof",
                                        dirty=False, toolchain={}, config_hash="n", job_id=key, cacheable=True, source=source)
             stamp = core.format_utc(now - timedelta(hours=hours))
-            core.atomic_write_json(entry.directory / buildcache.MANIFEST, {**entry.manifest, "publishedUtc": stamp, "lastUsedUtc": stamp})
+            core.atomic_write_json(entry.directory / buildcache.MANIFEST,
+                                   {**entry.manifest, "publishedUtc": stamp, "lastUsedUtc": stamp, "sources": {source: stamp} if source else {}})
 
         publish("w1-old", "dir:/w1", hours=30)
         publish("w1-new", "dir:/w1", hours=20)
@@ -840,6 +841,75 @@ class BuildCacheTests(unittest.TestCase):
         self.assertEqual(["legacy", "w1-busy", "w1-ios", "w1-used", "w2"], sorted(e.key for e in buildcache.entries(self.root)))
         with self.assertRaises(ValueError):
             buildcache.gc(self.root, per_source=0)
+
+    def test_a_build_shared_by_two_sources_stays_while_either_still_wants_it(self):
+        from datetime import timedelta
+        now = core.now()
+
+        def stamp(entry, **fields):
+            core.atomic_write_json(entry.directory / buildcache.MANIFEST, {**entry.manifest, **fields})
+
+        def at(hours):
+            return core.format_utc(now - timedelta(hours=hours))
+
+        shared = self.publish("shared")
+        stamp(shared, publishedUtc=at(30), lastUsedUtc=at(30), sources={"dir:/a": at(30)}, source="dir:/a")
+        entry = buildcache.find(self.root, "shared")
+        buildcache.touch(entry, clock=lambda: at(20), source="dir:/b")
+        self.assertEqual({"dir:/a": at(30), "dir:/b": at(20)}, buildcache.find(self.root, "shared").sources())
+        newer = self.publish("a-newer")
+        stamp(newer, publishedUtc=at(10), lastUsedUtc=at(10), sources={"dir:/a": at(10)}, source="dir:/a")
+        report = buildcache.gc(self.root, per_source=1, clock=lambda: now)
+        self.assertEqual((), report.removed, "dir:/b still wants the shared build although dir:/a has a newer one")
+        # An older manifest with only `source` reads as one source.
+        old_style = self.publish("old-style")
+        manifest = {key: value for key, value in old_style.manifest.items() if key != "sources"}
+        core.atomic_write_json(old_style.directory / buildcache.MANIFEST, {**manifest, "publishedUtc": at(40), "lastUsedUtc": at(40), "source": "dir:/a"})
+        self.assertEqual({"dir:/a": at(40)}, buildcache.find(self.root, "old-style").sources())
+        report = buildcache.gc(self.root, per_source=1, clock=lambda: now)
+        self.assertEqual(["old-style"], [item.split(" ")[0] for item in report.removed])
+
+    def test_publishing_a_key_that_exists_records_the_new_source_and_a_failed_removal_is_not_counted_as_replaced(self):
+        from datetime import timedelta
+        first = self.publish("same", origin="dir:/a")
+        out = self.base / "second"
+        out.mkdir()
+        (out / "app.apk").write_bytes(b"apk")
+        second = buildcache.publish(self.root, "same", out / "app.apk", out=out, project="P", platform="android", sha="a" * 40,
+                                    profile="Prof", dirty=False, toolchain={"unity": "6"}, config_hash="none", job_id="j2", cacheable=True,
+                                    source="dir:/b")
+        self.assertEqual(first.path, second.path)
+        self.assertEqual({"dir:/a", "dir:/b"}, set(buildcache.find(self.root, "same").sources()))
+        now = core.now()
+        old = self.publish("old", origin="dir:/a")
+        stale = core.format_utc(now - timedelta(hours=9))
+        core.atomic_write_json(old.directory / buildcache.MANIFEST, {**old.manifest, "publishedUtc": stale, "lastUsedUtc": stale, "sources": {"dir:/a": stale}})
+        with mock.patch.object(buildcache.shutil, "rmtree", side_effect=OSError("locked")):
+            report = buildcache.gc(self.root, per_source=1, clock=lambda: now + timedelta(hours=5))
+        self.assertEqual(([], True), (list(report.removed), any("could not be removed" in reason for _, reason in report.kept)))
+
+    def test_the_build_source_names_a_managed_checkout_or_the_normalized_project_folder(self):
+        folder = self.base / "Work" / ".." / "Work"
+        folder.mkdir()
+        self.assertEqual("checkout:P/ref", pipeline._build_source("P", "ref", folder))
+        self.assertEqual("dir:" + os.path.normcase(str((self.base / "Work").resolve())), pipeline._build_source("P", None, folder))
+
+    def test_a_reuse_by_the_installing_job_touches_after_finding_and_the_publish_gc_reports_a_broken_host_json(self):
+        from types import SimpleNamespace
+        home = self.base / "home"
+        home.mkdir(exist_ok=True)
+        (home / "host.json").write_text(json.dumps({"buildCache": {"perSource": 0}}), encoding="utf-8")
+        events = SimpleNamespace(emit=mock.Mock())
+        pipeline._collect_build_cache(SimpleNamespace(home=home, events=events), "k")
+        message = events.emit.call_args.args[1]
+        self.assertTrue(events.emit.call_args.args[0] == "log" and message.startswith("build cache: retention skipped: ConfigError"), message)
+        with mock.patch.dict(os.environ, {core.HOME_ENV: str(home)}):
+            self.root = buildcache.builds_root()
+            entry = self.publish("k1")
+            before = entry.manifest["lastUsedUtc"]
+            found = buildcache.find(self.root, "k1")
+            buildcache.touch(found, clock=lambda: "2999-01-01T00:00:00Z")
+            self.assertEqual(("2999-01-01T00:00:00Z", before), (buildcache.find(self.root, "k1").manifest["lastUsedUtc"], before))
 
     def test_lease_keeper_release_one_gives_back_only_that_lease(self):
         manager = LeaseManager(self.base / "home")

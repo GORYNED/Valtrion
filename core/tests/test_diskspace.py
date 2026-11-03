@@ -153,6 +153,26 @@ class DiskTests(unittest.TestCase):
         diskspace.ensure_free(tight, self.home, free=self.volume)
         self.assertEqual(["k2"], [e.key for e in buildcache.entries(root)], "only the most recently used build stays")
 
+    def test_the_pressure_cleanup_also_applies_per_source(self):
+        import dataclasses
+        root = buildcache.builds_root(self.home)
+        made = []
+        for number, hours in enumerate((30, 20)):
+            source = self.base / f"p{number}" / "app.apk"
+            source.parent.mkdir()
+            source.write_bytes(b"a")
+            entry = buildcache.publish(root, f"s{number}", source, out=source.parent, project="P", platform="android", sha="a" * 40,
+                                       profile="X", dirty=False, toolchain={}, config_hash="n", job_id=f"j{number}", cacheable=True,
+                                       source="dir:/w")
+            stamp = core.format_utc(core.now() - timedelta(hours=hours))
+            core.atomic_write_json(entry.directory / buildcache.MANIFEST,
+                                   {**entry.manifest, "lastUsedUtc": stamp, "publishedUtc": stamp, "sources": {"dir:/w": stamp}})
+            made.append(entry)
+        self.volume.hold(made[0].directory, 2)
+        tight = dataclasses.replace(self.settings, build_cache=buildcache.Retention(per_source=1))
+        diskspace.ensure_free(tight, self.home, free=self.volume)
+        self.assertEqual(["s1"], [e.key for e in buildcache.entries(root)], "the older build of the same source goes")
+
     def test_config_rejects_bad_disk_settings(self):
         for bad in ({"minFreeGiB": 0}, {"minFreeGiB": "5"}, {"keepDaysUnderPressure": -1}, [], {"minFreeGiB": float("nan")},
                     {"minFreeGiB": float("inf")}, {"keepDaysUnderPressure": float("inf")}, {"waitSec": -1}, {"waitSec": "5"},
