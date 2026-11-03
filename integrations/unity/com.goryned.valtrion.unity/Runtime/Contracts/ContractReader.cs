@@ -152,6 +152,14 @@ namespace Valtrion.Unity.Contracts
             return value;
         }
 
+        public string OptUtc(string name)
+        {
+            var value = OptStr(name);
+            if (value != null && !IsUtc(value))
+                throw new ContractException($"{_path}.{name}: '{value}' is not a UTC timestamp like 2026-10-29T15:30:00Z");
+            return value;
+        }
+
         static bool IsUtc(string value)
         {
             // yyyy-MM-ddTHH:mm:ss[.fraction]Z

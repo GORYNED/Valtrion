@@ -131,6 +131,9 @@ namespace Valtrion.Unity.Contracts
 
         public string ResultPath { get; set; }
 
+        /// <summary>What a running pipeline job is doing (waiting-disk, waiting-build, building, waiting-device, on-device); null otherwise.</summary>
+        public string Phase { get; set; }
+
         public JobWatchdog Watchdog { get; set; }
 
         public long EventsOffset { get; set; }
@@ -154,7 +157,8 @@ namespace Valtrion.Unity.Contracts
                 Pid = reader.OptInt32("pid", 1),
                 Command = reader.Strings("command"),
                 ResultPath = reader.OptStr("resultPath", 1),
-                Watchdog = JobWatchdog.Read(reader.Object("watchdog")),
+                Phase = reader.OptChoice("phase", Enums.JobPhases),
+                Watchdog =JobWatchdog.Read(reader.Object("watchdog")),
                 EventsOffset = reader.Int("eventsOffset", 0),
             };
             reader.Done();
@@ -166,7 +170,7 @@ namespace Valtrion.Unity.Contracts
             .Set("state", JsonValue.From(State)).Set("status", JsonValue.From(Status)).Set("reason", JsonValue.From(Reason))
             .Set("createdUtc", JsonValue.From(CreatedUtc)).Set("updatedUtc", JsonValue.From(UpdatedUtc)).Set("host", JsonValue.From(Host))
             .SetIf("pid", Pid).Set("command", JsonBuild.Strings(Command)).SetIf("resultPath", ResultPath)
-            .Set("watchdog", Watchdog.Write()).Set("eventsOffset", JsonValue.From(EventsOffset));
+            .SetIf("phase", Phase).Set("watchdog", Watchdog.Write()).Set("eventsOffset", JsonValue.From(EventsOffset));
 
         public string ToJsonString() => ToJson().Write(true);
     }

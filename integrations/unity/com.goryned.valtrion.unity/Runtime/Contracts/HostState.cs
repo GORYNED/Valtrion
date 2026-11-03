@@ -47,6 +47,11 @@ namespace Valtrion.Unity.Contracts
 
         public string Notes { get; set; }
 
+        /// <summary>False when the last discovery did not find the device; null (absent) means online.</summary>
+        public bool? Online { get; set; }
+
+        public string LastSeen { get; set; }
+
         internal static RegistryDevice Read(ContractReader reader)
         {
             var device = new RegistryDevice
@@ -62,6 +67,8 @@ namespace Valtrion.Unity.Contracts
                 Capabilities = reader.Strings("capabilities"),
                 Exclusive = reader.Bool("exclusive"),
                 Notes = reader.OptStr("notes"),
+                Online = reader.OptBool("online"),
+                LastSeen = reader.OptUtc("lastSeen"),
             };
             reader.Done();
             return device;
@@ -70,7 +77,8 @@ namespace Valtrion.Unity.Contracts
         internal JsonValue Write() => JsonValue.NewObject()
             .Set("id", JsonValue.From(Id)).Set("hostId", JsonValue.From(HostId)).SetIf("alias", Alias).Set("platform", JsonValue.From(Platform)).Set("class", JsonValue.From(Class))
             .SetIf("model", Model).SetIf("os", Os).SetIf("evidence", Evidence)
-            .Set("capabilities", JsonBuild.Strings(Capabilities)).Set("exclusive", JsonValue.From(Exclusive)).SetIf("notes", Notes);
+            .Set("capabilities", JsonBuild.Strings(Capabilities)).Set("exclusive", JsonValue.From(Exclusive)).SetIf("notes", Notes)
+            .SetIf("online", Online).SetIf("lastSeen", LastSeen);
     }
 
     /// <summary>The host's device registry (<c>gdv.registry/1</c>, kept outside git). Plans require capabilities, never a device id.</summary>

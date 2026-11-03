@@ -1,8 +1,14 @@
 # Changelog
 
-## Unreleased
+## 0.8.0 (2026-11-03)
 
-- `ChecksDocument` reads and writes the new optional keys of `gdv.checks/1`: `runners` (name to command template) and `exclude` on an area (`ChecksArea.Exclude`). Documents without them behave as before. The package version is not changed here; a project that parses a check map with these keys needs a package release that contains this change.
+- The contract readers and writers catch up with the schemas of Core 0.8.x and 0.9.0. All additions are optional keys, so documents written for 0.7.x still read and write unchanged:
+  - `JobDocument.Phase` (`job.phase`: waiting-disk, waiting-build, building, waiting-device, on-device);
+  - `RegistryDevice.Online` and `RegistryDevice.LastSeen` (`online`, `lastSeen` of a registry device);
+  - `ResultDocument.Build` (`ResultBuild`: the build artifact a run was made with);
+  - `ChecksDocument.Runners` (name to command template, non-empty values) and `ChecksArea.Exclude` (globs) of `gdv.checks/1`.
+- Fixes the four failing EditMode tests of the repository project (job, registry and result fixtures, and the every-schema check): 112 of 112 pass.
+- The Runtime harness is unchanged. Compatible Core versions are listed in `compat.json` (package 0.8.x: Core 0.8.0 up to, not including, 0.10).
 
 ## 0.7.1 (2026-10-30)
 
