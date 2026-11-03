@@ -15,7 +15,7 @@ import subprocess
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Mapping, Sequence
 
 from . import constants, project
 from .schema import SchemaError, UnreadableInput, Validator, parse_json, validate_file
@@ -108,6 +108,11 @@ class Config:
     @property
     def unclassified_policy(self) -> str:
         return self.data["unclassified"]
+
+    @property
+    def content_rules(self) -> list[dict]:
+        """The optional top-level `contentRules`: paths whose cosmetic-only changes (comments, blank lines, re-indentation) get a cheaper kind."""
+        return self.data.get("contentRules", [])
 
     @property
     def runners(self) -> dict[str, str]:
@@ -221,6 +226,18 @@ def validate_config(config: Config, validator: Validator | None = None) -> tuple
         for excluded in area.get("exclude", ()):
             if not excluded or excluded.startswith("/") or ".." in excluded.replace("\\", "/").split("/") or "\\" in excluded:
                 errors.append(f"areas[{index}]: exclude glob {excluded!r} must be repository-relative with '/' separators and no '..'")
+    for index, rule in enumerate(config.content_rules):
+        where = f"contentRules[{index}]"
+        if rule["kind"] not in kinds:
+            errors.append(f"{where}: kind {rule['kind']!r} has no entry in kinds")
+        glob = rule["glob"]
+        if glob.startswith("/") or ".." in glob.replace("\\", "/").split("/") or "\\" in glob:
+            errors.append(f"{where}: glob {glob!r} must be repository-relative with '/' separators and no '..'")
+        if not rule["lineComment"] or any(not item.strip() or item != item.strip() for item in rule["lineComment"]):
+            errors.append(f"{where}: lineComment needs at least one marker, none empty and none with leading or trailing space")
+        block = rule.get("blockComment")
+        if block is not None and (not block["start"].strip() or not block["end"].strip()):
+            errors.append(f"{where}: blockComment needs a start and an end marker")
     for name, template in config.runners.items():
         if not _NAME.match(name):
             errors.append(f"runners: invalid runner name {name!r} (letters, digits, '.', '_' and '-', starting with a letter or digit)")
@@ -303,15 +320,18 @@ def glob_to_regex(glob: str) -> re.Pattern[str]:
     return re.compile("^" + "".join(out) + "$")
 
 
-def classify(config: Config, paths: Sequence[str]) -> tuple[dict[str, list[str]], list[str]]:
+def classify(config: Config, paths: Sequence[str], cosmetic: Mapping[str, str] | None = None) -> tuple[dict[str, list[str]], list[str]]:
     """Map each path to every kind whose area matches it; paths without a match are unclassified.
 
     A path matches an area when it matches `glob` and none of the area's optional `exclude` globs. An excluded path can still match
-    another area, so it keeps that area's kind."""
+    another area, so it keeps that area's kind. A path in `cosmetic` (path -> kind, see `cosmetic_paths`) has that one kind instead."""
     compiled = [(glob_to_regex(area["glob"]), [glob_to_regex(item) for item in area.get("exclude", ())], area["kind"]) for area in config.areas]
     classified: dict[str, list[str]] = {}
     unclassified: list[str] = []
     for path in paths:
+        if cosmetic and path in cosmetic:
+            classified[path] = [cosmetic[path]]
+            continue
         kinds = sorted({kind for pattern, excluded, kind in compiled if pattern.match(path) and not any(skip.match(path) for skip in excluded)})
         if kinds:
             classified[path] = kinds
@@ -354,6 +374,93 @@ def changed_paths(root: Path, base_ref: str, include_worktree: bool) -> tuple[li
     return sorted(paths), merge_base
 
 
+# --- changes that only touch comments and layout ------------------------------------------------------------------------------------
+
+#: The lines `git diff` may print before the first hunk of a change that leaves the file's mode and name alone. Anything else there
+#: (`old mode`, `new mode`, `similarity`, `rename`, `Binary files`, `GIT binary patch`) means more than the text changed.
+_PLAIN_DIFF_HEADERS = ("diff --git ", "index ", "--- ", "+++ ", "new file mode ", "deleted file mode ")
+#: Line separators other than `\n` (and a `\r` before it): vertical tab, form feed, the file/group/record separators, NEL, U+2028 and U+2029,
+#: and a `\r` that is not the end of the line.
+_ODD_BREAKS = re.compile("[\x0b\x0c\x1c\x1d\x1e\x85  ]|\r(?!$)")
+
+
+def _is_comment(text: str, line_comments: Sequence[str], block_comment: Mapping[str, str] | None, code_prefixes: Sequence[str]) -> bool:
+    """Whether a trimmed line is only a comment. `code_prefixes` (for example `#!` or `#if`) are code even when a marker starts them; a block
+    comment counts only when it starts and ends on this line and has no other marker inside (`/* a */ f(); /* b */` is code)."""
+    if any(text.startswith(item) for item in code_prefixes):
+        return False
+    if any(text.startswith(item) for item in line_comments):
+        return True
+    if block_comment:
+        start, end = block_comment["start"], block_comment["end"]
+        if text.startswith(start) and text.endswith(end) and len(text) >= len(start) + len(end):
+            inner = text[len(start):len(text) - len(end)]
+            return start not in inner and end not in inner
+    return False
+
+
+def diff_is_cosmetic(
+        diff: str, line_comments: Sequence[str], block_comment: Mapping[str, str] | None = None, reindent: bool = False,
+        code_prefixes: Sequence[str] = ()) -> bool:
+    """Whether a `git diff -U0` of one file changes nothing but comments and blank lines (and, with `reindent`, indentation). Fail closed:
+    anything not provably so is code.
+
+    A removed or added line that is blank or a comment is ignored. Every other line is code, and a diff with code lines is cosmetic only when
+    `reindent` is set and, per hunk, the code lines are the same sequence before and after once trimmed of spaces and tabs at both ends (a
+    line ending such as `\\r` is not trimmed, so a CRLF to LF change is code). A multi-line block comment, a line that only closes one, a moved
+    line, a diff with no hunk (binary), a mode change or rename, and a file whose bytes are not valid UTF-8 are code. Whitespace inside a line is
+    never ignored, so `"a b"` against `"ab"` is code."""
+    removed: list[str] = []
+    added: list[str] = []
+    hunks = 0
+    for line in diff.split("\n"):
+        if line.startswith("@@"):
+            if hunks and removed != added:
+                return False
+            hunks += 1
+            removed, added = [], []
+            continue
+        if not hunks:
+            if line and not line.startswith(_PLAIN_DIFF_HEADERS):
+                return False
+            continue
+        if not line or line.startswith("\\"):
+            continue  # the end of the text, or "\ No newline at end of file"
+        marker, content = line[0], line[1:]
+        if marker not in "+-" or _ODD_BREAKS.search(content):
+            return False  # a language may end its line at a separator `git` does not (C# at U+2028), so a comment can hide code after it
+        text = content.strip()
+        if not text or _is_comment(text, line_comments, block_comment, code_prefixes):
+            continue
+        if not reindent:
+            return False
+        (added if marker == "+" else removed).append(content.strip(" \t"))
+    return hunks > 0 and removed == added
+
+
+def cosmetic_paths(
+        root: Path, config: Config, paths: Sequence[str], merge_base: str | None, include_worktree: bool) -> dict[str, str]:
+    """For each changed path that matches a `contentRules` glob and whose whole diff is cosmetic, the rule's kind. Any git failure, an
+    untracked file (it has no diff to read) or a diff that is not provably cosmetic leaves the path to its normal kinds."""
+    rules = [(glob_to_regex(rule["glob"]), rule) for rule in config.content_rules]
+    if not rules or merge_base is None:
+        return {}
+    found: dict[str, str] = {}
+    for path in paths:
+        rule = next((item for pattern, item in rules if pattern.match(path)), None)
+        if rule is None:
+            continue
+        arguments = ["diff", "-U0", "--no-color", "--no-ext-diff", "--no-renames", merge_base] + ([] if include_worktree else ["HEAD"])
+        try:
+            # `:(literal)`: the path is a file name, never a pathspec pattern. Strict decoding: bytes that are not UTF-8 are not judged.
+            diff = _git(root, *arguments, "--", ":(literal)" + path).decode("utf-8")
+        except (GitError, UnicodeDecodeError):
+            continue
+        if diff_is_cosmetic(diff, rule["lineComment"], rule.get("blockComment"), bool(rule.get("reindent", False)), rule.get("codePrefixes", ())):
+            found[path] = rule["kind"]
+    return found
+
+
 # --- selection -------------------------------------------------------------------------------------------------------------------
 
 
@@ -374,6 +481,8 @@ class Selection:
     failed: bool = False
     #: Kinds the caller named directly (`--kind`), without a diff; sorted. They are part of `kinds`.
     named_kinds: list[str] = field(default_factory=list)
+    #: Changed paths whose diff is only comments and layout and that a `contentRules` entry maps to a cheaper kind (path -> kind).
+    cosmetic: dict[str, str] = field(default_factory=dict)
 
     def of_type(self, *types: str) -> list[Check]:
         return [check for check in self.checks if check.type in types]
@@ -413,6 +522,7 @@ class Selection:
             "widest": self.widest,
             "failed": self.failed,
             "kinds": self.kinds,
+            "cosmeticPaths": self.cosmetic,
             "selectedKinds": self.named_kinds,
             "kindsNamedExplicitly": bool(self.named_kinds),
             "l0": [_check_json(check) for check in self.of_type(L0)],
@@ -491,6 +601,7 @@ def select(
     include_worktree: bool = False,
     validator: Validator | None = None,
     named_kinds: Sequence[str] = (),
+    cosmetic: Mapping[str, str] | None = None,
 ) -> Selection:
     """Union of the checks of the matched kinds for `level` and every lower level; unclassified paths widen the set.
 
@@ -502,7 +613,7 @@ def select(
     unknown = [name for name in named if name not in config.kinds]
     if unknown:
         raise ConfigError([f"unknown kind(s): {', '.join(unknown)} (kinds in the map: {', '.join(sorted(config.kinds)) or 'none'})"])
-    classified, unclassified = classify(config, paths)
+    classified, unclassified = classify(config, paths, cosmetic)
     kinds = {kind for matched in classified.values() for kind in matched} | set(named)
     policy = config.unclassified_policy
     widest = bool(unclassified) and policy == "widest"
@@ -522,7 +633,7 @@ def select(
     checks = sorted(found.values(), key=lambda check: (TYPES.index(check.type), check.key))
     return Selection(
         level, base_ref, merge_base, include_worktree, list(paths), classified, unclassified, policy, widest, sorted(kinds), checks, config, failed,
-        named,
+        named, dict(cosmetic or {}),
     )
 
 
@@ -560,8 +671,10 @@ def resolve_selection(arguments: argparse.Namespace) -> Selection:
     else:
         print("error: --base-ref is required unless --kind is given", file=sys.stderr)
         raise SystemExit(2)
+    include_worktree = bool(arguments.base_ref) and arguments.include_worktree
+    cosmetic = cosmetic_paths(root, config, paths, merge_base, include_worktree)
     return select(config, paths, arguments.level, base_ref=arguments.base_ref, merge_base=merge_base,
-                  include_worktree=bool(arguments.base_ref) and arguments.include_worktree, named_kinds=named)
+                  include_worktree=include_worktree, named_kinds=named, cosmetic=cosmetic)
 
 
 def run_guarded(name: str, action) -> int:
@@ -588,6 +701,9 @@ def format_selection(selection: Selection) -> str:
     ]
     if selection.named_kinds:
         lines.append("named kinds: " + ", ".join(selection.named_kinds))
+    if selection.cosmetic:
+        lines.append(f"COSMETIC ({len(selection.cosmetic)}): only comments or layout changed, mapped by contentRules:")
+        lines.extend(f"  {path} -> {kind}" for path, kind in sorted(selection.cosmetic.items()))
     if selection.unclassified:
         action = "no checks selected, fix the area map" if selection.failed else "widest set selected"
         lines.append(f"UNCLASSIFIED ({len(selection.unclassified)}), policy {selection.policy}: {action}")

@@ -52,6 +52,67 @@ namespace Valtrion.Unity.Contracts
         }
     }
 
+    /// <summary>The markers of a block comment that starts and ends on one line.</summary>
+    public sealed class ChecksBlockComment
+    {
+        public string Start { get; set; }
+
+        public string End { get; set; }
+
+        internal static ChecksBlockComment Read(ContractReader reader)
+        {
+            var block = new ChecksBlockComment { Start = reader.Str("start"), End = reader.Str("end") };
+            reader.Done();
+            return block;
+        }
+
+        internal JsonValue Write() => JsonValue.NewObject().Set("start", JsonValue.From(Start)).Set("end", JsonValue.From(End));
+    }
+
+    /// <summary>For paths that match <see cref="Glob"/>, a change that only touches comments, blank lines and layout counts as <see cref="Kind"/>.</summary>
+    public sealed class ChecksContentRule
+    {
+        public string Glob { get; set; }
+
+        public string Kind { get; set; }
+
+        public List<string> LineComment { get; set; } = new List<string>();
+
+        public ChecksBlockComment BlockComment { get; set; }
+
+        /// <summary>When true, re-indentation of code lines also counts as cosmetic (default false, which is the safe choice for languages where indentation is code).</summary>
+        public bool? Reindent { get; set; }
+
+        /// <summary>Line prefixes (for example <c>#!</c> or <c>#if</c>) that are code even though a comment marker starts them.</summary>
+        public List<string> CodePrefixes { get; set; }
+
+        internal static ChecksContentRule Read(ContractReader reader)
+        {
+            var rule = new ChecksContentRule
+            {
+                Glob = reader.Str("glob"),
+                Kind = reader.Identifier("kind"),
+                LineComment = reader.Strings("lineComment"),
+                BlockComment = reader.OptObject("blockComment") is ContractReader block ? ChecksBlockComment.Read(block) : null,
+                Reindent = reader.OptBool("reindent"),
+                CodePrefixes = reader.OptStrings("codePrefixes"),
+            };
+            if (rule.LineComment.Count == 0)
+                throw new ContractException($"{reader.Path}.lineComment: expected at least one marker");
+            reader.Done();
+            return rule;
+        }
+
+        internal JsonValue Write()
+        {
+            var node = JsonValue.NewObject().Set("glob", JsonValue.From(Glob)).Set("kind", JsonValue.From(Kind)).Set("lineComment", JsonBuild.Strings(LineComment));
+            if (BlockComment != null) node.Set("blockComment", BlockComment.Write());
+            node.SetIf("reindent", Reindent);
+            if (CodePrefixes != null) node.Set("codePrefixes", JsonBuild.Strings(CodePrefixes));
+            return node;
+        }
+    }
+
     /// <summary>The checks a kind of change needs at each validation level (L0 to L4); a level that is absent has no checks of its own.</summary>
     public sealed class ChecksLevels
     {
@@ -105,6 +166,9 @@ namespace Valtrion.Unity.Contracts
 
         public List<ChecksArea> Areas { get; set; } = new List<ChecksArea>();
 
+        /// <summary>Optional rules that map a comment-only or layout-only change of matching paths to a cheaper kind.</summary>
+        public List<ChecksContentRule> ContentRules { get; set; }
+
         public Dictionary<string, ChecksLevels> Kinds { get; set; } = new Dictionary<string, ChecksLevels>();
 
         public string Unclassified { get; set; }
@@ -126,6 +190,7 @@ namespace Valtrion.Unity.Contracts
                 UnityEditorSlots = reader.OptInt32("unityEditorSlots", 1),
                 Runners = runners,
                 Areas = reader.Items("areas", ChecksArea.Read),
+                ContentRules = reader.OptItems("contentRules", ChecksContentRule.Read),
                 Kinds = reader.Map("kinds", ChecksLevels.Read),
                 Unclassified = reader.Choice("unclassified", Enums.Unclassified),
             };
@@ -138,9 +203,9 @@ namespace Valtrion.Unity.Contracts
             var node = JsonValue.NewObject()
                 .Set("schema", JsonValue.From(Schema)).Set("platforms", Platforms.Write()).SetIf("unityEditorSlots", UnityEditorSlots);
             if (Runners != null) node.Set("runners", JsonBuild.StringMap(Runners));
-            return node
-                .Set("areas", JsonBuild.Array(Areas, area => area.Write())).Set("kinds", JsonBuild.Map(Kinds, levels => levels.Write()))
-                .Set("unclassified", JsonValue.From(Unclassified));
+            node.Set("areas", JsonBuild.Array(Areas, area => area.Write()));
+            if (ContentRules != null) node.Set("contentRules", JsonBuild.Array(ContentRules, rule => rule.Write()));
+            return node.Set("kinds", JsonBuild.Map(Kinds, levels => levels.Write())).Set("unclassified", JsonValue.From(Unclassified));
         }
 
         public string ToJsonString() => ToJson().Write(true);

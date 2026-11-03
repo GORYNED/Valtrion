@@ -34,6 +34,30 @@
         }
       }
     },
+    "contentRules": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["glob", "kind", "lineComment"],
+        "additionalProperties": false,
+        "properties": {
+          "glob": { "type": "string", "minLength": 1 },
+          "kind": { "$ref": "common.schema.json#/$defs/identifier" },
+          "lineComment": { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1 } },
+          "reindent": { "type": "boolean" },
+          "codePrefixes": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+          "blockComment": {
+            "type": "object",
+            "required": ["start", "end"],
+            "additionalProperties": false,
+            "properties": {
+              "start": { "type": "string", "minLength": 1 },
+              "end": { "type": "string", "minLength": 1 }
+            }
+          }
+        }
+      }
+    },
     "kinds": { "type": "object", "additionalProperties": { "$ref": "#/$defs/levels" } },
     "unclassified": { "enum": ["widest", "fail"] }
   },
