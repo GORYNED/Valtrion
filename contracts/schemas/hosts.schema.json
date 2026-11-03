@@ -24,7 +24,7 @@
         "worktreePolicy": { "enum": ["per-task", "shared"] },
         "artifactsRoot": { "type": "string", "minLength": 1 },
         "python": { "type": "string", "minLength": 1, "description": "Absolute path of the Python (3.10 or newer) that valtrion hosts sync uses on an SSH host; recorded by valtrion hosts add --python or found by valtrion hosts sync." },
-        "valtrionCommand": { "type": "string", "minLength": 1, "description": "Absolute path of the valtrion command on an SSH host; recorded by valtrion hosts sync, used instead of PATH lookup." }
+        "valtrionCommand": { "type": "string", "minLength": 1, "description": "Absolute path of the valtrion command on an SSH host (the pipx shim, or a stable link; a versioned path from older syncs is still valid); recorded by valtrion hosts sync, used instead of PATH lookup." }
       }
     },
     "transport": {
