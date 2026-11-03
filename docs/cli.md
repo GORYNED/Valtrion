@@ -78,6 +78,7 @@ Output around the answer does not matter: a login banner, a message of the day o
 | `builds list/show KEY/gc` | The published builds of this host: list them, show one, or remove builds unused for a while (`gc [--keep-days 14] [--dirty-keep-days 2] [--max-entries 20] [--dry-run] [--protect KEY]`). `valtrion gc` also applies the default retention. |
 | `job start/status/tail/watch/cancel` | Start a command as a detached, supervised job and inspect it. |
 | `lease acquire/renew/release/status/list/name` | Leases on exclusive resources; `name` prints a lease name. |
+| `unity run [options] -- UNITY_ARGS` | Run Unity in batch mode (EditMode tests, `-executeMethod`) under the host's leases and the watchdog, the same on Windows, macOS and Linux. See [`unity run`](#unity-run). |
 | `collect JOB_ID --host HOST [--remote-project DIR]` | Pull a remote job's artifacts into the local artifacts root with the same layout. |
 | `gc [--keep-days N] [--dry-run] [--protect PATH]` | Remove run folders older than `--keep-days` (default `retention.keepDays` of `host.json`, 30). Active, retained and protected runs are kept. |
 | `retain JOB_ID` | Keep a run from `gc`. |
@@ -103,6 +104,25 @@ Output around the answer does not matter: a login banner, a message of the day o
 **`lease name unity-project PATH`** (also `--host`, `--remote-project`) takes nothing and writes nothing: it prints `{"resource": "unity-project:<hash>"}`, the lease name of the Unity project folder `PATH` (the same name the pipeline and the Editor provider use), so a launcher can pass it to `lease acquire` or `job start --lease` without computing the hash itself. The name is made from the resolved path, lower-cased on Windows and macOS; with `--host` it is computed on that host from the path as it is there.
 
 **Lease events.** `job start --lease unity-editor` (no `=SLOTS`) takes a slot of the host's total, like `lease acquire unity-editor`; `--lease unity-editor=N` uses `N`. While a job waits for a lease (`--lease-wait`), it appends a `log` event to `events.jsonl` after the first failed attempt and then about every 30 s. Its `message` is `lease waiting <N> s: <reason>` and its `data` holds `resource`, `holder` (the reason, which names the holder) and `waitedSec`.
+
+### `unity run`
+
+```sh
+valtrion unity run [--project-dir DIR] [--unity PATH] [--lease-wait SEC] [--timeout-sec N] [--stall-sec N] [--purpose TEXT] \
+    [--host H --remote-project P] -- <Unity arguments>
+```
+
+Runs one Unity process in the foreground. It replaces a project's own launcher around `Unity -batchmode`: the leases, the watchdog, the process-tree kill and the status vocabulary are Valtrion's, and nothing in the command depends on the operating system.
+
+- *Editor.* `--unity PATH` (an executable, or a macOS `.app`), else the Editor installed for the `m_EditorVersion` of the project's `ProjectSettings/ProjectVersion.txt`, found like the providers find it (Unity Hub folders of the OS, `GDV_UNITY_HUB_PATHS`, `GDV_UNITY_EDITORS`). No such Editor, or an Editor that cannot start, is `BLOCKED` with the reason.
+- *Project.* `-projectPath` in the Unity arguments, else `--project-dir`, else `GDV_UNITY_PROJECT` / `valtrion.json` (as for the other commands; `--project-dir` is passed to Unity as `-projectPath`). Relative paths in the Unity arguments (`-projectPath .`, `-logFile Builds/x.log`) mean what they mean to Unity: relative to the working directory.
+- *Leases.* First `unity-project:<hash>` (see `lease name`), then one slot of the host's `unity-editor` capacity (2, 1 on macOS, or `unityEditorSlots`). The holder is the `valtrion unity run` process itself; both leases (TTL 300 s) are renewed every 100 s while it waits and while Unity runs, and released in reverse order (slot, project) on every exit: a result, an error, Ctrl+C, SIGTERM/SIGBREAK/SIGHUP. The wait uses the fair queue of `lease acquire`, is shared by both leases and ends after `--lease-wait` seconds (default 1800) as `BLOCKED` naming the holder; it is never `TIMEOUT`. A lease that cannot be renewed while Unity runs (taken over or removed by hand) stops Unity (the whole process tree) and ends `BLOCKED`.
+- *Accelerator.* When `host.json` has `unityAccelerator`, its `-EnableCacheServer -cacheServerEndpoint …` switches are added, unless the Unity arguments carry their own `-EnableCacheServer` or `-cacheServer*`. Host settings stay in `host.json`.
+- *Watchdog.* `--timeout-sec N` (default 0: none) is a hard limit; `--stall-sec N` (default 600, 0 = off) is `STALL` when the file named by `-logFile` has not grown for N seconds, and is off without a `-logFile` (or with `-logFile -`). Unity runs in its own process group (a Job Object on Windows); on timeout, stall and lost lease the whole tree is killed. Unity's console output is shown on stderr when it ends.
+- *Status.* The last line on stdout is `STATUS <name>`, a reason line is printed before it. Exit codes: `PASS` 0, `FAIL` 1, `BLOCKED` 2, `STALL` 3, `TIMEOUT` 3. Unity exit code 0 is `PASS`; 2 (tests failed) and 3 (the run could not start, for example a compile error) are `FAIL`; 1 is `BLOCKED` when the last 256 KiB of the log (`-logFile`, else the console) contain `another unity instance is running with this project open`, `cannot open the same project`, `no valid unity editor license`, `unable to activate` or `license activation failed` / `error`, otherwise `FAIL`; any other code is `FAIL`. A `GDV-RESULT` line written to the console takes precedence as for other steps.
+- *Remote.* `--host H --remote-project P` runs the same command on the SSH host through the command recorded by `hosts sync` (working directory `P`, so a relative `-projectPath .` is the project there), and returns its output and exit code. It is a plain foreground call, as `lease acquire --host`: the output arrives when the run has ended (no streaming), the call is not retried (a retried start could run Unity twice), and the SSH timeout is `--lease-wait` + `--timeout-sec` + 300 s (24 h when `--timeout-sec` is 0). If the connection drops, the host stops Unity and releases the leases on SIGHUP (POSIX hosts); use `job start --host` for a detached run that survives it. An unreachable host is `BLOCKED`.
+
+Not included yet: a check for Unity Editors that run outside any lease, and a free-memory check ([issue 37](https://github.com/GORYNED/Valtrion/issues/37)).
 
 **macOS launchd domain.** A background job on macOS runs as a one-shot launchd agent. `--domain auto` tries the `user` domain and then `gui`; steps that sign need `--domain gui` (the login keychain). See [work-root.md](work-root.md).
 

@@ -77,10 +77,11 @@ def _strip_host_options(raw: Sequence[str]) -> list[str]:
     return result
 
 
-def _forward(arguments: argparse.Namespace, entry: config.HostEntry, extra: Sequence[str] = (), timeout: int = REMOTE_TIMEOUT_SEC) -> int:
-    """Run the same command on the SSH host and relay its output and exit code. Only idempotent commands use this."""
+def _forward(arguments: argparse.Namespace, entry: config.HostEntry, extra: Sequence[str] = (), timeout: int = REMOTE_TIMEOUT_SEC,
+             retry: bool = True) -> int:
+    """Run the same command on the SSH host and relay its output and exit code. Only idempotent commands use this with `retry`."""
     try:
-        target = _remote(entry, arguments)
+        target = _remote(entry, arguments, retry)
     except ValueError as error:
         return _blocked(arguments.command, str(error))
     result = target.call([*_strip_host_options(arguments.raw_argv), *extra], timeout)
@@ -1221,6 +1222,53 @@ def _workroot(arguments: argparse.Namespace) -> int:
         return _blocked("workroot", str(error))
 
 
+# -- unity ------------------------------------------------------------------------------------------------------------------
+
+REMOTE_UNITY_NO_TIMEOUT_SEC = 24 * 3600
+REMOTE_UNITY_MARGIN_SEC = 300
+
+
+def _configure_unity(parser: argparse.ArgumentParser) -> None:
+    sub = parser.add_subparsers(dest="action", required=True)
+    run = sub.add_parser("run", help="run Unity in batch mode under the host's unity-project and unity-editor leases and the watchdog",
+                         description="valtrion unity run [options] -- <Unity arguments>. The last stdout line is STATUS <name>; "
+                                     "exit codes: PASS 0, FAIL 1, BLOCKED 2, STALL and TIMEOUT 3.")
+    run.add_argument("--project-dir", type=Path, help="Unity project (when the Unity arguments carry no -projectPath); default: GDV_UNITY_PROJECT or valtrion.json")
+    run.add_argument("--unity", help="path of the Unity executable (or a macOS .app) instead of the Editor of ProjectSettings/ProjectVersion.txt")
+    run.add_argument("--lease-wait", type=_finite_seconds, default=1800.0, metavar="SEC",
+                     help="seconds to wait for the project and an Editor slot before BLOCKED (default 1800)")
+    run.add_argument("--timeout-sec", type=_finite_seconds, default=0.0, metavar="N", help="hard timeout of Unity; 0 (default) = none")
+    run.add_argument("--stall-sec", type=_finite_seconds, default=600.0, metavar="N",
+                     help="STALL when the -logFile has not grown for N s (default 600; 0 = off; also off without -logFile)")
+    run.add_argument("--purpose", default="", help="text recorded in the leases")
+    _add_host_options(run)
+    run.add_argument("unity_args", nargs=argparse.REMAINDER, help="after `--`: the arguments passed to Unity")
+
+
+def _unity_arguments(arguments: argparse.Namespace) -> list[str]:
+    raw = list(getattr(arguments, "raw_argv", None) or [])
+    if "--" in raw:
+        return raw[raw.index("--") + 1:]
+    rest = list(arguments.unity_args)
+    return rest[1:] if rest[:1] == ["--"] else rest
+
+
+def _unity(arguments: argparse.Namespace) -> int:
+    entry = _entry(arguments)
+    if entry is not None:
+        # Starting Unity is not idempotent, so the transport does not retry; the output arrives when the run has ended.
+        limit = arguments.timeout_sec if arguments.timeout_sec > 0 else REMOTE_UNITY_NO_TIMEOUT_SEC
+        return _forward(arguments, entry, timeout=int(arguments.lease_wait + limit + REMOTE_UNITY_MARGIN_SEC), retry=False)
+    from . import unityrun
+
+    try:
+        found = project.resolve_unity_project(arguments.project_dir)
+    except project.ProjectError as error:
+        return _blocked("unity", str(error))
+    return unityrun.run(_unity_arguments(arguments), found, arguments.unity, arguments.lease_wait, arguments.timeout_sec,
+                        arguments.stall_sec, arguments.purpose)
+
+
 def register_all() -> None:
     table: list[tuple[str, str, Callable, Callable]] = [
         ("hosts", "list or add hosts", _hosts, _configure_hosts),
@@ -1228,6 +1276,7 @@ def register_all() -> None:
         ("devices", "list or refresh attached devices", _devices, _configure_devices),
         ("lease", "acquire, renew, release and inspect leases", _lease, _configure_lease),
         ("job", "start, watch, inspect and cancel detached jobs", _job, _configure_job),
+        ("unity", "run Unity in batch mode under Valtrion leases and supervision", _unity, _configure_unity),
         ("pipeline", "run a pipeline as a detached job on a host chosen by capability", _pipeline, _configure_pipeline),
         ("build", "build the project without a device and publish the artifact", _build, _configure_build),
         ("builds", "list, show and remove the published builds of this host", _builds, _configure_builds),
