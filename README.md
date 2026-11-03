@@ -35,7 +35,7 @@ No `pipx`? See [installation](docs/install.md) for a virtual-environment install
 Using Unity? Add the package from Git: Window → Package Manager → + → Add package from git URL:
 
 ```text
-https://github.com/GORYNED/Valtrion.git?path=integrations/unity/com.goryned.valtrion.unity#unity-v0.8.0
+https://github.com/GORYNED/Valtrion.git?path=integrations/unity/com.goryned.valtrion.unity#unity-v0.9.0
 ```
 
 The Unity package has its own version. [compat.json](compat.json) lists which Core versions it works with, and `valtrion doctor --project <Unity project>` checks the pair.
