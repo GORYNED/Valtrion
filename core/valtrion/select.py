@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import shutil
 import subprocess
 import sys
 from dataclasses import dataclass, field
@@ -224,6 +225,9 @@ def validate_config(config: Config, validator: Validator | None = None) -> tuple
         if not _NAME.match(name):
             errors.append(f"runners: invalid runner name {name!r} (letters, digits, '.', '_' and '-', starting with a letter or digit)")
         errors.extend(f"runners.{name}: {message}" for message in _placeholder_problems(template))
+        if _NAME.match(name) and shutil.which(name):
+            warnings.append(f"runners.{name}: the name is also a program on PATH; an entry whose text after '@' is exactly {name!r} "
+                            "used to be that command and now uses this runner")
     for kind in sorted(set(kinds) - used):
         warnings.append(f"kind {kind!r} is not used by any area (selected only by the widest set)")
     plan_ids: dict[str, str] = {}
@@ -238,7 +242,8 @@ def validate_config(config: Config, validator: Validator | None = None) -> tuple
                 if spec.runner is not None and spec.type in _EDITOR_TYPES:
                     template, name = config.resolve_runner(spec.runner)
                     if name is None:  # a literal command is checked here; a named one was checked once under `runners`
-                        errors.extend(f"kinds.{kind}.{level}: {message}" for message in _placeholder_problems(template or ""))
+                        # Only a warning: text that was a valid literal command before (`{assembly}`, `{assemblies.txt}`) must stay valid.
+                        warnings.extend(f"kinds.{kind}.{level}: {message}" for message in _placeholder_problems(template or ""))
                         if config.runners and _NAME.match(spec.runner):
                             warnings.append(f"kinds.{kind}.{level}: {spec.runner!r} is not a key of runners ({', '.join(sorted(config.runners))}); "
                                             "it is used as a literal command")
@@ -257,8 +262,9 @@ def validate_config(config: Config, validator: Validator | None = None) -> tuple
     return errors, warnings
 
 
-#: Placeholders of a runner template: the united, sorted assembly list joined with `,` or with `;` (Unity's separator for
-#: `-assemblyNames` and `-testFilter`; written with the `;` variant it cannot end a command in a shell by being in the checks file).
+#: Placeholders of a runner template: the united, sorted assembly list joined with `,` or with `;` (Unity's separator for `-assemblyNames` and
+#: `-testFilter`). Expansion does no quoting: a `;` ends a command in POSIX sh and PowerShell, so a template that is run through a shell
+#: must quote the placeholder, for example `-testFilter "{assemblies;}"`.
 ASSEMBLIES_COMMA = "{assemblies}"
 ASSEMBLIES_SEMICOLON = "{assemblies;}"
 _PLACEHOLDER = re.compile(r"(?<!\$)\{(?:assemblies[^{}\s]*|assembly)\}")  # look-alikes of ours only; a shell's ${assemblyDir}, ${HOME} or {a,b} is the command's own

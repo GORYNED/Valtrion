@@ -5,8 +5,9 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
-from valtrion import select
+from valtrion import constants, select
 
 from .test_select import CHECKS, CONTRACTS, CORE_ROOT, RepoCase, run, write
 
@@ -94,6 +95,22 @@ class NamedKindTests(RepoCase):
         self.assertEqual(2, code)
         self.assertIn("--base-ref", err)
 
+    def test_empty_kind_values_count_as_no_kind(self):
+        for value in ("", ",", " , "):
+            code, _, err = run("select", "--checks", str(self.checks_path), "--kind", value)
+            self.assertEqual(2, code, repr(value))
+            self.assertIn("--base-ref", err)
+
+    def test_include_worktree_applies_only_together_with_a_base_ref(self):
+        write(self.root, "src/ui/b.cs", "edited, not committed\n")
+        code, payload, _ = self.select_json("--kind", "scheduled", "--level", "L2", "--include-worktree")
+        self.assertEqual(0, code)
+        self.assertEqual([], payload["changedPaths"])  # the named kinds alone; the working tree is not a diff here
+        self.assertFalse(payload["includeWorktree"])
+        code, payload, _ = self.select_json("--base-ref", "main", "--kind", "scheduled", "--level", "L2", "--include-worktree")
+        self.assertEqual(["src/ui/b.cs"], payload["changedPaths"])
+        self.assertEqual(["scheduled", "ui"], payload["kinds"])
+
     def test_the_text_output_names_the_kinds(self):
         code, out, _ = run("select", "--checks", str(self.checks_path), "--kind", "scheduled", "--level", "L2")
         self.assertEqual(0, code)
@@ -105,6 +122,7 @@ class NamedKindTests(RepoCase):
         results.mkdir()
         self.addCleanup(lambda: results.rmdir() if results.exists() and not any(results.iterdir()) else None)
         code, out, _ = run("report", "--checks", str(self.checks_path), "--kind", "scheduled", "--level", "L2", "--results", str(results), "--json")
+        self.assertEqual(constants.EXIT_BLOCKED, code)  # selected checks without results are NOT_RUN, which exits 2
         payload = json.loads(out)
         self.assertEqual(["scheduled"], payload["selectedKinds"])
         self.assertTrue(payload["kindsNamedExplicitly"])
@@ -188,9 +206,29 @@ class RunnerTests(RepoCase):
         bad = copy.deepcopy(MAP)
         bad["kinds"]["docs"]["L2"] = ["editmode:Docs.Tests@echo {assemblies;;}"]
         code, _, err = self.check_config(bad)
-        self.assertEqual(1, code)
-        self.assertIn("kinds.docs.L2", err)
+        self.assertEqual(0, code, err)  # in a literal command it is a warning: that text was valid before
+        self.assertIn("warning: kinds.docs.L2", err)
         self.assertIn("{assemblies;;}", err)
+
+    def test_text_that_looks_like_a_placeholder_stays_valid_in_a_literal_command(self):
+        data = copy.deepcopy(MAP)
+        for text in ("run.sh {assemblies.txt}", "run.sh {assemblies,x}", "run.sh {assembly}", "pwsh -c @{assembly=1}"):
+            data["kinds"]["docs"]["L2"] = [f"editmode:Docs.Tests@{text}"]
+            code, _, err = self.check_config(data)
+            self.assertEqual(0, code, f"{text}: {err}")
+
+    def test_a_runner_name_that_is_also_a_program_on_path_is_a_warning(self):
+        data = copy.deepcopy(MAP)
+        data["runners"]["echo"] = "echo {assemblies}"
+        data["kinds"]["docs"]["L2"] = ["editmode:Docs.Tests@echo"]
+        with mock.patch.object(select.shutil, "which", lambda name: "/bin/" + name if name == "echo" else None):
+            code, _, err = self.check_config(data)
+        self.assertEqual(0, code, err)
+        self.assertIn("runners.echo", err)
+        self.assertIn("also a program on PATH", err)
+        with mock.patch.object(select.shutil, "which", lambda name: None):
+            code, _, err = self.check_config(data)
+        self.assertNotIn("also a program on PATH", err)
 
     def test_a_shell_variable_or_brace_list_in_a_literal_runner_is_not_a_placeholder(self):
         data = copy.deepcopy(MAP)
@@ -242,8 +280,10 @@ class ExcludeTests(RepoCase):
         self.assertEqual(["src/media/x.meta", "src/media/deep/y.meta"], unclassified)
 
     def test_an_excluded_path_keeps_the_kind_of_another_area(self):
-        classified, _ = self.classify(["src/media/gen/g.cs"])
-        self.assertEqual({"src/media/gen/g.cs": ["generated"]}, classified)  # excluded from media, matched by generated
+        data = copy.deepcopy(MAP)
+        data["areas"].append({"glob": "src/media/**", "kind": "ui"})  # a second area over the same folder, without an exclusion
+        classified, _ = select.classify(select.Config(self.checks_path, data), ["src/media/gen/g.cs", "src/media/a.cs"])
+        self.assertEqual({"src/media/gen/g.cs": ["generated", "ui"], "src/media/a.cs": ["media", "ui"]}, classified)  # excluded from media only
 
     def test_a_path_excluded_everywhere_is_unclassified_and_widens_the_selection(self):
         write(self.root, "src/media/x.meta", "new\n")

@@ -3,7 +3,7 @@
   "platforms": { "required": ["ios"], "dev": ["editor"] },
   "unityEditorSlots": 2,
   "runners": {
-    "editor-tests": "my-runner --assemblies {assemblies;}",
+    "editor-tests": "my-runner --assemblies \"{assemblies;}\"",
     "editor-tests-csv": "my-runner --assemblies {assemblies}"
   },
   "areas": [
