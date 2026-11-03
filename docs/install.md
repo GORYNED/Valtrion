@@ -22,7 +22,7 @@ Without pipx: `python -m venv <dir>` then `<dir>/bin/pip install valtrion` (`Scr
 The Unity package has its own version and is not on PyPI. Add it to `Packages/manifest.json` (or Package Manager → Add package from git URL):
 
 ```json
-"com.goryned.valtrion.unity": "https://github.com/GORYNED/Valtrion.git?path=integrations/unity/com.goryned.valtrion.unity#unity-v0.8.0"
+"com.goryned.valtrion.unity": "https://github.com/GORYNED/Valtrion.git?path=integrations/unity/com.goryned.valtrion.unity#unity-v0.9.0"
 ```
 
 Add `"testables": ["com.goryned.valtrion.unity"]` to run its tests, as in the [Unity Quick Start](unity-quick-start.md). Tags are `unity-vX.Y.Z`; pin a tag or a full commit SHA for shared projects, not a branch.
@@ -30,7 +30,7 @@ Add `"testables": ["com.goryned.valtrion.unity"]` to run its tests, as in the [U
 ## Updating
 
 - Core: `pipx upgrade valtrion`. On SSH hosts run `valtrion hosts sync` so every host has the same version.
-- Unity: change the tag in the manifest URL (for example `#unity-v0.8.0` to a newer `unity-vX.Y.Z`), let Unity resolve it, and commit `Packages/manifest.json` and `packages-lock.json`.
+- Unity: change the tag in the manifest URL (for example `#unity-v0.9.0` to a newer `unity-vX.Y.Z`), let Unity resolve it, and commit `Packages/manifest.json` and `packages-lock.json`.
 - Then run `valtrion doctor --project <Unity project>`: it reports `BLOCKED` with the action to take if the pair is not listed in [compat.json](../compat.json). Read the changelogs ([Core](../CHANGELOG.md), [Unity](../integrations/unity/com.goryned.valtrion.unity/CHANGELOG.md)) before upgrading.
 
 ## From a checkout
