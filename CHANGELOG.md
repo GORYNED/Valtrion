@@ -2,6 +2,13 @@
 
 Core (the `valtrion` Python package) and the Unity package `com.goryned.valtrion.unity` are versioned independently. The Unity changelog is in `integrations/unity/com.goryned.valtrion.unity/CHANGELOG.md`; `compat.json` lists compatible pairs.
 
+## Unreleased (next minor version, 0.9.0 candidate)
+
+- **`select` and `report` can choose checks by kind name (#44).** `--kind NAME` (repeatable, or a comma list) selects the checks of the named kinds directly, without a diff, at `--level` (cumulative, default `L4`); with `--base-ref` it is added to the kinds of the diff. `--base-ref` is now required only when no `--kind` is given (the same exit 2 as before otherwise). An unknown kind is exit 1 and lists the kinds. JSON output has `selectedKinds` and `kindsNamedExplicitly`. Valtrion defines no PR, scheduled or release mode and runs nothing on a schedule: a project names its own kinds and decides when to select them.
+- **Named runners in `checks.json` (#45).** Optional top-level `runners` (name to command template) in `gdv.checks/1`; `editmode:A,B@name` uses `runners[name]` when `name` is a key, otherwise the text after `@` is the literal command as before. New placeholder `{assemblies;}` joins the united, sorted assembly list with `;` (Unity's separator); `{assemblies}` is unchanged (comma). `check-config` rejects look-alikes such as `{assemblies:;}` and invalid runner names, and warns about a bare name that is not a runner when the map has `runners`. `select --json` `editorCommands[]` and `editorSuites[]` gain `runnerName`. Suites of any kinds that share one runner are still one command.
+- **Area exclusions (#46).** Optional `exclude` array of globs on an area of `gdv.checks/1`: a path belongs to the area when it matches `glob` and none of `exclude`; another area can still match it. Validated by `check-config`.
+- Schema `checks.schema.json` and the Unity package's `ChecksDocument` reader/writer know the new optional keys (see the Unity changelog); fixtures `checks-runners-exclude.json` (valid) and two invalid ones are added. Existing maps are unchanged. Not in this release: classifying changes by their content (#47, design only).
+
 ## 0.8.8
 
 - **The default number of Unity Editors at once is 2 on every platform.** It was 1 on macOS and 2 elsewhere. `host.json` `unityEditorSlots` still overrides it (for example `3` on a Windows host that can take three). A macOS host that needs the old limit sets `unityEditorSlots` to `1`.

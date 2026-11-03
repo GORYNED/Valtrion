@@ -199,7 +199,8 @@ def format_markdown(selection: Selection, rows: list[Row], sha: str | None, prob
     summary = ", ".join(f"{count} {status}" for status, count in counts.items() if count) or "nothing selected"
     lines = ["## Local verification", ""] if heading else []
     lines.append(
-        f"Level {selection.level}, base `{selection.base_ref}`"
+        f"Level {selection.level}, " + (f"base `{selection.base_ref}`" if selection.base_ref else "no diff")
+        + (", named kinds " + ", ".join(f"`{name}`" for name in selection.named_kinds) if selection.named_kinds else "")
         + (f" (merge base `{selection.merge_base[:8]}`)" if selection.merge_base else "")
         + (f", candidate `{sha[:8]}`" if sha else "")
         + f", {len(selection.paths)} changed path(s). {len(rows)} check row(s): {summary}."
@@ -218,7 +219,7 @@ def format_markdown(selection: Selection, rows: list[Row], sha: str | None, prob
         lines += ["", "Reported by the runs as not covered:"] + [f"- {_flat(key)}: {_flat(item)}" for key, item in reported]
     if problems:
         lines += ["", "Ignored result files:"] + [f"- {_flat(problem)}" for problem in problems]
-    if not selection.paths:
+    if not selection.paths and not selection.named_kinds:
         lines += ["", "No changed paths: check that the base ref is the intended one."]
     return "\n".join(lines)
 
@@ -246,7 +247,7 @@ def _report(arguments: argparse.Namespace) -> int:
             return constants.EXIT_FAIL
         results, problems = load_results(arguments.results)
         rows = build_rows(selection, results, sha)
-        if arguments.include_worktree and _git(root, "status", "--porcelain").strip():
+        if arguments.include_worktree and arguments.base_ref and _git(root, "status", "--porcelain").strip():
             # Results belong to a commit; the uncommitted edits they count as changed were never tested.
             for row in rows:
                 if row.status == constants.PASS:
@@ -254,7 +255,8 @@ def _report(arguments: argparse.Namespace) -> int:
                     row.detail = (row.detail + "; " if row.detail else "") + "worktree has uncommitted changes"
         if arguments.json:
             counts = {status: sum(1 for row in rows if row.status == status) for status in _COUNT_ORDER}
-            print(json.dumps({"level": selection.level, "candidate": sha, "counts": counts, "rows": [row.to_json() for row in rows],
+            print(json.dumps({"level": selection.level, "selectedKinds": selection.named_kinds, "kindsNamedExplicitly": bool(selection.named_kinds),
+                              "candidate": sha, "counts": counts, "rows": [row.to_json() for row in rows],
                               "notVerified": not_verified_lines(rows, selection), "ignoredResults": problems}, indent=2))
         else:
             print(format_markdown(selection, rows, sha, problems, arguments.pr))

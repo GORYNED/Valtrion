@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- `ChecksDocument` reads and writes the new optional keys of `gdv.checks/1`: `runners` (name to command template) and `exclude` on an area (`ChecksArea.Exclude`). Documents without them behave as before. The package version is not changed here; a project that parses a check map with these keys needs a package release that contains this change.
+
 ## 0.7.1 (2026-10-30)
 
 - First public release, tagged `unity-v0.7.1`: install with `https://github.com/GORYNED/Valtrion.git?path=integrations/unity/com.goryned.valtrion.unity#unity-v0.7.1`.
