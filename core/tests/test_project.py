@@ -174,6 +174,13 @@ class ShippedTableTests(ProjectCase):
         self.assertEqual("com.goryned.valtrion.unity", package)
         self.assertEqual("0.7.x", ranges[0]["package"])
 
+    def test_package_0_7_x_stays_compatible_with_every_core_of_the_0_9_line_and_the_current_core(self):
+        # The new optional keys of gdv.checks/1 do not change what the package reads, so core 0.9.x keeps the 0.7.x pairing.
+        self.lock({"version": "0.7.1", "source": "registry"})
+        for core_version in ("0.8.8", "0.9.0", "0.9.7", __import__("valtrion").__version__):
+            self.assertEqual("ok", project.check_project(self.unity, core_version)["status"], core_version)
+        self.assertNotEqual("ok", project.check_project(self.unity, "0.10.0")["status"])  # outside the range: reported, not silently accepted
+
     def test_the_package_id_comes_from_the_table(self):
         other = self.base / "other.json"
         other.write_text(json.dumps({**COMPAT, "package": "com.example.other"}), encoding="utf-8")
