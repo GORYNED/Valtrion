@@ -459,6 +459,18 @@ class ScopedLeaseTests(unittest.TestCase):
         self.assertEqual("free", LeaseManager(self.home).status("unity-editor:slot1").state)
         self.assertTrue(any("reused from the cache" in line for line in self.result_of(second)["unverified"]))
 
+    def test_a_reused_build_keeps_the_sources_of_both_jobs_through_the_install_stage(self):
+        self.open_gates("A", "B", "C")
+        with self.clean_git():
+            _, first = self.run_job("A", self.document(sha="ab" * 20))
+            _, second = self.run_job("B", self.document(sha="ab" * 20))
+        self.assertTrue(self.result_of(second)["build"]["reused"])
+        key = self.result_of(second)["build"]["key"]
+        sources = buildcache.find(buildcache.builds_root(self.home), key).sources()
+        self.assertEqual({pipeline._build_source("Sample", None, self.project("A")), pipeline._build_source("Sample", None, self.project("B"))},
+                         set(sources), "the install stage touched the build after the reuse and did not drop the second source")
+        self.assertEqual("PASS", second.read_job()["status"])
+
     def test_a_dirty_tree_is_never_reused(self):
         self.open_gates("A", "B")
         with self.clean_git(dirty=True):
@@ -880,13 +892,35 @@ class BuildCacheTests(unittest.TestCase):
                                     source="dir:/b")
         self.assertEqual(first.path, second.path)
         self.assertEqual({"dir:/a", "dir:/b"}, set(buildcache.find(self.root, "same").sources()))
+
+    def test_a_build_that_cannot_be_removed_still_takes_a_slot_and_is_reported_once(self):
+        from datetime import timedelta
         now = core.now()
-        old = self.publish("old", origin="dir:/a")
-        stale = core.format_utc(now - timedelta(hours=9))
-        core.atomic_write_json(old.directory / buildcache.MANIFEST, {**old.manifest, "publishedUtc": stale, "lastUsedUtc": stale, "sources": {"dir:/a": stale}})
-        with mock.patch.object(buildcache.shutil, "rmtree", side_effect=OSError("locked")):
-            report = buildcache.gc(self.root, per_source=1, clock=lambda: now + timedelta(hours=5))
-        self.assertEqual(([], True), (list(report.removed), any("could not be removed" in reason for _, reason in report.kept)))
+        for key, source, hours in (("a-old", "dir:/a", 9), ("b", "dir:/b", 8), ("a-new", "dir:/a", 7)):
+            entry = self.publish(key, origin=source)
+            stamp = core.format_utc(now - timedelta(hours=hours))
+            core.atomic_write_json(entry.directory / buildcache.MANIFEST,
+                                   {**entry.manifest, "publishedUtc": stamp, "lastUsedUtc": stamp, "sources": {source: stamp}})
+        real_rmtree = buildcache.shutil.rmtree
+
+        def locked(path, *args, **kwargs):
+            if Path(path).name == "a-old":
+                raise OSError("locked")
+            return real_rmtree(path, *args, **kwargs)
+
+        with mock.patch.object(buildcache.shutil, "rmtree", locked):
+            report = buildcache.gc(self.root, per_source=1, max_entries=2, clock=lambda: now)
+        self.assertEqual(["b (more than 2 builds kept)"], list(report.removed),
+                         "a-old is replaced by a-new but cannot be removed: it still takes a slot, so the next oldest goes")
+        self.assertEqual(["a-old"], [key for key, _ in report.kept], "reported once, not tried again by the maxEntries pass")
+        self.assertEqual(["a-new", "a-old"], sorted(e.key for e in buildcache.entries(self.root)))
+
+    def test_touch_builds_on_the_manifest_on_disk_not_on_a_stale_snapshot(self):
+        entry = self.publish("k1", origin="dir:/a")
+        stale = buildcache.find(self.root, "k1")
+        buildcache.touch(entry, source="dir:/b")
+        buildcache.touch(stale)
+        self.assertEqual({"dir:/a", "dir:/b"}, set(buildcache.find(self.root, "k1").sources()))
 
     def test_the_build_source_names_a_managed_checkout_or_the_normalized_project_folder(self):
         folder = self.base / "Work" / ".." / "Work"
@@ -894,7 +928,7 @@ class BuildCacheTests(unittest.TestCase):
         self.assertEqual("checkout:P/ref", pipeline._build_source("P", "ref", folder))
         self.assertEqual("dir:" + os.path.normcase(str((self.base / "Work").resolve())), pipeline._build_source("P", None, folder))
 
-    def test_a_reuse_by_the_installing_job_touches_after_finding_and_the_publish_gc_reports_a_broken_host_json(self):
+    def test_the_publish_gc_reports_a_broken_host_json_and_touch_records_a_use(self):
         from types import SimpleNamespace
         home = self.base / "home"
         home.mkdir(exist_ok=True)

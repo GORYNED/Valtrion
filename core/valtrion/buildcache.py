@@ -186,9 +186,10 @@ def touch(entry: Entry, clock: Callable[[], str] = core.utc_now, source: str | N
     latest build of that source for the `per_source` limit (a job that reuses the build from another folder)."""
     try:
         stamp = clock()
-        manifest = {**entry.manifest, "lastUsedUtc": stamp}
+        current = _read_entry(entry.directory) or entry  # not the caller's snapshot: it may predate another job's or stage's write
+        manifest = {**current.manifest, "lastUsedUtc": stamp}
         if source:
-            manifest["sources"] = {**entry.sources(), source: stamp}
+            manifest["sources"] = {**current.sources(), source: stamp}
         core.atomic_write_json(entry.directory / MANIFEST, manifest)
     except OSError:
         pass  # a failed bookkeeping write must not fail the run that uses the build
@@ -315,10 +316,12 @@ def gc(root: Path, keep_days: float = DEFAULT_KEEP_DAYS, dirty_keep_days: float 
             shutil.rmtree(entry.directory)
         except OSError as error:
             kept.append((entry.key, f"could not be removed: {error}"))
+            failed.add(entry.key)
             return False
         removed.append(f"{entry.key} ({why})")
         return True
 
+    failed: set[str] = set()
     survivors: list[Entry] = []
     for entry in sorted(entries(root), key=_last_used):
         age = now - _last_used(entry)
@@ -356,8 +359,8 @@ def gc(root: Path, keep_days: float = DEFAULT_KEEP_DAYS, dirty_keep_days: float 
     for entry in survivors:  # oldest use first
         if surplus <= 0:
             break
-        if entry.key in protected or now - _last_used(entry) < timedelta(seconds=GUARD_SEC):
-            continue
+        if entry.key in protected or entry.key in failed or now - _last_used(entry) < timedelta(seconds=GUARD_SEC):
+            continue  # a build that could not be removed above still counts, but is not tried again
         remove(entry, f"more than {max_entries} builds kept")
         surplus -= 1
     if not dry_run and root.is_dir():

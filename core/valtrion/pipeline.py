@@ -835,6 +835,7 @@ def execute(pipeline: Mapping[str, Any], pipeline_path: Path | None, ctx: JobCon
         """The job uses a build from the cache instead of building."""
         nonlocal artifact, used_entry, build_outcome, build_info
         buildcache.touch(cached, source=_build_source(pipeline["candidate"]["repo"], options.checkout_id, project_dir))
+        cached = buildcache.find(buildcache.builds_root(ctx.home), cached.key) or cached  # the manifest as written, for the install stage
         artifact, used_entry, build_outcome = cached.path, cached, StepOutcome(constants.PASS)
         build_info = {**cached.describe(), "reused": True, "builtByJob": cached.manifest.get("builtByJob", "unknown")}
         diskspace.remember_build(directory, cached.key)
