@@ -324,12 +324,17 @@ class ScopedLeaseTests(unittest.TestCase):
                 return 1.0e6
 
         with mock.patch.object(unityguard, "probe_factory", Orphan):
-            _, store = self.run_job("A", self.document(), lease_wait=0)
+            # Off by default: a host that has not opted in builds as before, whatever runs on it.
+            self.open_gates("A")
+            _, store = self.run_job("A", self.document(), lease_wait=5)
+            self.assertEqual("PASS", store.read_job()["status"], store.read_job()["reason"])
+            (self.home / "host.json").write_text('{"unityEditorSlots": 1, "unityGuard": {}}', encoding="utf-8")  # opted in
+            _, store = self.run_job("C", self.document(), lease_wait=0)
         job = store.read_job()
         self.assertEqual("BLOCKED", job["status"])
         self.assertIn("outside any lease", job["reason"])
         self.assertIn("pid 4242", job["reason"])
-        self.assertEqual([], [entry for entry in self.world.timeline if entry[1].startswith("build")])
+        self.assertEqual([], [entry for entry in self.world.timeline if entry[0] == "C"])  # the blocked job built nothing
         self.assertEqual([], self.world.held())
 
     def test_too_little_memory_blocks_the_build_and_unity_guard_can_turn_it_off(self):
@@ -342,6 +347,7 @@ class ScopedLeaseTests(unittest.TestCase):
             def free_memory_mib(self):
                 return 10.0
 
+        (self.home / "host.json").write_text('{"unityEditorSlots": 1, "unityGuard": {}}', encoding="utf-8")
         with mock.patch.object(unityguard, "probe_factory", Starved):
             _, store = self.run_job("A", self.document(), lease_wait=0)
         self.assertEqual("BLOCKED", store.read_job()["status"])

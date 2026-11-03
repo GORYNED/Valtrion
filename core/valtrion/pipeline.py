@@ -994,8 +994,10 @@ def execute(pipeline: Mapping[str, Any], pipeline_path: Path | None, ctx: JobCon
                     return fail(constants.BLOCKED, reason)
                 if adapter.build_uses_editor:
                     # With the leases held: no Editor outside a lease and enough memory (host.json unityGuard), within the lease wait.
-                    reason = unityguard.blocked_reason(lease.LeaseManager(ctx.home), ctx.home, lease_wait,
-                                                       lambda text: events.emit("log", text, step=name))
+                    reason = unityguard.blocked_reason(
+                        lease.LeaseManager(ctx.home), ctx.home, lease_wait, lambda text: events.emit("log", text, step=name),
+                        abort=lambda: (f"the lease(s) {', '.join(r for r in ctx.lost_leases() if r not in lost_before)} were lost "
+                                       "before the build started") if set(ctx.lost_leases()) - lost_before else None)
                     if reason:
                         events.emit("step.finished", reason, step=name, status=constants.BLOCKED)
                         return fail(constants.BLOCKED, reason)

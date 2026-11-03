@@ -381,7 +381,7 @@ class SubprocessTests(unittest.TestCase):
         self.dump = self.base / "dump"
         self.core = str(Path(__file__).resolve().parent.parent)
 
-    def start(self, *options, sleep="60"):
+    def start(self, *options, sleep="60", stdin=None):
         import subprocess
 
         env = dict(os.environ, VALTRION_HOME=str(self.home), PYTHONPATH=self.core, GDV_OWNER="test@host")
@@ -389,7 +389,7 @@ class SubprocessTests(unittest.TestCase):
             [sys.executable, "-m", "valtrion", "unity", "run", "--unity", sys.executable, "--lease-wait", "0", *options, "--",
              FAKE, "-batchmode", "-projectPath", str(self.project), "-logFile", str(self.base / "e.log"), "--grow", "--sleep", sleep,
              "--dump", str(self.dump)],
-            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env, cwd=self.core)
+            stdin=subprocess.PIPE if stdin is None else stdin, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env, cwd=self.core)
         self.addCleanup(lambda: self.process.poll() is None and self.process.kill())
         self.addCleanup(lambda: [pipe.close() for pipe in (self.process.stdin, self.process.stdout, self.process.stderr) if pipe and not pipe.closed])
         for _ in range(150):
@@ -425,11 +425,26 @@ class SubprocessTests(unittest.TestCase):
     @unittest.skipIf(os.name == "nt", "POSIX pipes")
     def test_the_end_of_the_input_stops_a_run_that_asked_for_it(self):
         pid = self.start("--stop-on-stdin-eof")
+        self.process.stdin.write(b".")  # the caller's heartbeat: the input is a live pipe
+        self.process.stdin.flush()
+        time.sleep(0.6)
         self.process.stdin.close()  # what the host sees when the SSH connection ends
         out, _ = self.process.communicate(timeout=60)
         self.assertEqual(constants.EXIT_BLOCKED, self.process.returncode)
         self.assertEqual("STATUS BLOCKED", out.decode().splitlines()[-1])
         self.assertGone(pid)
+        self.assertEqual([], self.leases())
+
+    @unittest.skipIf(os.name == "nt", "POSIX pipes")
+    def test_an_input_that_was_never_a_live_pipe_does_not_stop_the_run(self):
+        import subprocess
+
+        # /dev/null: the end of the input at once, with no byte before it (a wrapper without a live pipe)
+        self.start("--stop-on-stdin-eof", sleep="2", stdin=subprocess.DEVNULL)
+        self.process.wait(timeout=60)
+        out = self.process.stdout.read().decode()
+        self.assertEqual(constants.EXIT_PASS, self.process.returncode, self.process.stderr.read().decode())
+        self.assertEqual("STATUS PASS", out.splitlines()[-1])
         self.assertEqual([], self.leases())
 
     @unittest.skipIf(os.name == "nt", "POSIX pipes")
@@ -709,7 +724,75 @@ class AssemblyNamesTests(UnityRunTestCase):
         self.assertTrue(command.endswith("-assemblyNames A,B"), command)
 
 
+@unittest.skipIf(os.name == "nt", "POSIX pipes")
+class InputWatcherTests(unittest.TestCase):
+    """`_watch_input` on real descriptors: only the end of a live pipe (one that delivered a byte) means the caller is gone."""
+
+    def watch(self, prepare):
+        reader, writer = os.pipe()
+        notes = []
+        prepare(reader, writer)
+        stop = threading.Event()
+        with mock.patch.object(unityrun._thread, "interrupt_main") as interrupt:
+            thread = threading.Thread(target=unityrun._watch_input, args=(reader, stop, notes.append))
+            thread.start()
+            thread.join(10)
+            stop.set()
+            self.assertFalse(thread.is_alive())
+        for fd in (reader, writer):
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        return interrupt.called, notes
+
+    def test_a_byte_and_then_the_end_is_a_lost_caller(self):
+        def prepare(reader, writer):
+            os.write(writer, b".")
+            os.close(writer)
+
+        interrupted, notes = self.watch(prepare)
+        self.assertTrue(interrupted)
+        self.assertEqual([], notes)
+
+    def test_the_end_without_any_byte_switches_the_lifeline_off_with_a_note(self):
+        interrupted, notes = self.watch(lambda reader, writer: os.close(writer))
+        self.assertFalse(interrupted)
+        self.assertEqual(1, len(notes))
+        self.assertIn("not a live pipe", notes[0])
+
+    def test_a_descriptor_that_is_closed_switches_the_lifeline_off_with_a_note(self):
+        def prepare(reader, writer):
+            os.close(writer)
+            os.close(reader)
+
+        notes = []
+        stop = threading.Event()
+        with mock.patch.object(unityrun._thread, "interrupt_main") as interrupt:
+            unityrun._watch_input(987654, stop, notes.append)  # not an open descriptor
+        self.assertFalse(interrupt.called)
+        self.assertEqual(1, len(notes))
+
+    def test_the_watcher_ends_when_asked_even_if_nothing_arrives(self):
+        reader, writer = os.pipe()
+        self.addCleanup(os.close, reader)
+        self.addCleanup(os.close, writer)
+        stop = threading.Event()
+        thread = threading.Thread(target=unityrun._watch_input, args=(reader, stop))
+        thread.start()
+        stop.set()
+        thread.join(5)
+        self.assertFalse(thread.is_alive())
+
+
 class SignalTests(unittest.TestCase):
+    def test_only_the_first_signal_unwinds_the_run_later_ones_change_nothing(self):
+        handlers = unityrun._Handlers()
+        with self.assertRaises(unityrun.Interrupted):
+            handlers._raise(15, None)
+        handlers._raise(15, None)  # inside the except body or the release: no second Interrupted
+        handlers._raise(2, None)
+
     @unittest.skipUnless(hasattr(__import__("signal"), "SIGHUP") and os.name != "nt", "POSIX signals")
     def test_a_hangup_and_a_termination_signal_unwind_through_the_cleanup(self):
         import signal
@@ -782,7 +865,18 @@ class LifelineTransportTests(unittest.TestCase):
         self.assertEqual([None], seen)
         attached = SshTransport("me@host", runner=runner)
         attached.lifeline = True
+        attached.LIFELINE_BEAT_SEC = 0.05
+        beats = []
+
+        def reading_runner(argv, timeout, cwd, env, stdin=None):
+            time.sleep(0.4)  # the heartbeat writes a byte at once and then again and again
+            beats.append(os.read(stdin, 100))
+            return runner(argv, timeout, cwd, env, stdin)
+
+        attached._runner = reading_runner
         attached.run(["valtrion", "version"], 5)
+        self.assertGreaterEqual(len(beats[0]), 3)
+        self.assertEqual({46}, set(beats[0]))  # only "." bytes
         self.assertIsInstance(seen[1], int)
         with self.assertRaises(OSError):
             os.fstat(seen[1])  # closed once the call is over, which is what the host sees as the end of input

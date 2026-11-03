@@ -220,6 +220,21 @@ class CheckTests(unittest.TestCase):
         self.assertIn("and 3 more", reason)
 
 
+class BlockedReasonTests(unittest.TestCase):
+    def test_a_setting_that_cannot_be_read_does_not_block_a_build_that_never_asked_for_the_check(self):
+        from valtrion import lease
+
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as folder:
+            home = Path(folder)
+            manager = lease.LeaseManager(home)  # made first: the lease directory itself needs a readable host.json
+            notes = []
+            for text in ("{broken", json.dumps({"unityGuard": {"minFreeMemoryMiB": -1}}), json.dumps({"unityGuard": 5})):
+                (home / "host.json").write_text(text, encoding="utf-8")
+                self.assertIsNone(unityguard.blocked_reason(manager, home, 0, notes.append), text)
+            self.assertEqual(3, len(notes))
+            self.assertTrue(all("skipped" in note for note in notes))
+
+
 class SettingsTests(unittest.TestCase):
     def load(self, document):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as folder:
@@ -227,6 +242,18 @@ class SettingsTests(unittest.TestCase):
             if document is not None:
                 (home / "host.json").write_text(json.dumps(document), encoding="utf-8")
             return unityguard.load_settings(home)
+
+    def test_without_the_setting_the_checks_are_on_for_unity_run_and_off_for_the_build_stage_and_the_provider(self):
+        for document in (None, {"other": 1}):
+            with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as folder:
+                home = Path(folder)
+                if document is not None:
+                    (home / "host.json").write_text(json.dumps(document), encoding="utf-8")
+                self.assertEqual(unityguard.GuardSettings(True, 2048.0), unityguard.load_settings(home))
+                self.assertEqual(unityguard.OFF, unityguard.load_settings(home, default_on=False))
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as folder:  # an empty object is the opt-in: the defaults
+            (Path(folder) / "host.json").write_text(json.dumps({"unityGuard": {}}), encoding="utf-8")
+            self.assertEqual(unityguard.GuardSettings(True, 2048.0), unityguard.load_settings(Path(folder), default_on=False))
 
     def test_defaults_and_overrides(self):
         self.assertEqual(unityguard.GuardSettings(True, 2048.0), self.load(None))

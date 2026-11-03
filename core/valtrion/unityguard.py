@@ -34,17 +34,23 @@ class GuardSettings:
     min_free_memory_mib: float = DEFAULT_MIN_FREE_MEMORY_MIB
 
 
-def load_settings(home: Path | None = None) -> GuardSettings:
+OFF = GuardSettings(False, 0.0)
+
+
+def load_settings(home: Path | None = None, default_on: bool = True) -> GuardSettings:
+    """The `unityGuard` setting of host.json. Without it the checks are `default_on` (on for `unity run`; the build stage and the Editor
+    provider pass False, so existing builds change only on a host that opts in with a `unityGuard` object)."""
     base = home or core.valtrion_home()
+    absent = GuardSettings() if default_on else OFF
     try:
         document = core.read_json(base / "host.json")
     except FileNotFoundError:
-        return GuardSettings()
+        return absent
     except (OSError, ValueError) as error:
         raise config.ConfigError(f"cannot read {base / 'host.json'}: {error}") from error
     value = document.get("unityGuard") if isinstance(document, dict) else None
     if value is None:
-        return GuardSettings()
+        return absent
     if not isinstance(value, dict):
         raise config.ConfigError("host.json: unityGuard must be an object")
     unknown = sorted(set(value) - {"orphanEditors", "minFreeMemoryMiB"})
@@ -268,11 +274,14 @@ def blocked_reason(
         manager: lease.LeaseManager, home: Path | None, wait_sec: float, say: Callable[[str], None] | None = None,
         abort: Callable[[], str | None] | None = None, probe: Probe | None = None) -> str | None:
     """The settings of `host.json` and `wait_until_clear` in one call, for a caller that holds its leases already: None to go on, else the
-    reason to end BLOCKED (a bad `unityGuard` setting is a reason too)."""
+    reason to end BLOCKED (a bad `unityGuard` setting is only a note: the checks are skipped)."""
     try:
-        settings = load_settings(home)
+        settings = load_settings(home, default_on=False)  # opt in with a unityGuard object in host.json
     except config.ConfigError as error:
-        return str(error)
+        # A setting that cannot be read must not newly block builds that never asked for the check: it is a note, and no check is made.
+        if say is not None:
+            say(f"note: the pre-start Unity checks were skipped: {error}")
+        return None
     return wait_until_clear(manager, settings, probe, wait_sec, GUARD_POLL_SEC, say, abort)
 
 

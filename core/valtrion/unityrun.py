@@ -186,6 +186,8 @@ class _Handlers:
         self.finished = threading.Event()
         #: Set while the leases are being given back: a further signal then changes nothing (cleanup is not interrupted).
         self.cleaning = False
+        #: Set by the first signal that raised `Interrupted`.
+        self.fired = False
 
     def __enter__(self) -> "_Handlers":
         if self._windows:
@@ -206,8 +208,10 @@ class _Handlers:
         return self
 
     def _raise(self, number: int, frame: object) -> None:
-        if self.cleaning:
+        # The first signal unwinds the run; every later one (also while its `except` body or the release is running) changes nothing.
+        if self.cleaning or self.fired:
             return
+        self.fired = True
         raise Interrupted(f"signal {number}")
 
     def __exit__(self, *_: object) -> None:
@@ -289,7 +293,7 @@ def run(
     input_watcher: threading.Thread | None = None
     with handlers:
         if lifeline is not None:  # after the handlers: the end of the input must arrive as an `Interrupted`, not as a bare Ctrl+C
-            input_watcher = threading.Thread(target=_watch_input, args=(lifeline, stop_watching), name="valtrion-unity-input-watch", daemon=True)
+            input_watcher = threading.Thread(target=_watch_input, args=(lifeline, stop_watching, lambda text: _say(err, text)), name="valtrion-unity-input-watch", daemon=True)
             input_watcher.start()
         try:
             try:
@@ -349,16 +353,26 @@ def run(
             except KeyboardInterrupt:
                 return _result(out, constants.BLOCKED, "interrupted; Unity was stopped and the leases released")
         finally:
-            handlers.cleaning = True  # signals during the release change nothing; the handlers stay until the end of the block
-            stop_watching.set()
-            for resource in reversed(may_hold):  # the slot first, then the project; under the keeper's lock, so no renewal recreates one
-                keeper.add(resource)
-                keeper.release_one(resource)
-            keeper.stop()
-            shutil.rmtree(work, ignore_errors=True)
+            def clean_up() -> None:
+                handlers.cleaning = True  # signals during the release change nothing; the handlers stay until the end of the block
+                stop_watching.set()
+                for resource in reversed(may_hold):  # the slot first, then the project; under the keeper's lock, so no renewal recreates one
+                    keeper.add(resource)
+                    keeper.release_one(resource)
+                keeper.stop()
+                shutil.rmtree(work, ignore_errors=True)
+
+            for _attempt in range(2):  # a signal that lands before `cleaning` is set interrupts the first attempt; the second is complete
+                try:
+                    clean_up()
+                    break
+                except Interrupted:
+                    continue
             handlers.finished.set()
-            if input_watcher is not None:
-                input_watcher.join(timeout=2 * INPUT_POLL_SEC + 1)  # POSIX: ends by itself within one poll; never left to finalization
+            if input_watcher is not None and os.name != "nt":
+                # POSIX: the watcher ends by itself within one poll, so it is never left to interpreter finalization. Windows cannot
+                # poll a pipe; there the daemon thread is left (it is blocked in a raw read, which is harmless) and nothing is waited for.
+                input_watcher.join(timeout=2 * INPUT_POLL_SEC + 1)
 
 
 def _say(stream: TextIO, text: str) -> None:
@@ -372,27 +386,40 @@ def _say(stream: TextIO, text: str) -> None:
 INPUT_POLL_SEC = 0.2
 
 
-def _watch_input(fd: int, stop: threading.Event) -> None:
+def _watch_input(fd: int, stop: threading.Event, note: Callable[[str], None] | None = None) -> None:
     """Wait for the end of the caller's input, then interrupt the main thread like Ctrl+C: the caller (an SSH client) is gone, so the
     run stops Unity and gives its leases back. Used only when the caller said so (`--stop-on-stdin-eof`).
+
+    The caller sends a byte at once and every few seconds. The end of the input counts as a lost caller only after at least one byte
+    has arrived: an input that was never a live pipe (closed, /dev/null, NUL behind a wrapper) ends at once and says nothing about the
+    caller, so the lifeline is then switched off with a note and the run goes on.
 
     It reads the raw descriptor, never `sys.stdin`: a thread blocked inside the buffered reader holds its lock, and finalizing the
     interpreter then aborts the process. On POSIX it polls with a timeout and ends when `stop` is set; Windows cannot poll a pipe, so
     there the thread blocks in `os.read` (a raw call, harmless at exit)."""
+    armed = False
     try:
         while not stop.is_set():
             if os.name != "nt":
                 ready, _, _ = select.select([fd], [], [], INPUT_POLL_SEC)
                 if not ready:
                     continue
-            if not os.read(fd, 4096):
-                break
+            if os.read(fd, 4096):
+                armed = True
+                continue
+            break  # the end of the input
         else:
             return
     except (OSError, ValueError):  # a closed or invalid descriptor is the end of the input as well
         pass
-    if not stop.is_set():
-        _thread.interrupt_main()
+    if stop.is_set():
+        return
+    if not armed:
+        if note is not None:
+            note("note: the input of this command is not a live pipe, so the end of the caller's connection cannot be noticed; "
+                 "the run goes on (it stops at the end of Unity or --timeout-sec)")
+        return
+    _thread.interrupt_main()
 
 
 def _log_state(path: Path | None) -> tuple[int, int] | None:

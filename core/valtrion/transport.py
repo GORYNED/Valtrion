@@ -12,6 +12,7 @@ import os
 import re
 import shlex
 import subprocess
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Mapping, Sequence
@@ -225,6 +226,7 @@ class SshTransport(Transport):
         #: Keep an open pipe as the standard input of the remote command for the length of `run`. ssh forwards it, so the command on the
         #: host sees end of input when this process dies or ssh drops, which a command without a terminal cannot learn otherwise.
         self.lifeline = False
+        self.LIFELINE_BEAT_SEC = 5.0
         #: The folder for the multiplexing control sockets. Connection sharing needs a POSIX ssh client (the Windows OpenSSH client
         #: has no ControlMaster), so it is on by default only there and only when a folder is given.
         self.control_dir = control_dir
@@ -283,10 +285,27 @@ class SshTransport(Transport):
             return CommandResult(2, "", f"refused to send the command to {self.target}: {error}")
         if not self.lifeline:
             return self._runner(argv, timeout_sec + self.connect_timeout_sec, None, None)
-        read_end, write_end = os.pipe()  # nothing is ever written: the write end stays open exactly as long as this call runs
+        read_end, write_end = os.pipe()  # the write end stays open exactly as long as this call runs
+        done = threading.Event()
+
+        def beat() -> None:
+            # One byte at once and then every few seconds: the host trusts the end of its input as a sign of a lost caller only after it
+            # has received a byte, so a host whose input was never a live pipe (closed, NUL) is not mistaken for a lost caller.
+            while True:
+                try:
+                    os.write(write_end, b".")
+                except OSError:
+                    return
+                if done.wait(self.LIFELINE_BEAT_SEC):
+                    return
+
+        beater = threading.Thread(target=beat, name="valtrion-ssh-lifeline", daemon=True)
+        beater.start()
         try:
             return self._runner(argv, timeout_sec + self.connect_timeout_sec, None, None, read_end)  # type: ignore[call-arg]
         finally:
+            done.set()
+            beater.join(timeout=2)
             os.close(read_end)
             os.close(write_end)
 

@@ -301,7 +301,9 @@ class EditorAdapter(PlatformAdapter):
         self._keeper.add(slot.lease.resource)
         self._keeper.start()
         # With the leases held (and renewed): no Editor outside a lease and enough memory, within the lease wait (host.json unityGuard).
-        reason = unityguard.blocked_reason(manager, self._home, max(0.0, deadline - self._monotonic()))
+        reason = unityguard.blocked_reason(
+            manager, self._home, max(0.0, deadline - self._monotonic()),
+            abort=lambda: f"the lease(s) {', '.join(self._keeper.lost)} were lost before the Editor started" if self._keeper.lost else None)
         if reason:
             self._release_slot()
             return reason

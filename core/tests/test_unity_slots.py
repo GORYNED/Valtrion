@@ -251,6 +251,10 @@ class EditorSlotTests(unittest.TestCase):
 
         with mock.patch.object(unityguard, "probe_factory", Orphan):
             adapter = self.adapter()
+            self.assertEqual(constants.PASS, self.launch(adapter)[1].status, "off by default: nothing changes for a host that has not opted in")
+            adapter.terminate(None, "")
+            (self.home / "host.json").write_text(json.dumps({"unityEditorSlots": 2, "unityGuard": {}}), encoding="utf-8")  # opted in
+            adapter = self.adapter()
             outcome = self.launch(adapter)[1]
         self.assertNotEqual(constants.PASS, outcome.status)
         self.assertIn("outside any lease", outcome.reason or "")
