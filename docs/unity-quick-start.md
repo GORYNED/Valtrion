@@ -18,7 +18,7 @@ The smoke plan and test assets used below live in this repository, so clone it n
 ```sh
 git clone https://github.com/GORYNED/Valtrion.git
 cd Valtrion
-git checkout unity-v0.9.0
+git checkout unity-v0.10.0
 ```
 
 Record the resolved commit with `git rev-parse HEAD`. To test unreleased code instead, install Core from the checkout with `python tools/install.py --venv --home .valtrion-home` (use `python3` if that is your Python 3 command; the last line it prints is the CLI path) and use that same checkout for the package.
@@ -40,7 +40,7 @@ In the Unity project, merge the following into `Packages/manifest.json`. Preserv
 ```json
 {
   "dependencies": {
-    "com.goryned.valtrion.unity": "https://github.com/GORYNED/Valtrion.git?path=integrations/unity/com.goryned.valtrion.unity#unity-v0.9.0",
+    "com.goryned.valtrion.unity": "https://github.com/GORYNED/Valtrion.git?path=integrations/unity/com.goryned.valtrion.unity#unity-v0.10.0",
     "com.unity.test-framework": "1.8.0"
   },
   "testables": ["com.goryned.valtrion.unity"]
@@ -111,7 +111,7 @@ Verify all three pieces of evidence:
 2. `.valtrion-results/<run-id>/result.json` says `status: PASS`, identifies `example.editor.smoke`, records `target.evidence: editor`, and contains the expected idle, wait and mark steps. Confirm `smoke.complete` in the captured log/step evidence. Validate the result with your installed `valtrion validate` command.
 3. Read the run's `.log` for import/compilation errors. The smoke is a wiring check; a result may list unknown candidate metadata under `unverified` because this direct test does not supply a build candidate.
 
-After Unity resolves the package, run `valtrion doctor --project <absolute-project-path> --json`. Inspect the `project` object: its `status` must be `ok` with Unity package 0.9.0 and Core 0.10.0. `skipped` does not confirm integration. Doctor also checks tools for other platforms; unrelated missing prerequisites need not prevent this Editor smoke.
+After Unity resolves the package, run `valtrion doctor --project <absolute-project-path> --json`. Inspect the `project` object: its `status` must be `ok` with Unity package 0.10.0 and Core 0.11.0. `skipped` does not confirm integration. Doctor also checks tools for other platforms; unrelated missing prerequisites need not prevent this Editor smoke.
 
 With the package in `testables`, the direct smoke can list its intentionally malformed `test.badsignature` test fixture as an ignored registration warning under `unverified`, alongside unknown candidate/host metadata. Preserve those diagnostics. The passing XML, expected plan, all three passing steps and `smoke.complete` mark are still required; other warnings need investigation. This does not establish game behavior or device performance.
 
