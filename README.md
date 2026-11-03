@@ -81,7 +81,7 @@ Copy the prompt from [AI-agent setup](docs/ai-agent-setup.md) into Claude Code, 
 
 ## Status and limits
 
-Valtrion is pre-release software under the [MIT license](LICENSE). Core 0.8.6 and Unity package 0.7.1 are GitHub Pre-releases (Core is also on PyPI), and the CLI may change before a stable release. The [release-readiness record](docs/release-readiness.md) lists tested environments and known gaps.
+Valtrion is pre-release software under the [MIT license](LICENSE). Core 0.8.7 and Unity package 0.7.1 are GitHub Pre-releases (Core is also on PyPI), and the CLI may change before a stable release. The [release-readiness record](docs/release-readiness.md) lists tested environments and known gaps.
 
 - Unity is the only application integration. Other engines can use command jobs only. The Unity package needs Unity 6000.6 or newer.
 - Standalone `install`, `launch`, `push`, `pull`, `screenshot` and `logs` commands are not implemented yet. Use `run` or `pipeline` workflows. `build` (build only, published and reused by key) is implemented.
