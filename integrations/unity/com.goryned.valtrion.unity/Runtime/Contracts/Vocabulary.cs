@@ -76,6 +76,8 @@ namespace Valtrion.Unity.Contracts
         public static readonly string[] HeartbeatStates = { "starting", "running", "waiting-host", "finishing", "done" };
         public static readonly string[] JobKinds = { "run", "pipeline", "build", "install", "collect" };
         public static readonly string[] JobStates = { "queued", "running", "finished", "cancelled" };
+        public static readonly string[] JobPhases = { "waiting-disk", "waiting-build", "building", "waiting-device", "on-device" };
+        public static readonly string[] BuildKinds = { "file", "directory" };
         public static readonly string[] EventTypes =
         {
             "job.started", "job.finished", "step.started", "step.finished", "progress",

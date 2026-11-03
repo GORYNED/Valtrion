@@ -299,6 +299,69 @@ namespace Valtrion.Unity.Contracts
             .Set("kind", JsonValue.From(Kind)).Set("path", JsonValue.From(Path)).Set("sha256", JsonValue.From(Sha256));
     }
 
+    /// <summary>The build artifact a run was made with, published outside the job's work folder: built by the job, reused from the build
+    /// cache or installed by key. Absent for a pipeline without a build.</summary>
+    public sealed class ResultBuild
+    {
+        public string Key { get; set; }
+
+        public string Path { get; set; }
+
+        /// <summary>file or directory; null when not recorded.</summary>
+        public string Kind { get; set; }
+
+        public string Sha256 { get; set; }
+
+        public long SizeBytes { get; set; }
+
+        public string CandidateSha { get; set; }
+
+        public bool Dirty { get; set; }
+
+        public string Profile { get; set; }
+
+        public string Platform { get; set; }
+
+        public Dictionary<string, string> Toolchain { get; set; }
+
+        /// <summary>True when the job did not build it (cache hit, or install by key).</summary>
+        public bool Reused { get; set; }
+
+        public string BuiltByJob { get; set; }
+
+        internal static ResultBuild Read(ContractReader reader)
+        {
+            var build = new ResultBuild
+            {
+                Key = reader.OptStr("key", 1),
+                Path = reader.Str("path"),
+                Kind = reader.OptChoice("kind", Enums.BuildKinds),
+                Sha256 = reader.Hex("sha256", 64),
+                SizeBytes = reader.Int("sizeBytes", 0),
+                CandidateSha = reader.Hex("candidateSha", 40),
+                Dirty = reader.Bool("dirty"),
+                Profile = reader.Identifier("profile"),
+                Platform = reader.OptStr("platform", 1),
+                Toolchain = reader.StringMap("toolchain"),
+                Reused = reader.Bool("reused"),
+                BuiltByJob = reader.OptStr("builtByJob", 1),
+            };
+            reader.Done();
+            return build;
+        }
+
+        internal JsonValue Write()
+        {
+            var node = JsonValue.NewObject().SetIf("key", Key).Set("path", JsonValue.From(Path)).SetIf("kind", Kind)
+                .Set("sha256", JsonValue.From(Sha256)).Set("sizeBytes", JsonValue.From(SizeBytes))
+                .Set("candidateSha", JsonValue.From(CandidateSha)).Set("dirty", JsonValue.From(Dirty))
+                .Set("profile", JsonValue.From(Profile)).SetIf("platform", Platform);
+            if (Toolchain != null) node.Set("toolchain", JsonBuild.StringMap(Toolchain));
+            node.Set("reused", JsonValue.From(Reused)).SetIf("builtByJob", BuiltByJob);
+            return node;
+        }
+    }
+
     /// <summary>The result of one run (<c>gdv.result/1</c>), written by the Runtime or the host; the same envelope for every platform.</summary>
     public sealed class ResultDocument : IGdvDocument
     {
@@ -331,6 +394,9 @@ namespace Valtrion.Unity.Contracts
 
         public ResultComparison Comparison { get; set; }
 
+        /// <summary>The build the run was made with; null for a pipeline without a build.</summary>
+        public ResultBuild Build { get; set; }
+
         public List<ResultArtifact> Artifacts { get; set; } = new List<ResultArtifact>();
 
         /// <summary>What remains unverified; required, and an empty list claims that nothing does.</summary>
@@ -359,6 +425,7 @@ namespace Valtrion.Unity.Contracts
                 Steps = reader.Items("steps", ResultStep.Read),
                 Metrics = reader.Items("metrics", ResultMetric.Read),
                 Comparison = reader.OptObject("comparison") is ContractReader comparison ? ResultComparison.Read(comparison) : null,
+                Build = reader.OptObject("build") is ContractReader build ? ResultBuild.Read(build) : null,
                 Artifacts = reader.Items("artifacts", ResultArtifact.Read),
                 Unverified = reader.Strings("unverified"),
             };
@@ -393,6 +460,7 @@ namespace Valtrion.Unity.Contracts
                 .Set("layers", Layers.Write()).Set("steps", JsonBuild.Array(Steps, step => step.Write()))
                 .Set("metrics", JsonBuild.Array(Metrics, metric => metric.Write()));
             if (Comparison != null) node.Set("comparison", Comparison.Write());
+            if (Build != null) node.Set("build", Build.Write());
             // Both lists are always written: an empty list is a claim ("nothing was left unverified"), omission is not.
             node.Set("artifacts", JsonBuild.Array(Artifacts, artifact => artifact.Write()));
             node.Set("unverified", JsonBuild.Strings(Unverified));
