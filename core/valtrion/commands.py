@@ -914,9 +914,10 @@ def _configure_builds(parser: argparse.ArgumentParser) -> None:
     show = sub.add_parser("show", help="one published build")
     show.add_argument("key")
     collect = sub.add_parser("gc", help="remove published builds that were not used for a while")
-    collect.add_argument("--keep-days", type=float, default=buildcache.DEFAULT_KEEP_DAYS)
-    collect.add_argument("--dirty-keep-days", type=float, default=buildcache.DEFAULT_DIRTY_KEEP_DAYS)
-    collect.add_argument("--max-entries", type=int, default=buildcache.DEFAULT_MAX_ENTRIES)
+    collect.add_argument("--keep-days", type=float, help="default: host.json buildCache.keepDays, 14")
+    collect.add_argument("--dirty-keep-days", type=float, help="default: host.json buildCache.dirtyKeepDays, 2")
+    collect.add_argument("--max-entries", type=int, help="default: host.json buildCache.maxEntries, 20")
+    collect.add_argument("--per-source", type=int, help="builds kept per project folder or checkout and platform; default: host.json buildCache.perSource, no limit")
     collect.add_argument("--dry-run", action="store_true")
     collect.add_argument("--protect", action="append", default=[], help="a build key that must stay (repeatable)")
 
@@ -933,9 +934,13 @@ def _builds(arguments: argparse.Namespace) -> int:
         _out({**entry.describe(), "manifest": entry.manifest})
         return constants.EXIT_PASS
     try:
-        report = buildcache.gc(root, arguments.keep_days, arguments.dirty_keep_days, arguments.max_entries, arguments.dry_run,
-                                [*arguments.protect, *diskspace.active_build_keys()])
-    except ValueError as error:
+        limits = config.load_host_settings().build_cache.limits()
+        for name, value in (("keep_days", arguments.keep_days), ("dirty_keep_days", arguments.dirty_keep_days),
+                            ("max_entries", arguments.max_entries), ("per_source", arguments.per_source)):
+            if value is not None:
+                limits[name] = value
+        report = buildcache.gc(root, dry_run=arguments.dry_run, protect=[*arguments.protect, *diskspace.active_build_keys()], **limits)
+    except (config.ConfigError, ValueError) as error:
         return _blocked("builds", str(error))
     verb = "would remove" if arguments.dry_run else "removed"
     for item in report.removed:
@@ -1113,7 +1118,8 @@ def _gc(arguments: argparse.Namespace) -> int:
         print(f"{verb} {path} (work root, abandoned by a runner that died)")
     for job_id in jobs.prune_index(settings.artifacts_root, dry_run=arguments.dry_run):  # after the run folders went: their index entries point nowhere
         print(f"{verb} job index entry {job_id}")
-    built = buildcache.gc(buildcache.builds_root(), dry_run=arguments.dry_run, protect=diskspace.active_build_keys())
+    built = buildcache.gc(buildcache.builds_root(), dry_run=arguments.dry_run, protect=diskspace.active_build_keys(),
+                          **settings.build_cache.limits())
     for item in built.removed:
         print(f"{verb} build {item}")
     return constants.EXIT_PASS

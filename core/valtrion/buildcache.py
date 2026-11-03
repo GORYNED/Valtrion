@@ -31,6 +31,21 @@ SCHEMA = "valtrion.build/1"
 DEFAULT_KEEP_DAYS = 14.0
 DEFAULT_DIRTY_KEEP_DAYS = 2.0
 DEFAULT_MAX_ENTRIES = 20
+
+
+@dataclass(frozen=True)
+class Retention:
+    """How long published builds are kept (`host.json` `buildCache`); the defaults are the built-in limits."""
+    max_entries: int = DEFAULT_MAX_ENTRIES
+    keep_days: float = DEFAULT_KEEP_DAYS
+    dirty_keep_days: float = DEFAULT_DIRTY_KEEP_DAYS
+    #: Builds kept per source (project folder or managed checkout) and platform; None (the default) sets no such limit.
+    per_source: int | None = None
+
+    def limits(self) -> dict[str, Any]:
+        """Keyword arguments for `gc`."""
+        return {"keep_days": self.keep_days, "dirty_keep_days": self.dirty_keep_days, "max_entries": self.max_entries,
+                "per_source": self.per_source}
 #: An entry used (published, reused or installed from) within this many seconds is never removed: a job may be installing it.
 GUARD_SEC = 3600.0
 _INCOMING = ".incoming-"
@@ -100,6 +115,16 @@ class Entry:
         """The moved build output (the artifact itself, or the folder that holds it)."""
         return self.directory / ARTIFACT_FOLDER / self.manifest["name"]
 
+    def sources(self) -> dict[str, str]:
+        """The sources that published or reused this build, each with the time of its latest publication or reuse (`sources` of the
+        manifest; a manifest with only the older single `source` counts as that source at the publication time)."""
+        found = self.manifest.get("sources")
+        if isinstance(found, dict):
+            return {str(name): str(stamp) for name, stamp in found.items() if name}
+        if self.manifest.get("source"):
+            return {str(self.manifest["source"]): str(self.manifest.get("publishedUtc", ""))}
+        return {}
+
     @property
     def cacheable(self) -> bool:
         return bool(self.manifest.get("cacheable"))
@@ -156,17 +181,23 @@ def _quick_shape(path: Path) -> tuple[str, int, str]:
     return "", sum(p.stat().st_size for p in path.rglob("*") if p.is_file()), "directory"
 
 
-def touch(entry: Entry, clock: Callable[[], str] = core.utc_now) -> None:
-    """Record a use (a reuse or an install by key), which keeps the entry from `gc`."""
+def touch(entry: Entry, clock: Callable[[], str] = core.utc_now, source: str | None = None) -> None:
+    """Record a use (a reuse or an install by key), which keeps the entry from `gc`. With `source` the build also counts as the
+    latest build of that source for the `per_source` limit (a job that reuses the build from another folder)."""
     try:
-        manifest = {**entry.manifest, "lastUsedUtc": clock()}
+        stamp = clock()
+        current = _read_entry(entry.directory) or entry  # not the caller's snapshot: it may predate another job's or stage's write
+        manifest = {**current.manifest, "lastUsedUtc": stamp}
+        if source:
+            manifest["sources"] = {**current.sources(), source: stamp}
         core.atomic_write_json(entry.directory / MANIFEST, manifest)
     except OSError:
         pass  # a failed bookkeeping write must not fail the run that uses the build
 
 
 def publish(root: Path, key: str, artifact: Path, *, out: Path, project: str, platform: str, sha: str, profile: str, dirty: bool,
-            toolchain: Mapping[str, str], config_hash: str, job_id: str, cacheable: bool, replace: bool = False) -> Entry:
+            toolchain: Mapping[str, str], config_hash: str, job_id: str, cacheable: bool, replace: bool = False,
+            source: str | None = None) -> Entry:
     """Move the build output that holds `artifact` to `<root>/<key>/artifact/` and write its manifest. `artifact` must lie inside
     `out`, the job's build output folder: a path outside it (the Editor platform's artifact is the project itself) is never moved.
     A file artifact takes its whole folder along (a Windows player needs its `_Data` folder beside the exe); a folder artifact
@@ -186,7 +217,8 @@ def publish(root: Path, key: str, artifact: Path, *, out: Path, project: str, pl
     if final.exists():
         existing = _read_entry(final)
         if existing is not None and cacheable and not replace and is_intact(existing):
-            return existing
+            touch(existing, source=source)
+            return _read_entry(final) or existing
         shutil.rmtree(final, ignore_errors=True)  # a broken, rejected, forced or one-off entry in the way (publishing is an atomic rename)
     incoming = Path(tempfile.mkdtemp(prefix=_INCOMING, dir=root))
     moved = incoming / ARTIFACT_FOLDER / item.name
@@ -199,7 +231,7 @@ def publish(root: Path, key: str, artifact: Path, *, out: Path, project: str, pl
         shutil.move(str(item), str(moved))
         stamp = core.utc_now()
         core.atomic_write_json(incoming / MANIFEST, {
-            "schema": SCHEMA, "key": key, "name": item.name, "entry": entry_path, "kind": kind, "sha256": digest, "sizeBytes": size,
+            **({"source": source, "sources": {source: stamp}} if source else {}), "schema": SCHEMA, "key": key, "name": item.name, "entry": entry_path, "kind": kind, "sha256": digest, "sizeBytes": size,
             "itemSizeBytes": item_size, "project": project, "platform": platform, "sha": sha, "profile": profile, "dirty": dirty,
             "cacheable": cacheable, "toolchain": dict(toolchain), "configHash": config_hash, "builtByJob": job_id, "publishedUtc": stamp,
             "lastUsedUtc": stamp})
@@ -211,7 +243,8 @@ def publish(root: Path, key: str, artifact: Path, *, out: Path, project: str, pl
                 raise
             shutil.rmtree(incoming, ignore_errors=True)
             done = True
-            return raced
+            touch(raced, source=source)
+            return _read_entry(final) or raced
         done = True
     finally:
         if not done:
@@ -254,29 +287,41 @@ def _last_used(entry: Entry) -> datetime:
     return datetime.fromtimestamp(0, tz=core.now().tzinfo)
 
 
+def _published(entry: Entry) -> datetime:
+    try:
+        return core.parse_utc(entry.manifest["publishedUtc"])
+    except (KeyError, ValueError, TypeError):
+        return _last_used(entry)
+
+
 def gc(root: Path, keep_days: float = DEFAULT_KEEP_DAYS, dirty_keep_days: float = DEFAULT_DIRTY_KEEP_DAYS,
        max_entries: int = DEFAULT_MAX_ENTRIES, dry_run: bool = False, protect: Iterable[str] = (),
-       clock: Callable[[], datetime] = core.now) -> GcReport:
+       clock: Callable[[], datetime] = core.now, per_source: int | None = None) -> GcReport:
     """Remove builds unused for `keep_days` (dirty ones for `dirty_keep_days`), then the least recently used above `max_entries`.
-    Abandoned `.incoming-*` folders older than a day (a publisher that died) go too."""
-    if keep_days < 0 or dirty_keep_days < 0 or max_entries < 0:
-        raise ValueError("retention values cannot be negative")
+    With `per_source`, only that many builds of one source (the project folder or managed checkout the build came from, see
+    `publish(source=)`) and platform stay, the most recently published first: a newer build replaces the older ones of its source.
+    Builds without a recorded source are not grouped. Abandoned `.incoming-*` folders older than a day (a publisher that died) go too."""
+    if keep_days < 0 or dirty_keep_days < 0 or max_entries < 0 or (per_source is not None and per_source < 1):
+        raise ValueError("retention values cannot be negative, and per_source must be at least 1")
     now = clock()
     protected = set(protect)
     removed: list[str] = []
     kept: list[tuple[str, str]] = []
 
-    def remove(entry: Entry, why: str) -> None:
+    def remove(entry: Entry, why: str) -> bool:
         if dry_run:
             removed.append(f"{entry.key} ({why})")
-            return
+            return True
         try:
             shutil.rmtree(entry.directory)
         except OSError as error:
             kept.append((entry.key, f"could not be removed: {error}"))
-            return
+            failed.add(entry.key)
+            return False
         removed.append(f"{entry.key} ({why})")
+        return True
 
+    failed: set[str] = set()
     survivors: list[Entry] = []
     for entry in sorted(entries(root), key=_last_used):
         age = now - _last_used(entry)
@@ -289,12 +334,33 @@ def gc(root: Path, keep_days: float = DEFAULT_KEEP_DAYS, dirty_keep_days: float 
             remove(entry, f"unused for {age.days} days")
         else:
             survivors.append(entry)
+    if per_source is not None:
+        # A build stays while it is among the newest `per_source` of at least one of its sources (a build reused by another worktree
+        # belongs to both); a build with no recorded source is not limited.
+        groups: dict[tuple[str, str], list[tuple[datetime, Entry]]] = {}
+        for entry in survivors:
+            for name, stamp in entry.sources().items():
+                try:
+                    when = core.parse_utc(stamp)
+                except (ValueError, TypeError):
+                    when = _published(entry)
+                groups.setdefault((name, str(entry.manifest.get("platform"))), []).append((when, entry))
+        wanted = {entry.key for group in groups.values() for _, entry in sorted(group, key=lambda item: item[0], reverse=True)[:per_source]}
+        replaced: set[str] = set()
+        for entry in survivors:
+            if not entry.sources() or entry.key in wanted:
+                continue
+            if entry.key in protected or now - _last_used(entry) < timedelta(seconds=GUARD_SEC):
+                continue
+            if remove(entry, f"replaced by newer builds of its source (keeping {per_source})"):
+                replaced.add(entry.key)
+        survivors = [entry for entry in survivors if entry.key not in replaced]
     surplus = len(survivors) - max_entries
     for entry in survivors:  # oldest use first
         if surplus <= 0:
             break
-        if entry.key in protected or now - _last_used(entry) < timedelta(seconds=GUARD_SEC):
-            continue
+        if entry.key in protected or entry.key in failed or now - _last_used(entry) < timedelta(seconds=GUARD_SEC):
+            continue  # a build that could not be removed above still counts, but is not tried again
         remove(entry, f"more than {max_entries} builds kept")
         surplus -= 1
     if not dry_run and root.is_dir():

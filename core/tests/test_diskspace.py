@@ -135,6 +135,44 @@ class DiskTests(unittest.TestCase):
         self.assertFalse(entry.directory.exists())
         self.assertEqual(7, round(outcome.free_after / GIB))
 
+    def test_the_pressure_cleanup_uses_the_build_cache_limits_of_host_json(self):
+        import dataclasses
+        root = buildcache.builds_root(self.home)
+        entries = []
+        for number, days in enumerate((3, 2, 1)):
+            source = self.base / f"out{number}" / "app.apk"
+            source.parent.mkdir()
+            source.write_bytes(b"a")
+            entry = buildcache.publish(root, f"k{number}", source, out=source.parent, project="P", platform="android", sha="a" * 40,
+                                       profile="X", dirty=False, toolchain={}, config_hash="n", job_id=f"j{number}", cacheable=True)
+            stamp = core.format_utc(core.now() - timedelta(days=days))
+            core.atomic_write_json(entry.directory / buildcache.MANIFEST, {**entry.manifest, "lastUsedUtc": stamp, "publishedUtc": stamp})
+            entries.append(entry)
+        self.volume.hold(entries[0].directory, 2)
+        tight = dataclasses.replace(self.settings, build_cache=buildcache.Retention(max_entries=1))
+        diskspace.ensure_free(tight, self.home, free=self.volume)
+        self.assertEqual(["k2"], [e.key for e in buildcache.entries(root)], "only the most recently used build stays")
+
+    def test_the_pressure_cleanup_also_applies_per_source(self):
+        import dataclasses
+        root = buildcache.builds_root(self.home)
+        made = []
+        for number, hours in enumerate((30, 20)):
+            source = self.base / f"p{number}" / "app.apk"
+            source.parent.mkdir()
+            source.write_bytes(b"a")
+            entry = buildcache.publish(root, f"s{number}", source, out=source.parent, project="P", platform="android", sha="a" * 40,
+                                       profile="X", dirty=False, toolchain={}, config_hash="n", job_id=f"j{number}", cacheable=True,
+                                       source="dir:/w")
+            stamp = core.format_utc(core.now() - timedelta(hours=hours))
+            core.atomic_write_json(entry.directory / buildcache.MANIFEST,
+                                   {**entry.manifest, "lastUsedUtc": stamp, "publishedUtc": stamp, "sources": {"dir:/w": stamp}})
+            made.append(entry)
+        self.volume.hold(made[0].directory, 2)
+        tight = dataclasses.replace(self.settings, build_cache=buildcache.Retention(per_source=1))
+        diskspace.ensure_free(tight, self.home, free=self.volume)
+        self.assertEqual(["s1"], [e.key for e in buildcache.entries(root)], "the older build of the same source goes")
+
     def test_config_rejects_bad_disk_settings(self):
         for bad in ({"minFreeGiB": 0}, {"minFreeGiB": "5"}, {"keepDaysUnderPressure": -1}, [], {"minFreeGiB": float("nan")},
                     {"minFreeGiB": float("inf")}, {"keepDaysUnderPressure": float("inf")}, {"waitSec": -1}, {"waitSec": "5"},
