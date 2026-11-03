@@ -11,12 +11,12 @@
   "kinds": {
     "runtime": {
       "L0": ["l0"],
-      "L2": ["editmode:Project.Runtime.Tests@python tools/run-unity-tests.py --assemblies {assemblies}"],
+      "L2": ["editmode:Project.Runtime.Tests@valtrion unity run -- -batchmode -projectPath . -runTests -testPlatform EditMode -assemblyNames {assemblies} -testResults Builds/editmode.xml -logFile Builds/editmode.log"],
       "L3": ["player:ios"]
     },
     "playback-perf": {
       "L0": ["l0"],
-      "L2": ["editmode:Project.Playback.Tests@python tools/run-unity-tests.py --assemblies {assemblies}"],
+      "L2": ["editmode:Project.Playback.Tests@valtrion unity run -- -batchmode -projectPath . -runTests -testPlatform EditMode -assemblyNames {assemblies} -testResults Builds/editmode.xml -logFile Builds/editmode.log"],
       "L4": ["device:plans/perf.open-playback"]
     },
     "docs": { "L0": ["l0"] }

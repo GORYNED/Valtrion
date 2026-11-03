@@ -123,18 +123,17 @@ def leases_directory(home: Path | None = None) -> Path:
 
 #: The counted resource every Unity process on a host takes one slot of: an Editor run, an export, a native build.
 UNITY_EDITOR_RESOURCE = "unity-editor"
-#: Concurrent Unity processes a host allows, unless `host.json` says otherwise. macOS runs one at a time.
+#: Concurrent Unity processes a host allows, unless `host.json` says otherwise: 2 on every platform.
 DEFAULT_UNITY_EDITOR_SLOTS = 2
-DEFAULT_UNITY_EDITOR_SLOTS_MACOS = 1
 
 
 def unity_editor_capacity(home: Path | None = None) -> int:
     """The total number of `unity-editor` slots of this host. It is a property of the host, never of a provider: every claimant
     (the pipeline's build stage, the Editor provider) must pass this same total to `acquire_slot`, otherwise one that counts 1 and
     one that counts 2 both believe they hold the only free slot. `unityEditorSlots` (a positive integer) in `host.json` overrides
-    the default (1 on macOS, 2 elsewhere)."""
+    the default (2 on every platform)."""
     base = home or core.valtrion_home()
-    default = DEFAULT_UNITY_EDITOR_SLOTS_MACOS if core.local_os() == "macos" else DEFAULT_UNITY_EDITOR_SLOTS
+    default = DEFAULT_UNITY_EDITOR_SLOTS
     try:
         document = core.read_json(base / "host.json")
     except FileNotFoundError:

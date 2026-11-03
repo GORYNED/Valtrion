@@ -56,10 +56,11 @@ def _entry(arguments: argparse.Namespace) -> config.HostEntry | None:
     return None if entry.kind == "local" else entry
 
 
-def _remote(entry: config.HostEntry, arguments: argparse.Namespace, retry: bool = True) -> remote.Remote:
-    """The valtrion entry on `entry`. Commands that start something (not idempotent) pass `retry=False`: a retried start could run twice."""
+def _remote(entry: config.HostEntry, arguments: argparse.Namespace, retry: bool = True, lifeline: bool = False) -> remote.Remote:
+    """The valtrion entry on `entry`. Commands that start something (not idempotent) pass `retry=False`: a retried start could run twice.
+    A foreground command that must stop when the connection ends passes `lifeline=True` (see `SshTransport.lifeline`)."""
     project = getattr(arguments, "remote_project", None) or os.environ.get("GDV_REMOTE_PROJECT")
-    return remote.remote_for(entry, project, remote.make_transport(entry, retry=retry))
+    return remote.remote_for(entry, project, remote.make_transport(entry, retry=retry, lifeline=lifeline))
 
 
 def _strip_host_options(raw: Sequence[str]) -> list[str]:
@@ -77,19 +78,23 @@ def _strip_host_options(raw: Sequence[str]) -> list[str]:
     return result
 
 
-def _forward(arguments: argparse.Namespace, entry: config.HostEntry, extra: Sequence[str] = (), timeout: int = REMOTE_TIMEOUT_SEC) -> int:
-    """Run the same command on the SSH host and relay its output and exit code. Only idempotent commands use this."""
+def _forward(arguments: argparse.Namespace, entry: config.HostEntry, extra: Sequence[str] = (), timeout: int = REMOTE_TIMEOUT_SEC,
+             retry: bool = True, lost_hint: str = "", lifeline: bool = False) -> int:
+    """Run the same command on the SSH host and relay its output and exit code. Only idempotent commands use this with `retry`.
+    `lost_hint` is added to the message when the answer is lost (a command that may still run on the host says so)."""
     try:
-        target = _remote(entry, arguments)
+        target = _remote(entry, arguments, retry, **({"lifeline": True} if lifeline else {}))
     except ValueError as error:
         return _blocked(arguments.command, str(error))
-    result = target.call([*_strip_host_options(arguments.raw_argv), *extra], timeout)
+    line = _strip_host_options(arguments.raw_argv)
+    place = line.index("--") if "--" in line else len(line)  # `extra` options go before the user's own command after `--`
+    result = target.call([*line[:place], *extra, *line[place:]], timeout)
     sys.stdout.write(result.stdout)
     sys.stderr.write(result.stderr)
     if result.timed_out:
-        return _blocked(arguments.command, f"host {entry.id} did not answer within {timeout} s")
+        return _blocked(arguments.command, f"host {entry.id} did not answer within {timeout} s{lost_hint}")
     if result.returncode == remote.SSH_FAILURE:
-        return _blocked(arguments.command, f"host {entry.id} is unreachable ({_failure_evidence(target, result)})")
+        return _blocked(arguments.command, f"host {entry.id} is unreachable ({_failure_evidence(target, result)}){lost_hint}")
     if remote.is_tool_missing(result):
         _err(f"valtrion {arguments.command}: host {entry.id} is reachable, but the valtrion command is missing there; run `valtrion hosts sync`")
     return result.returncode if result.returncode is not None else constants.EXIT_BLOCKED
@@ -1221,6 +1226,62 @@ def _workroot(arguments: argparse.Namespace) -> int:
         return _blocked("workroot", str(error))
 
 
+# -- unity ------------------------------------------------------------------------------------------------------------------
+
+REMOTE_UNITY_NO_TIMEOUT_SEC = 24 * 3600
+REMOTE_UNITY_MARGIN_SEC = 300
+REMOTE_UNITY_LOST_HINT = ("; if the connection broke during the run its result is unknown: the run on the host is stopped (Unity killed, leases "
+                          "released) when the host sees the end of its input, which could not be confirmed on a Windows host; otherwise it "
+                          "runs on until Unity ends or --timeout-sec expires, and its leases are released then. See `valtrion lease list --host`")
+STOP_ON_STDIN_EOF = "--stop-on-stdin-eof"
+
+
+def _configure_unity(parser: argparse.ArgumentParser) -> None:
+    sub = parser.add_subparsers(dest="action", required=True)
+    run = sub.add_parser("run", help="run Unity in batch mode under the host's unity-project and unity-editor leases and the watchdog",
+                         description="valtrion unity run [options] -- <Unity arguments>. The last stdout line is STATUS <name>; "
+                                     "exit codes: PASS 0, FAIL 1, BLOCKED 2, STALL and TIMEOUT 3.")
+    run.add_argument("--project-dir", type=Path, help="Unity project (when the Unity arguments carry no -projectPath); default: GDV_UNITY_PROJECT or valtrion.json")
+    run.add_argument("--unity", help="path of the Unity executable (or a macOS .app) instead of the Editor of ProjectSettings/ProjectVersion.txt")
+    run.add_argument("--lease-wait", type=_finite_seconds, default=1800.0, metavar="SEC",
+                     help="seconds to wait for the project and an Editor slot before BLOCKED (default 1800)")
+    run.add_argument("--timeout-sec", type=_finite_seconds, default=0.0, metavar="N", help="hard timeout of Unity; 0 (default) = none")
+    run.add_argument("--stall-sec", type=_finite_seconds, default=600.0, metavar="N",
+                     help="STALL when the -logFile has not grown for N s (default 600; 0 = off; also off without -logFile)")
+    run.add_argument("--purpose", default="", help="text recorded in the leases")
+    run.add_argument(STOP_ON_STDIN_EOF, action="store_true", help=argparse.SUPPRESS)  # added by a caller that keeps this command's input open
+    _add_host_options(run)
+    run.add_argument("unity_args", nargs=argparse.REMAINDER, help="after `--`: the arguments passed to Unity")
+
+
+def _unity_arguments(arguments: argparse.Namespace) -> list[str]:
+    raw = list(getattr(arguments, "raw_argv", None) or [])
+    if "--" in raw:
+        return raw[raw.index("--") + 1:]
+    rest = list(arguments.unity_args)
+    return rest[1:] if rest[:1] == ["--"] else rest
+
+
+def _unity(arguments: argparse.Namespace) -> int:
+    entry = _entry(arguments)
+    if entry is not None:
+        # Starting Unity is not idempotent, so the transport does not retry; the output arrives when the run has ended.
+        limit = arguments.timeout_sec if arguments.timeout_sec > 0 else REMOTE_UNITY_NO_TIMEOUT_SEC
+        return _forward(arguments, entry, timeout=int(arguments.lease_wait + limit + REMOTE_UNITY_MARGIN_SEC), retry=False,
+                        lost_hint=REMOTE_UNITY_LOST_HINT, lifeline=True, extra=(STOP_ON_STDIN_EOF,))
+    from . import unityrun
+
+    unity_args = _unity_arguments(arguments)
+    found = None
+    if unityrun.option_value(unity_args, "-projectPath") is None:  # -projectPath wins; a broken valtrion.json must not block such a run
+        try:
+            found = project.resolve_unity_project(arguments.project_dir)
+        except project.ProjectError as error:
+            return _blocked("unity", str(error))
+    return unityrun.run(unity_args, found or arguments.project_dir, arguments.unity, arguments.lease_wait, arguments.timeout_sec,
+                        arguments.stall_sec, arguments.purpose, lifeline=sys.stdin.fileno() if arguments.stop_on_stdin_eof else None)
+
+
 def register_all() -> None:
     table: list[tuple[str, str, Callable, Callable]] = [
         ("hosts", "list or add hosts", _hosts, _configure_hosts),
@@ -1228,6 +1289,7 @@ def register_all() -> None:
         ("devices", "list or refresh attached devices", _devices, _configure_devices),
         ("lease", "acquire, renew, release and inspect leases", _lease, _configure_lease),
         ("job", "start, watch, inspect and cancel detached jobs", _job, _configure_job),
+        ("unity", "run Unity in batch mode under Valtrion leases and supervision", _unity, _configure_unity),
         ("pipeline", "run a pipeline as a detached job on a host chosen by capability", _pipeline, _configure_pipeline),
         ("build", "build the project without a device and publish the artifact", _build, _configure_build),
         ("builds", "list, show and remove the published builds of this host", _builds, _configure_builds),

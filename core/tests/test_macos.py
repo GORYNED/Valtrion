@@ -710,7 +710,7 @@ class PipelineIntegrationTests(MacOSTestCase):
             asked.append((name, slots))
             return original(manager, name, slots, *args, **kwargs)
 
-        for host_os, expected in (("macos", 1), ("windows", 2)):
+        for host_os, expected in (("macos", 2), ("windows", 2)):
             asked.clear()
             with mock.patch.object(core, "local_os", lambda host_os=host_os: host_os), \
                     mock.patch.object(lease.LeaseManager, "acquire_slot", record):
