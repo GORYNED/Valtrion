@@ -32,16 +32,24 @@ namespace Valtrion.Unity.Contracts
     {
         public string Glob { get; set; }
 
+        /// <summary>Optional globs of paths that do not belong to this area although <see cref="Glob"/> matches them.</summary>
+        public List<string> Exclude { get; set; }
+
         public string Kind { get; set; }
 
         internal static ChecksArea Read(ContractReader reader)
         {
-            var area = new ChecksArea { Glob = reader.Str("glob"), Kind = reader.Identifier("kind") };
+            var area = new ChecksArea { Glob = reader.Str("glob"), Exclude = reader.OptStrings("exclude"), Kind = reader.Identifier("kind") };
             reader.Done();
             return area;
         }
 
-        internal JsonValue Write() => JsonValue.NewObject().Set("glob", JsonValue.From(Glob)).Set("kind", JsonValue.From(Kind));
+        internal JsonValue Write()
+        {
+            var node = JsonValue.NewObject().Set("glob", JsonValue.From(Glob));
+            if (Exclude != null) node.Set("exclude", JsonBuild.Strings(Exclude));
+            return node.Set("kind", JsonValue.From(Kind));
+        }
     }
 
     /// <summary>The checks a kind of change needs at each validation level (L0 to L4); a level that is absent has no checks of its own.</summary>
@@ -92,6 +100,9 @@ namespace Valtrion.Unity.Contracts
 
         public int? UnityEditorSlots { get; set; }
 
+        /// <summary>Optional named runner command templates (name to command); an Editor suite entry <c>editmode:A@name</c> uses one.</summary>
+        public Dictionary<string, string> Runners { get; set; }
+
         public List<ChecksArea> Areas { get; set; } = new List<ChecksArea>();
 
         public Dictionary<string, ChecksLevels> Kinds { get; set; } = new Dictionary<string, ChecksLevels>();
@@ -104,10 +115,16 @@ namespace Valtrion.Unity.Contracts
         {
             var reader = new ContractReader(value, "$");
             reader.Const("schema", SchemaIds.Checks);
+            var runners = reader.StringMap("runners");
+            if (runners != null)
+                foreach (var runner in runners)
+                    if (runner.Value.Length == 0)
+                        throw new ContractException($"{reader.Path}.runners.{runner.Key}: expected a non-empty string");
             var checks = new ChecksDocument
             {
                 Platforms = ChecksPlatforms.Read(reader.Object("platforms")),
                 UnityEditorSlots = reader.OptInt32("unityEditorSlots", 1),
+                Runners = runners,
                 Areas = reader.Items("areas", ChecksArea.Read),
                 Kinds = reader.Map("kinds", ChecksLevels.Read),
                 Unclassified = reader.Choice("unclassified", Enums.Unclassified),
@@ -116,10 +133,15 @@ namespace Valtrion.Unity.Contracts
             return checks;
         }
 
-        public JsonValue ToJson() => JsonValue.NewObject()
-            .Set("schema", JsonValue.From(Schema)).Set("platforms", Platforms.Write()).SetIf("unityEditorSlots", UnityEditorSlots)
-            .Set("areas", JsonBuild.Array(Areas, area => area.Write())).Set("kinds", JsonBuild.Map(Kinds, levels => levels.Write()))
-            .Set("unclassified", JsonValue.From(Unclassified));
+        public JsonValue ToJson()
+        {
+            var node = JsonValue.NewObject()
+                .Set("schema", JsonValue.From(Schema)).Set("platforms", Platforms.Write()).SetIf("unityEditorSlots", UnityEditorSlots);
+            if (Runners != null) node.Set("runners", JsonBuild.StringMap(Runners));
+            return node
+                .Set("areas", JsonBuild.Array(Areas, area => area.Write())).Set("kinds", JsonBuild.Map(Kinds, levels => levels.Write()))
+                .Set("unclassified", JsonValue.From(Unclassified));
+        }
 
         public string ToJsonString() => ToJson().Write(true);
     }

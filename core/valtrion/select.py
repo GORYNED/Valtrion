@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import shutil
 import subprocess
 import sys
 from dataclasses import dataclass, field
@@ -83,6 +84,8 @@ class Check:
     runner: str | None = None
     kinds: set[str] = field(default_factory=set)
     plan: DevicePlan | None = None
+    #: The key of `runners` the runner came from, or None for a literal command.
+    runner_name: str | None = None
 
 
 @dataclass(frozen=True)
@@ -105,6 +108,21 @@ class Config:
     @property
     def unclassified_policy(self) -> str:
         return self.data["unclassified"]
+
+    @property
+    def runners(self) -> dict[str, str]:
+        """The optional top-level `runners`: name -> command template (empty when the map has none)."""
+        return self.data.get("runners", {})
+
+    def resolve_runner(self, text: str | None) -> tuple[str | None, str | None]:
+        """(command template, runner name) for the text after `@` of an entry. The text is a name when it is exactly a key of `runners`;
+        otherwise it is the literal command, as it always was. (A literal command that equals a runner name cannot be written; give the
+        runner another name or the command another spelling.)"""
+        if text is None:
+            return None, None
+        if text in self.runners:
+            return self.runners[text], text
+        return text, None
 
 
 # --- specs -----------------------------------------------------------------------------------------------------------------------
@@ -200,6 +218,16 @@ def validate_config(config: Config, validator: Validator | None = None) -> tuple
         used.add(area["kind"])
         if glob.startswith("/") or ".." in glob.replace("\\", "/").split("/") or "\\" in glob:
             errors.append(f"areas[{index}]: glob {glob!r} must be repository-relative with '/' separators and no '..'")
+        for excluded in area.get("exclude", ()):
+            if not excluded or excluded.startswith("/") or ".." in excluded.replace("\\", "/").split("/") or "\\" in excluded:
+                errors.append(f"areas[{index}]: exclude glob {excluded!r} must be repository-relative with '/' separators and no '..'")
+    for name, template in config.runners.items():
+        if not _NAME.match(name):
+            errors.append(f"runners: invalid runner name {name!r} (letters, digits, '.', '_' and '-', starting with a letter or digit)")
+        errors.extend(f"runners.{name}: {message}" for message in _placeholder_problems(template))
+        if _NAME.match(name) and shutil.which(name):
+            warnings.append(f"runners.{name}: the name is also a program on PATH; an entry whose text after '@' is exactly {name!r} "
+                            "used to be that command and now uses this runner")
     for kind in sorted(set(kinds) - used):
         warnings.append(f"kind {kind!r} is not used by any area (selected only by the widest set)")
     plan_ids: dict[str, str] = {}
@@ -211,6 +239,14 @@ def validate_config(config: Config, validator: Validator | None = None) -> tuple
                 except ValueError as error:
                     errors.append(f"kinds.{kind}.{level}: {error}")
                     continue
+                if spec.runner is not None and spec.type in _EDITOR_TYPES:
+                    template, name = config.resolve_runner(spec.runner)
+                    if name is None:  # a literal command is checked here; a named one was checked once under `runners`
+                        # Only a warning: text that was a valid literal command before (`{assembly}`, `{assemblies.txt}`) must stay valid.
+                        warnings.extend(f"kinds.{kind}.{level}: {message}" for message in _placeholder_problems(template or ""))
+                        if config.runners and _NAME.match(spec.runner):
+                            warnings.append(f"kinds.{kind}.{level}: {spec.runner!r} is not a key of runners ({', '.join(sorted(config.runners))}); "
+                                            "it is used as a literal command")
                 if spec.type != DEVICE:
                     continue
                 try:
@@ -224,6 +260,25 @@ def validate_config(config: Config, validator: Validator | None = None) -> tuple
                 if previous != spec.target:
                     errors.append(f"kinds.{kind}.{level}: plan id {plan.plan_id!r} is used by {previous!r} and {spec.target!r}")
     return errors, warnings
+
+
+#: Placeholders of a runner template: the united, sorted assembly list joined with `,` or with `;` (Unity's separator for `-assemblyNames` and
+#: `-testFilter`). Expansion does no quoting: a `;` ends a command in POSIX sh and PowerShell, so a template that is run through a shell
+#: must quote the placeholder, for example `-testFilter "{assemblies;}"`.
+ASSEMBLIES_COMMA = "{assemblies}"
+ASSEMBLIES_SEMICOLON = "{assemblies;}"
+_PLACEHOLDER = re.compile(r"(?<!\$)\{(?:assemblies[^{}\s]*|assembly)\}")  # look-alikes of ours only; a shell's ${assemblyDir}, ${HOME} or {a,b} is the command's own
+
+
+def _placeholder_problems(template: str) -> list[str]:
+    """A `{assembl...}` in a runner template must be one of the two assembly placeholders; a typo would otherwise be run as text."""
+    known = (ASSEMBLIES_COMMA, ASSEMBLIES_SEMICOLON)
+    return [f"unknown placeholder {found!r} in the runner {template!r} (use {ASSEMBLIES_COMMA} or {ASSEMBLIES_SEMICOLON})"
+            for found in _PLACEHOLDER.findall(template) if found not in known]
+
+
+def expand_runner(template: str, assemblies: Sequence[str]) -> str:
+    return template.replace(ASSEMBLIES_SEMICOLON, ";".join(assemblies)).replace(ASSEMBLIES_COMMA, ",".join(assemblies))
 
 
 # --- paths -----------------------------------------------------------------------------------------------------------------------
@@ -249,12 +304,15 @@ def glob_to_regex(glob: str) -> re.Pattern[str]:
 
 
 def classify(config: Config, paths: Sequence[str]) -> tuple[dict[str, list[str]], list[str]]:
-    """Map each path to every kind whose area matches it; paths without a match are unclassified."""
-    compiled = [(glob_to_regex(area["glob"]), area["kind"]) for area in config.areas]
+    """Map each path to every kind whose area matches it; paths without a match are unclassified.
+
+    A path matches an area when it matches `glob` and none of the area's optional `exclude` globs. An excluded path can still match
+    another area, so it keeps that area's kind."""
+    compiled = [(glob_to_regex(area["glob"]), [glob_to_regex(item) for item in area.get("exclude", ())], area["kind"]) for area in config.areas]
     classified: dict[str, list[str]] = {}
     unclassified: list[str] = []
     for path in paths:
-        kinds = sorted({kind for pattern, kind in compiled if pattern.match(path)})
+        kinds = sorted({kind for pattern, excluded, kind in compiled if pattern.match(path) and not any(skip.match(path) for skip in excluded)})
         if kinds:
             classified[path] = kinds
         else:
@@ -314,6 +372,8 @@ class Selection:
     checks: list[Check]
     config: Config
     failed: bool = False
+    #: Kinds the caller named directly (`--kind`), without a diff; sorted. They are part of `kinds`.
+    named_kinds: list[str] = field(default_factory=list)
 
     def of_type(self, *types: str) -> list[Check]:
         return [check for check in self.checks if check.type in types]
@@ -332,9 +392,11 @@ class Selection:
         commands = []
         for runner in sorted(groups, key=lambda value: (value is None, value or "")):
             suites = sorted(groups[runner], key=lambda item: item.key)
-            names = ",".join(sorted({suite.target for suite in suites}))
-            command = None if runner is None else (runner.replace("{assemblies}", names) if "{assemblies}" in runner else runner)
-            commands.append({"runner": runner, "command": command, "assemblies": names.split(","), "suites": [suite.key for suite in suites]})
+            assemblies = sorted({suite.target for suite in suites})
+            command = None if runner is None else expand_runner(runner, assemblies)
+            runner_name = next((suite.runner_name for suite in suites if suite.runner_name), None)
+            commands.append({"runner": runner, "runnerName": runner_name, "command": command, "assemblies": assemblies,
+                             "suites": [suite.key for suite in suites]})
         return commands
 
     def to_json(self) -> dict[str, Any]:
@@ -351,6 +413,8 @@ class Selection:
             "widest": self.widest,
             "failed": self.failed,
             "kinds": self.kinds,
+            "selectedKinds": self.named_kinds,
+            "kindsNamedExplicitly": bool(self.named_kinds),
             "l0": [_check_json(check) for check in self.of_type(L0)],
             "editorSuites": [_check_json(check) for check in self.of_type(*_EDITOR_TYPES)],
             "editorCommands": self.editor_commands(),
@@ -372,6 +436,7 @@ def _check_json(check: Check) -> dict[str, Any]:
     item: dict[str, Any] = {"key": check.key, "type": check.type, "target": check.target, "level": check.level, "kinds": sorted(check.kinds)}
     if check.type in _EDITOR_TYPES:
         item["runner"] = check.runner
+        item["runnerName"] = check.runner_name
     if check.plan is not None:
         item.update(
             planId=check.plan.plan_id,
@@ -395,10 +460,11 @@ def _expand(spec: Spec, config: Config, level: str, kind: str, found: dict[str, 
         pairs = [(f"l0:{spec.target}" if spec.target else "l0", spec.target)]
     else:
         pairs = [(f"{spec.type}:{spec.target}", spec.target)]
+    runner, runner_name = config.resolve_runner(spec.runner)
     for key, target in pairs:
         check = found.get(key)
         if check is None:
-            check = found[key] = Check(key, spec.type, target, level, spec.runner)
+            check = found[key] = Check(key, spec.type, target, level, runner, runner_name=runner_name)
             if spec.type == DEVICE:
                 check.plan = load_plan(config, spec.target, validator)
         elif spec.type == DEVICE and check.plan is not None and check.plan.path != load_plan(config, spec.target, validator).path:
@@ -406,10 +472,10 @@ def _expand(spec: Spec, config: Config, level: str, kind: str, found: dict[str, 
         elif check.type != spec.type:
             raise ConfigError([f"kinds.{kind}.{level}: check key {key!r} is used by a {check.type} and a {spec.type} entry"])
         else:
-            if check.runner is not None and spec.runner is not None and check.runner != spec.runner:
+            if check.runner is not None and runner is not None and check.runner != runner:
                 raise ConfigError([f"kinds.{kind}.{level}: {key!r} names two different runners"])
             if check.runner is None:
-                check.runner = spec.runner
+                check.runner, check.runner_name = runner, runner_name
             if LEVELS.index(level) < LEVELS.index(check.level):
                 check.level = level
         check.kinds.add(kind)
@@ -424,14 +490,20 @@ def select(
     merge_base: str | None = None,
     include_worktree: bool = False,
     validator: Validator | None = None,
+    named_kinds: Sequence[str] = (),
 ) -> Selection:
     """Union of the checks of the matched kinds for `level` and every lower level; unclassified paths widen the set.
 
-    With the policy `fail` an unclassified path selects nothing and sets `failed`."""
+    `named_kinds` selects those kinds directly, with or without paths (a union with the kinds of the paths); a name that is not a
+    kind of the map is an error that lists the kinds. With the policy `fail` an unclassified path selects nothing and sets `failed`."""
     if level not in LEVELS:
         raise ValueError(f"unknown level {level!r}")
+    named = sorted(set(named_kinds))
+    unknown = [name for name in named if name not in config.kinds]
+    if unknown:
+        raise ConfigError([f"unknown kind(s): {', '.join(unknown)} (kinds in the map: {', '.join(sorted(config.kinds)) or 'none'})"])
     classified, unclassified = classify(config, paths)
-    kinds = {kind for matched in classified.values() for kind in matched}
+    kinds = {kind for matched in classified.values() for kind in matched} | set(named)
     policy = config.unclassified_policy
     widest = bool(unclassified) and policy == "widest"
     failed = bool(unclassified) and policy == "fail"
@@ -449,7 +521,8 @@ def select(
                     _expand(parse_spec(raw), config, current, kind, found, validator)
     checks = sorted(found.values(), key=lambda check: (TYPES.index(check.type), check.key))
     return Selection(
-        level, base_ref, merge_base, include_worktree, list(paths), classified, unclassified, policy, widest, sorted(kinds), checks, config, failed
+        level, base_ref, merge_base, include_worktree, list(paths), classified, unclassified, policy, widest, sorted(kinds), checks, config, failed,
+        named,
     )
 
 
@@ -457,7 +530,10 @@ def select(
 
 
 def _add_common(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--base-ref", required=True, help="the base of the candidate diff, compared from the merge base (for example origin/main)")
+    parser.add_argument("--base-ref", help="the base of the candidate diff, compared from the merge base (for example origin/main); required unless --kind is given")
+    parser.add_argument("--kind", action="append", default=[], metavar="NAME",
+                        help="select the checks of this kind of the map directly, without a diff, at --level (repeatable, or a comma list); "
+                             "with --base-ref it is added to the kinds of the diff")
     parser.add_argument("--checks", type=Path, help=f"the project check map (default: `checks` of valtrion.json, else {DEFAULT_CHECKS_PATH.as_posix()} under the repository root)")
     parser.add_argument("--include-worktree", action="store_true", help="also count staged, unstaged and untracked files as changed")
 
@@ -476,8 +552,16 @@ def resolve_selection(arguments: argparse.Namespace) -> Selection:
     if checks_path is None:
         checks_path = default_checks_path(root, start)
     config = load_config(Path(checks_path))
-    paths, merge_base = changed_paths(root, arguments.base_ref, arguments.include_worktree)
-    return select(config, paths, arguments.level, base_ref=arguments.base_ref, merge_base=merge_base, include_worktree=arguments.include_worktree)
+    named = [name.strip() for item in arguments.kind for name in item.split(",") if name.strip()]
+    if arguments.base_ref:
+        paths, merge_base = changed_paths(root, arguments.base_ref, arguments.include_worktree)
+    elif named:
+        paths, merge_base = [], None  # no diff: the named kinds alone
+    else:
+        print("error: --base-ref is required unless --kind is given", file=sys.stderr)
+        raise SystemExit(2)
+    return select(config, paths, arguments.level, base_ref=arguments.base_ref, merge_base=merge_base,
+                  include_worktree=bool(arguments.base_ref) and arguments.include_worktree, named_kinds=named)
 
 
 def run_guarded(name: str, action) -> int:
@@ -502,11 +586,13 @@ def format_selection(selection: Selection) -> str:
         + (f" (merge base {selection.merge_base[:8]})" if selection.merge_base else "")
         + f", {len(selection.paths)} changed path(s)" + (" incl. worktree" if selection.include_worktree else "")
     ]
+    if selection.named_kinds:
+        lines.append("named kinds: " + ", ".join(selection.named_kinds))
     if selection.unclassified:
         action = "no checks selected, fix the area map" if selection.failed else "widest set selected"
         lines.append(f"UNCLASSIFIED ({len(selection.unclassified)}), policy {selection.policy}: {action}")
         lines.extend(f"  {path}" for path in selection.unclassified)
-    if not selection.paths:
+    if not selection.paths and not selection.named_kinds:
         lines.append("no changed paths: nothing to select")
     lines.append("kinds: " + (", ".join(selection.kinds) or "-"))
     l0 = selection.of_type(L0)

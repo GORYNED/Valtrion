@@ -17,6 +17,10 @@
       }
     },
     "unityEditorSlots": { "$ref": "common.schema.json#/$defs/int32", "minimum": 1 },
+    "runners": {
+      "type": "object",
+      "additionalProperties": { "type": "string", "minLength": 1 }
+    },
     "areas": {
       "type": "array",
       "items": {
@@ -25,6 +29,7 @@
         "additionalProperties": false,
         "properties": {
           "glob": { "type": "string", "minLength": 1 },
+          "exclude": { "type": "array", "items": { "type": "string", "minLength": 1 } },
           "kind": { "$ref": "common.schema.json#/$defs/identifier" }
         }
       }

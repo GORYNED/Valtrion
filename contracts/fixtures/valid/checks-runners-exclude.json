@@ -1,0 +1,21 @@
+{
+  "schema": "gdv.checks/1",
+  "platforms": { "required": ["ios"], "dev": ["editor"] },
+  "unityEditorSlots": 2,
+  "runners": {
+    "editor-tests": "my-runner --assemblies \"{assemblies;}\"",
+    "editor-tests-csv": "my-runner --assemblies {assemblies}"
+  },
+  "areas": [
+    { "glob": "Assets/Project/**", "exclude": ["Assets/Project/**/Tests/**", "Assets/Project/Generated/**"], "kind": "runtime" },
+    { "glob": "Assets/Project/**/Tests/**", "kind": "tests" },
+    { "glob": "docs/**", "kind": "docs" }
+  ],
+  "kinds": {
+    "runtime": { "L2": ["editmode:Project.Runtime.Tests@editor-tests"] },
+    "tests": { "L2": ["editmode:Project.Runtime.Tests,Project.More.Tests@editor-tests"] },
+    "scheduled": { "L2": ["editmode:Project.Slow.Tests@editor-tests"], "L4": ["device:plans/perf.open-playback"] },
+    "docs": { "L0": ["l0"] }
+  },
+  "unclassified": "widest"
+}
