@@ -8,6 +8,7 @@ dependency outside the standard library and the schema validator of this package
 from __future__ import annotations
 
 import argparse
+import fnmatch
 import json
 import re
 import shutil
@@ -108,6 +109,11 @@ class Config:
     @property
     def unclassified_policy(self) -> str:
         return self.data["unclassified"]
+
+    @property
+    def json_rules(self) -> list[dict]:
+        """The optional top-level `jsonRules`: a changed JSON file is classified by which keys under `root` changed."""
+        return self.data.get("jsonRules", [])
 
     @property
     def content_rules(self) -> list[dict]:
@@ -226,6 +232,24 @@ def validate_config(config: Config, validator: Validator | None = None) -> tuple
         for excluded in area.get("exclude", ()):
             if not excluded or excluded.startswith("/") or ".." in excluded.replace("\\", "/").split("/") or "\\" in excluded:
                 errors.append(f"areas[{index}]: exclude glob {excluded!r} must be repository-relative with '/' separators and no '..'")
+    for index, rule in enumerate(config.json_rules):
+        where = f"jsonRules[{index}]"
+        glob = rule["glob"]
+        if glob.startswith("/") or ".." in glob.replace("\\", "/").split("/") or "\\" in glob:
+            errors.append(f"{where}: glob {glob!r} must be repository-relative with '/' separators and no '..'")
+        if not rule["root"].strip():
+            errors.append(f"{where}: root must name a top-level key of the file")
+        if not rule["keys"]:
+            errors.append(f"{where}: keys needs at least one {{match, kind}} entry")
+        for position, entry in enumerate(rule["keys"]):
+            if not entry["match"].strip():
+                errors.append(f"{where}.keys[{position}]: match must not be empty")
+            if ("kind" in entry) == ("kinds" in entry):
+                errors.append(f"{where}.keys[{position}]: give either kind (one) or kinds (a list), not both and not neither")
+                continue
+            for name in key_kinds(entry):
+                if name not in kinds:
+                    errors.append(f"{where}.keys[{position}]: kind {name!r} has no entry in kinds")
     for index, rule in enumerate(config.content_rules):
         where = f"contentRules[{index}]"
         if rule["kind"] not in kinds:
@@ -320,7 +344,9 @@ def glob_to_regex(glob: str) -> re.Pattern[str]:
     return re.compile("^" + "".join(out) + "$")
 
 
-def classify(config: Config, paths: Sequence[str], cosmetic: Mapping[str, str] | None = None) -> tuple[dict[str, list[str]], list[str]]:
+def classify(
+        config: Config, paths: Sequence[str], cosmetic: Mapping[str, str] | None = None,
+        json_keys: Mapping[str, Mapping[str, Sequence[str]]] | None = None) -> tuple[dict[str, list[str]], list[str]]:
     """Map each path to every kind whose area matches it; paths without a match are unclassified.
 
     A path matches an area when it matches `glob` and none of the area's optional `exclude` globs. An excluded path can still match
@@ -329,6 +355,9 @@ def classify(config: Config, paths: Sequence[str], cosmetic: Mapping[str, str] |
     classified: dict[str, list[str]] = {}
     unclassified: list[str] = []
     for path in paths:
+        if json_keys and path in json_keys:
+            classified[path] = sorted({kind for kinds in json_keys[path].values() for kind in kinds})  # the kinds of the keys that changed, not of the file
+            continue
         if cosmetic and path in cosmetic:
             classified[path] = [cosmetic[path]]
             continue
@@ -461,6 +490,121 @@ def cosmetic_paths(
     return found
 
 
+# --- structured files: which keys of a JSON file changed ----------------------------------------------------------------------------
+
+
+class _NotJson(Exception):
+    """A document that cannot be judged: not valid JSON, not an object, or ambiguous (duplicate keys)."""
+
+
+class _Float(str):
+    """A JSON number with a fraction or exponent, kept as the text it was written with: two different numbers never collapse into one
+    double, and `1.0` against `1.00` counts as a change (fail closed)."""
+
+
+def _unique_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise _NotJson(f"duplicate key {key!r}")
+        result[key] = value
+    return result
+
+
+def _reject_constant(name: str) -> Any:
+    raise _NotJson(f"the token {name} is not JSON")
+
+
+def parse_json_object(data: bytes) -> dict[str, Any]:
+    """The object in `data`: UTF-8 with or without a BOM, any line ending, no duplicate keys at any depth, no `NaN` or `Infinity`.
+    Raises `_NotJson` otherwise."""
+    try:
+        document = json.loads(data.decode("utf-8-sig"), object_pairs_hook=_unique_pairs, parse_float=_Float, parse_constant=_reject_constant)
+    except (UnicodeDecodeError, ValueError, RecursionError) as error:
+        raise _NotJson(str(error)) from error
+    if not isinstance(document, dict):
+        raise _NotJson("the document is not an object")
+    return document
+
+
+def _canonical(value: Any) -> str:
+    """A text that is equal for two values only when they are the same JSON value: `1`, `1.0`, `"1.0"` and `true` all differ, a number is
+    compared by the text it was written with, and key order does not count."""
+    if isinstance(value, dict):
+        return "{" + ",".join(f"{json.dumps(key)}:{_canonical(item)}" for key, item in sorted(value.items())) + "}"
+    if isinstance(value, list):
+        return "[" + ",".join(_canonical(item) for item in value) + "]"
+    if isinstance(value, _Float):
+        return "f" + str(value)
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if value is None:
+        return "null"
+    if isinstance(value, int):
+        return f"i{value}"
+    return json.dumps(value, ensure_ascii=True)
+
+
+def key_kinds(entry: Mapping[str, Any]) -> list[str]:
+    """The kinds of one `keys` entry of a JSON rule: the list `kinds`, or the single `kind`."""
+    return list(entry["kinds"]) if "kinds" in entry else [entry["kind"]]
+
+
+def json_changed_keys(
+        old: Mapping[str, Any], new: Mapping[str, Any], root: str, keys: Sequence[Mapping[str, Any]]) -> dict[str, list[str]] | None:
+    """The changed, added and removed child keys under `root` with the kinds of the first `match` that fits each, or None when the change
+    cannot be judged by keys (fail closed): something outside `root` changed, `root` is not an object, no key changed, or a changed key
+    fits no `match`. A last `match` of `*` is the explicit fallback kind for every other key."""
+    rest_old = {key: value for key, value in old.items() if key != root}
+    rest_new = {key: value for key, value in new.items() if key != root}
+    if _canonical(rest_old) != _canonical(rest_new):
+        return None
+    before, after = old.get(root, {}), new.get(root, {})
+    if not isinstance(before, dict) or not isinstance(after, dict):
+        return None
+    changed = [key for key in sorted(set(before) | set(after))
+               if (key in before) != (key in after) or _canonical(before.get(key)) != _canonical(after.get(key))]
+    if not changed:
+        return None
+    result: dict[str, list[str]] = {}
+    for key in changed:
+        entry = next((item for item in keys if fnmatch.fnmatchcase(key, item["match"])), None)
+        if entry is None:
+            return None
+        result[key] = key_kinds(entry)
+    return result
+
+
+def json_rule_paths(
+        root: Path, config: Config, paths: Sequence[str], merge_base: str | None, include_worktree: bool) -> dict[str, dict[str, list[str]]]:
+    """For each changed path that matches a `jsonRules` glob and whose change can be judged by keys, the changed keys with their kinds. The
+    old document is the merge-base version and the new one is `HEAD`, or with `include_worktree` the working file (a regular file, never a
+    symlink). A path that is added, deleted or unreadable, or whose change is not covered by the rule's keys, is left to the area map."""
+    rules = [(glob_to_regex(rule["glob"]), rule) for rule in config.json_rules]
+    if not rules or merge_base is None:
+        return {}
+    found: dict[str, dict[str, list[str]]] = {}
+    for path in paths:
+        rule = next((item for pattern, item in rules if pattern.match(path)), None)
+        if rule is None:
+            continue
+        try:
+            old = parse_json_object(_git(root, "show", f"{merge_base}:{path}"))
+            if include_worktree:
+                target = root / path
+                if target.is_symlink() or not target.is_file():
+                    continue
+                new = parse_json_object(target.read_bytes())
+            else:
+                new = parse_json_object(_git(root, "show", f"HEAD:{path}"))
+        except (GitError, _NotJson, OSError, ValueError):
+            continue
+        keys = json_changed_keys(old, new, rule["root"], rule["keys"])
+        if keys:
+            found[path] = keys
+    return found
+
+
 # --- selection -------------------------------------------------------------------------------------------------------------------
 
 
@@ -483,6 +627,8 @@ class Selection:
     named_kinds: list[str] = field(default_factory=list)
     #: Changed paths whose diff is only comments and layout and that a `contentRules` entry maps to a cheaper kind (path -> kind).
     cosmetic: dict[str, str] = field(default_factory=dict)
+    #: Changed JSON files that a `jsonRules` entry judged by their keys (path -> {changed key -> kind}).
+    json_keys: dict[str, dict[str, list[str]]] = field(default_factory=dict)
 
     def of_type(self, *types: str) -> list[Check]:
         return [check for check in self.checks if check.type in types]
@@ -523,6 +669,7 @@ class Selection:
             "failed": self.failed,
             "kinds": self.kinds,
             "cosmeticPaths": self.cosmetic,
+            "jsonKeyKinds": self.json_keys,
             "selectedKinds": self.named_kinds,
             "kindsNamedExplicitly": bool(self.named_kinds),
             "l0": [_check_json(check) for check in self.of_type(L0)],
@@ -602,6 +749,7 @@ def select(
     validator: Validator | None = None,
     named_kinds: Sequence[str] = (),
     cosmetic: Mapping[str, str] | None = None,
+    json_keys: Mapping[str, Mapping[str, Sequence[str]]] | None = None,
 ) -> Selection:
     """Union of the checks of the matched kinds for `level` and every lower level; unclassified paths widen the set.
 
@@ -613,7 +761,7 @@ def select(
     unknown = [name for name in named if name not in config.kinds]
     if unknown:
         raise ConfigError([f"unknown kind(s): {', '.join(unknown)} (kinds in the map: {', '.join(sorted(config.kinds)) or 'none'})"])
-    classified, unclassified = classify(config, paths, cosmetic)
+    classified, unclassified = classify(config, paths, cosmetic, json_keys)
     kinds = {kind for matched in classified.values() for kind in matched} | set(named)
     policy = config.unclassified_policy
     widest = bool(unclassified) and policy == "widest"
@@ -633,7 +781,7 @@ def select(
     checks = sorted(found.values(), key=lambda check: (TYPES.index(check.type), check.key))
     return Selection(
         level, base_ref, merge_base, include_worktree, list(paths), classified, unclassified, policy, widest, sorted(kinds), checks, config, failed,
-        named, dict(cosmetic or {}),
+        named, dict(cosmetic or {}), {path: {key: list(kinds) for key, kinds in keys.items()} for path, keys in (json_keys or {}).items()},
     )
 
 
@@ -673,8 +821,9 @@ def resolve_selection(arguments: argparse.Namespace) -> Selection:
         raise SystemExit(2)
     include_worktree = bool(arguments.base_ref) and arguments.include_worktree
     cosmetic = cosmetic_paths(root, config, paths, merge_base, include_worktree)
+    json_keys = json_rule_paths(root, config, paths, merge_base, include_worktree)
     return select(config, paths, arguments.level, base_ref=arguments.base_ref, merge_base=merge_base,
-                  include_worktree=include_worktree, named_kinds=named, cosmetic=cosmetic)
+                  include_worktree=include_worktree, named_kinds=named, cosmetic=cosmetic, json_keys=json_keys)
 
 
 def run_guarded(name: str, action) -> int:
@@ -701,6 +850,11 @@ def format_selection(selection: Selection) -> str:
     ]
     if selection.named_kinds:
         lines.append("named kinds: " + ", ".join(selection.named_kinds))
+    if selection.json_keys:
+        lines.append(f"JSON KEYS ({len(selection.json_keys)}): classified by the keys that changed, mapped by jsonRules:")
+        for path, keys in sorted(selection.json_keys.items()):
+            lines.append(f"  {path}")
+            lines.extend(f"    {key} -> {', '.join(kinds)}" for key, kinds in sorted(keys.items()))
     if selection.cosmetic:
         lines.append(f"COSMETIC ({len(selection.cosmetic)}): only comments or layout changed, mapped by contentRules:")
         lines.extend(f"  {path} -> {kind}" for path, kind in sorted(selection.cosmetic.items()))

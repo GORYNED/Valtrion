@@ -1,0 +1,8 @@
+{
+  "schema": "gdv.checks/1",
+  "platforms": { "required": ["ios"] },
+  "areas": [{ "glob": "libs/**", "kind": "libs" }],
+  "jsonRules": [{ "glob": "libs/manifest.json", "root": "dependencies", "keys": [{ "match": "libs.*" }] }],
+  "kinds": { "libs": { "L0": ["l0"] } },
+  "unclassified": "widest"
+}
