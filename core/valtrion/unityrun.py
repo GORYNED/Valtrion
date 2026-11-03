@@ -30,7 +30,7 @@ LEASE_TTL_SEC = 300
 LOG_TAIL_BYTES = 256 * 1024
 CONSOLE_TAIL_BYTES = 64 * 1024
 #: Seconds between two looks at the process list and free memory while the run waits for them (a CIM query on Windows is not cheap).
-GUARD_POLL_SEC = 5.0
+GUARD_POLL_SEC = unityguard.GUARD_POLL_SEC
 
 #: Texts in the tail of a Unity log that turn exit code 1 from a failed run into a missing prerequisite (an Editor that could not
 #: open the project or has no license). Compared in lower case.
@@ -258,7 +258,7 @@ def run(
         if not has_option(args, "-EnableCacheServer", "-cacheServer"):
             args += config.unity_accelerator_args(home)
         guard_settings = unityguard.load_settings(home)
-        probe = probe or unityguard.SystemProbe()
+
         capacity = lease.unity_editor_capacity(home)
         manager = lease.LeaseManager(home)
         project_resource = lease.unity_project_resource(project)
@@ -307,29 +307,11 @@ def run(
                     return _result(out, constants.BLOCKED, slot.reason)
                 keeper.add(slot.lease.resource)
                 # Holding both leases, wait (within the same budget) until no Editor runs outside a lease and enough memory is free.
-                noted: set[str] = set()
-                last_notice = None
-                while True:
-                    if keeper.lost:
-                        return _result(out, constants.BLOCKED, f"the lease(s) {', '.join(keeper.lost)} were lost before Unity started")
-                    holders = [s.record.pid for s in manager.list_all() if s.state == "held" and s.record is not None]
-                    remaining = max(0.0, deadline - time.monotonic())
-                    if isinstance(probe, unityguard.SystemProbe):
-                        probe.timeout_sec = max(5.0, min(unityguard.PROBE_TIMEOUT_SEC, remaining))  # a probe never outlasts the wait budget by much
-                    problem, notes = unityguard.check(probe, guard_settings, holders)
-                    for note in notes:
-                        if note not in noted:
-                            noted.add(note)
-                            _say(err, f"valtrion unity run: note: {note}")
-                    if problem is None:
-                        break
-                    now = time.monotonic()
-                    if now >= deadline:
-                        return _result(out, constants.BLOCKED, problem)
-                    if last_notice is None or now - last_notice >= lease.WAIT_NOTICE_SEC:
-                        last_notice = now
-                        _say(err, f"waiting (both leases are held): {problem}")
-                    time.sleep(min(guard_poll, max(0.0, deadline - now)))
+                problem = unityguard.wait_until_clear(
+                    manager, guard_settings, probe, max(0.0, deadline - time.monotonic()), guard_poll, lambda text: _say(err, text),
+                    abort=lambda: f"the lease(s) {', '.join(keeper.lost)} were lost before Unity started" if keeper.lost else None)
+                if problem is not None:
+                    return _result(out, constants.BLOCKED, problem)
 
                 console = work / "console.log"
                 cancel = work / "cancel"

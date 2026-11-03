@@ -9,7 +9,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from valtrion import buildcache, constants, core, jobs, lease, pipeline, providers
+from valtrion import buildcache, constants, core, jobs, lease, pipeline, providers, unityguard
 from valtrion.adapter import Capabilities, DeviceHealth, DeviceInfo, PlatformAdapter, StepOutcome
 from valtrion.lease import LeaseManager
 from valtrion.schema import Validator
@@ -310,6 +310,47 @@ class ScopedLeaseTests(unittest.TestCase):
         _, store = self.run_job("A", self.document(), lease_wait=60)
         self.assertEqual("BLOCKED", store.read_job()["status"])
         self.assertEqual([], [entry for entry in self.world.timeline if entry[1].startswith("build")])
+
+    def test_an_editor_outside_any_lease_blocks_the_build_and_gives_the_leases_back(self):
+        editor = unityguard.Proc(4242, 1, "/x/Unity.app/Contents/MacOS/Unity", "/x/Unity.app/Contents/MacOS/Unity -batchmode")
+
+        class Orphan(unityguard.Probe):
+            os_name = "macos"
+
+            def processes(self):
+                return [editor]
+
+            def free_memory_mib(self):
+                return 1.0e6
+
+        with mock.patch.object(unityguard, "probe_factory", Orphan):
+            _, store = self.run_job("A", self.document(), lease_wait=0)
+        job = store.read_job()
+        self.assertEqual("BLOCKED", job["status"])
+        self.assertIn("outside any lease", job["reason"])
+        self.assertIn("pid 4242", job["reason"])
+        self.assertEqual([], [entry for entry in self.world.timeline if entry[1].startswith("build")])
+        self.assertEqual([], self.world.held())
+
+    def test_too_little_memory_blocks_the_build_and_unity_guard_can_turn_it_off(self):
+        class Starved(unityguard.Probe):
+            os_name = "macos"
+
+            def processes(self):
+                return []
+
+            def free_memory_mib(self):
+                return 10.0
+
+        with mock.patch.object(unityguard, "probe_factory", Starved):
+            _, store = self.run_job("A", self.document(), lease_wait=0)
+        self.assertEqual("BLOCKED", store.read_job()["status"])
+        self.assertIn("of memory are free", store.read_job()["reason"])
+        (self.home / "host.json").write_text('{"unityEditorSlots": 1, "unityGuard": {"minFreeMemoryMiB": 0}}', encoding="utf-8")
+        self.open_gates("B")
+        with mock.patch.object(unityguard, "probe_factory", Starved):
+            _, store = self.run_job("B", self.document(), lease_wait=5)
+        self.assertEqual("PASS", store.read_job()["status"], store.read_job()["reason"])
 
     def test_a_busy_device_with_no_lease_wait_is_blocked_before_the_build(self):
         LeaseManager(self.home).acquire("device:" + PHONE, "alice", "session-9", 600, "series", os.getpid())

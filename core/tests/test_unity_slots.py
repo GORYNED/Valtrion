@@ -11,7 +11,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from valtrion import constants, core, lease
+from valtrion import constants, core, lease, unityguard
 from valtrion.providers import editor as editor_module
 from valtrion.providers.editor import EditorAdapter
 
@@ -236,6 +236,26 @@ class EditorSlotTests(unittest.TestCase):
 
     def project_resource(self):
         return lease.unity_project_resource(self.project)
+
+    def test_an_editor_outside_any_lease_stops_the_launch_and_gives_the_leases_back(self):
+        editor = unityguard.Proc(4242, 1, "/x/Unity.app/Contents/MacOS/Unity", "/x/Unity.app/Contents/MacOS/Unity -batchmode")
+
+        class Orphan(unityguard.Probe):
+            os_name = "macos"
+
+            def processes(self):
+                return [editor]
+
+            def free_memory_mib(self):
+                return 1.0e6
+
+        with mock.patch.object(unityguard, "probe_factory", Orphan):
+            adapter = self.adapter()
+            outcome = self.launch(adapter)[1]
+        self.assertNotEqual(constants.PASS, outcome.status)
+        self.assertIn("outside any lease", outcome.reason or "")
+        self.assertEqual("free", self.state(self.project_resource()))
+        self.assertEqual([], [p.name for p in self.manager.directory.glob("*.lock")])
 
     # -- one capacity for every claimant ---------------------------------------------------------------------------------------
 

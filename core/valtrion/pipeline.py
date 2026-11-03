@@ -22,7 +22,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
-from . import artifacts, buildcache, checkout, compare, config, constants, core, diskspace, gitstate, incremental, lease, providers, supervise
+from . import artifacts, buildcache, checkout, compare, config, constants, core, diskspace, gitstate, incremental, lease, providers, supervise, unityguard
 from .adapter import DeviceHealth, DeviceInfo, PlatformAdapter, StepOutcome
 from .jobs import JobContext
 from .jobs import reap_cancelled_jobs as jobs_reap
@@ -992,6 +992,13 @@ def execute(pipeline: Mapping[str, Any], pipeline_path: Path | None, ctx: JobCon
                 if reason:
                     events.emit("step.finished", reason, step=name, status=constants.BLOCKED)
                     return fail(constants.BLOCKED, reason)
+                if adapter.build_uses_editor:
+                    # With the leases held: no Editor outside a lease and enough memory (host.json unityGuard), within the lease wait.
+                    reason = unityguard.blocked_reason(lease.LeaseManager(ctx.home), ctx.home, lease_wait,
+                                                       lambda text: events.emit("log", text, step=name))
+                    if reason:
+                        events.emit("step.finished", reason, step=name, status=constants.BLOCKED)
+                        return fail(constants.BLOCKED, reason)
                 if adapter.build_uses_editor and not reaped_dead_jobs:  # only then the project lease is held; once per job
                     reaped_dead_jobs = True
                     try:

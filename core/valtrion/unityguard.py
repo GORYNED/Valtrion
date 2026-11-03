@@ -17,11 +17,12 @@ import os
 import re
 import shutil
 import subprocess
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Iterable, Sequence
 
-from . import config, core
+from . import config, core, lease
 
 DEFAULT_MIN_FREE_MEMORY_MIB = 2048.0
 _COMMAND_LIMIT = 100
@@ -254,6 +255,60 @@ class SystemProbe(Probe):
             return parse_meminfo(self._meminfo.read_text(encoding="utf-8"))
         except OSError:
             return None
+
+
+#: Seconds between two looks at the process list and free memory while a run waits for them.
+GUARD_POLL_SEC = 5.0
+#: Makes the probe when a caller names none. A seam for tests of the callers (the build stage, the Editor provider), which must not
+#: depend on the Editors that happen to run on the machine.
+probe_factory: Callable[[], Probe] = SystemProbe
+
+
+def blocked_reason(
+        manager: lease.LeaseManager, home: Path | None, wait_sec: float, say: Callable[[str], None] | None = None,
+        abort: Callable[[], str | None] | None = None, probe: Probe | None = None) -> str | None:
+    """The settings of `host.json` and `wait_until_clear` in one call, for a caller that holds its leases already: None to go on, else the
+    reason to end BLOCKED (a bad `unityGuard` setting is a reason too)."""
+    try:
+        settings = load_settings(home)
+    except config.ConfigError as error:
+        return str(error)
+    return wait_until_clear(manager, settings, probe, wait_sec, GUARD_POLL_SEC, say, abort)
+
+
+def wait_until_clear(
+        manager: lease.LeaseManager, settings: GuardSettings, probe: Probe | None, wait_sec: float, poll_sec: float = GUARD_POLL_SEC,
+        say: Callable[[str], None] | None = None, abort: Callable[[], str | None] | None = None,
+        monotonic: Callable[[], float] = time.monotonic, sleep: Callable[[float], None] = time.sleep) -> str | None:
+    """Wait, at most `wait_sec`, until no Unity Editor runs outside a lease and enough memory is free; None when clear, else the reason.
+    The caller holds its own leases meanwhile (so its Editor is below a lease holder, never an orphan). `abort` returns a reason to stop
+    at once (a lost lease). `say` receives the notices (a note about a check that cannot be made, and a waiting line every 30 s)."""
+    probe = probe or probe_factory()
+    deadline = monotonic() + max(0.0, wait_sec)
+    noted: set[str] = set()
+    last_notice: float | None = None
+    while True:
+        why = abort() if abort is not None else None
+        if why:
+            return why
+        holders = [item.record.pid for item in manager.list_all() if item.state == "held" and item.record is not None]
+        if isinstance(probe, SystemProbe):
+            probe.timeout_sec = max(5.0, min(PROBE_TIMEOUT_SEC, deadline - monotonic()))  # a probe never outlasts the wait by much
+        problem, notes = check(probe, settings, holders)
+        for note in notes:
+            if note not in noted:
+                noted.add(note)
+                if say is not None:
+                    say(f"note: {note}")
+        if problem is None:
+            return None
+        now = monotonic()
+        if now >= deadline:
+            return problem
+        if say is not None and (last_notice is None or now - last_notice >= lease.WAIT_NOTICE_SEC):
+            last_notice = now
+            say(f"waiting (both leases are held): {problem}")
+        sleep(min(poll_sec, max(0.0, deadline - now)))
 
 
 def check(probe: Probe, settings: GuardSettings, protected_pids: Iterable[int]) -> tuple[str | None, list[str]]:
