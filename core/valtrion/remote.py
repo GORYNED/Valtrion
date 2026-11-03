@@ -100,12 +100,14 @@ class RetryingTransport(Transport):
         return self._attempt(lambda: self._inner.get(remote, local, timeout_sec), copy=True)
 
 
-def make_transport(entry: HostEntry, runner: Runner = run_process, retry: bool = True, sleep: Callable[[float], None] = time.sleep) -> Transport:
+def make_transport(entry: HostEntry, runner: Runner = run_process, retry: bool = True, sleep: Callable[[float], None] = time.sleep,
+                   lifeline: bool = False) -> Transport:
     if entry.kind == "local":
         return LocalTransport(runner)
     # Control sockets live in the valtrion state folder, never under ~/Documents or a synced folder.
     base = SshTransport(entry.ssh_target or "", entry.connect_timeout_sec, runner, posix=entry.os != "windows",
                         control_dir=core.valtrion_home() / "ssh")
+    base.lifeline = lifeline
     return RetryingTransport(base, sleep=sleep) if retry else base
 
 

@@ -140,14 +140,37 @@ def parse_cim_memory(text: str) -> float | None:
 # -- recognising an Editor ----------------------------------------------------------------------------------------------------
 
 _POSIX_EDITOR = re.compile(r"(?:/Unity\.app/Contents/MacOS/Unity|/Editor/Unity)(?:\s|$)")
-_WINDOWS_EDITOR = re.compile(r'(?:^|[\\/"])Unity\.exe(?:"|\s|$)', re.IGNORECASE)
+_WINDOWS_EDITOR = re.compile(r'(?:^|[\\/])Unity\.exe$', re.IGNORECASE)
+
+
+def _first_word(command: str) -> str:
+    """The program of a Windows command line: the quoted first part, else up to the first space."""
+    text = command.strip()
+    if text.startswith('"'):
+        end = text.find('"', 1)
+        return text[1:end] if end > 0 else text[1:]
+    return text.split(None, 1)[0] if text else ""
+
+
+def _posix_program(command: str) -> str | None:
+    """The program a `ps` line starts with, or None when the line is some other program that only mentions an Editor (`sh -c ".../Unity"`,
+    a queued `valtrion unity run --unity .../Unity`). The program is an absolute path that may contain spaces, but no further part of it
+    starts a new word with `/`, `-` or a quote."""
+    match = _POSIX_EDITOR.search(command)
+    if match is None or not command.startswith("/"):
+        return None
+    prefix = command[:match.start()]
+    if any(word.startswith(("/", "-", '"', "'")) for word in prefix.split()[1:]) or '"' in prefix or "'" in prefix:
+        return None
+    return command[:match.end()].rstrip()
 
 
 def is_unity_editor(proc: Proc, os_name: str) -> bool:
-    """A Unity Editor (also its asset-import workers, which are the same executable), not the Hub or a helper."""
+    """A Unity Editor (also its asset-import workers, which are the same executable), not the Hub, a helper or a program that only has
+    the Editor's path among its arguments. Only the program is looked at, never the arguments."""
     if os_name == "windows":
-        return bool(_WINDOWS_EDITOR.search(proc.path or proc.command))
-    return bool(_POSIX_EDITOR.search(proc.command))
+        return bool(_WINDOWS_EDITOR.search(proc.path or _first_word(proc.command)))
+    return _posix_program(proc.command) is not None
 
 
 def editors_outside_leases(processes: Iterable[Proc], protected_pids: Iterable[int], os_name: str) -> list[Proc]:
@@ -174,10 +197,12 @@ def editors_outside_leases(processes: Iterable[Proc], protected_pids: Iterable[i
 
 # -- the system -----------------------------------------------------------------------------------------------------------------
 
-Runner = Callable[[Sequence[str]], "str | None"]
+Runner = Callable[[Sequence[str], float], "str | None"]
+#: Longest a single `ps`, `vm_stat` or PowerShell call may take (`SystemProbe.timeout_sec` lowers it when the wait budget is short).
+PROBE_TIMEOUT_SEC = 30.0
 
 
-def run_text(argv: Sequence[str], timeout_sec: float = 30.0) -> str | None:
+def run_text(argv: Sequence[str], timeout_sec: float = PROBE_TIMEOUT_SEC) -> str | None:
     try:
         result = subprocess.run(list(argv), capture_output=True, timeout=timeout_sec, check=False)
     except (OSError, subprocess.SubprocessError):
@@ -203,18 +228,19 @@ class SystemProbe(Probe):
     def __init__(self, os_name: str | None = None, runner: Runner = run_text, meminfo: Path = Path("/proc/meminfo")) -> None:
         self.os_name = os_name or core.local_os()
         self._run = runner
+        self.timeout_sec = PROBE_TIMEOUT_SEC
         self._meminfo = meminfo
 
     def _powershell(self, command: str) -> str | None:
         shell = shutil.which("powershell") or shutil.which("pwsh") or "powershell"
-        return self._run([shell, "-NoProfile", "-NonInteractive", "-Command", command])
+        return self._run([shell, "-NoProfile", "-NonInteractive", "-Command", command], self.timeout_sec)
 
     def processes(self) -> list[Proc] | None:
         if self.os_name == "windows":
             text = self._powershell("Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,ExecutablePath,CommandLine "
                                     "| ConvertTo-Json -Compress")
             return None if text is None else parse_cim_processes(text)
-        text = self._run(["ps", "-axo", "pid=,ppid=,command="])
+        text = self._run(["ps", "-axo", "pid=,ppid=,command="], self.timeout_sec)
         return None if text is None else parse_ps(text)
 
     def free_memory_mib(self) -> float | None:
@@ -222,7 +248,7 @@ class SystemProbe(Probe):
             text = self._powershell("(Get-CimInstance Win32_OperatingSystem).FreePhysicalMemory")
             return None if text is None else parse_cim_memory(text)
         if self.os_name == "macos":
-            text = self._run(["vm_stat"])
+            text = self._run(["vm_stat"], self.timeout_sec)
             return None if text is None else parse_vm_stat(text)
         try:
             return parse_meminfo(self._meminfo.read_text(encoding="utf-8"))

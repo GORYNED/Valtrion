@@ -78,11 +78,35 @@ class RecognitionTests(unittest.TestCase):
         self.assertEqual([700], [pid for pid, yes in windows.items() if yes])
 
     def test_windows_paths_with_forward_slashes_quotes_and_case(self):
-        for path in ("C:/Program Files/Unity/Hub/Editor/6000.6.7f1/Editor/Unity.exe", "d:\\unity\\editor\\UNITY.EXE",
-                     '"C:\\Program Files\\Unity\\Editor\\Unity.exe" -batchmode', "//?/C:/Unity/Editor/Unity.exe"):
-            self.assertTrue(unityguard.is_unity_editor(Proc(1, 0, "", path), "windows"), path)
+        for path in ("C:/Program Files/Unity/Hub/Editor/6000.6.7f1/Editor/Unity.exe", "d:\\unity\\editor\\UNITY.EXE", "//?/C:/Unity/Editor/Unity.exe"):
+            self.assertTrue(unityguard.is_unity_editor(Proc(1, 0, path, path), "windows"), path)  # CIM names the executable
+        quoted = '"C:\\Program Files\\Unity\\Editor\\Unity.exe" -batchmode'
+        self.assertTrue(unityguard.is_unity_editor(Proc(1, 0, "", quoted), "windows"), quoted)  # no ExecutablePath: the quoted program
         for path in ("C:\\x\\MyUnity.exe", "C:\\x\\Unity.exe.bak", "C:\\Unity Hub\\Unity Hub.exe"):
             self.assertFalse(unityguard.is_unity_editor(Proc(1, 0, path, path), "windows"), path)
+
+    def test_a_program_that_only_has_the_editor_among_its_arguments_is_not_an_editor(self):
+        editor = "/Applications/Unity/Hub/Editor/6000.6.7f1/Unity.app/Contents/MacOS/Unity"
+        for command in (
+                f"/usr/bin/python3 -m valtrion unity run --unity {editor} -- -batchmode",  # a queued run
+                f"python3 /opt/valtrion/__main__.py unity run --unity {editor}",
+                f'sh -c "{editor} -batchmode"',
+                f"/bin/sh /opt/run.sh {editor}",
+                f"/usr/bin/tail -f {editor}",
+                f"/opt/valtrion/bin/valtrion unity run --unity /opt/unity/6000/Editor/Unity -- -x"):
+            self.assertFalse(unityguard.is_unity_editor(Proc(9, 1, command, command), "macos"), command)
+            self.assertFalse(unityguard.is_unity_editor(Proc(9, 1, command, command), "linux"), command)
+
+    def test_the_editor_itself_is_still_found_with_spaces_in_its_path_and_arguments_of_all_kinds(self):
+        for command in ("/Applications/Unity Hub/Editor/6000.6.7f1/Unity.app/Contents/MacOS/Unity -batchmode -projectPath /x/My Game -quit",
+                        "/opt/unity editors/6000/Editor/Unity -batchmode -executeMethod A.B --unity /x/y"):
+            self.assertTrue(unityguard.is_unity_editor(Proc(9, 1, command, command), "macos"), command)
+
+    def test_a_windows_process_without_a_path_is_judged_by_its_program_not_its_arguments(self):
+        queued = Proc(9, 1, "", '"C:\\tools\\valtrion.exe" unity run --unity C:\\Unity\\Editor\\Unity.exe -- -batchmode')
+        self.assertFalse(unityguard.is_unity_editor(queued, "windows"))
+        direct = Proc(9, 1, "", '"C:\\Unity\\Editor\\Unity.exe" -batchmode')
+        self.assertTrue(unityguard.is_unity_editor(direct, "windows"))
 
     def test_msys_style_paths_of_a_git_bash_session(self):
         path = "/c/Program Files/Unity/Hub/Editor/6000.6.7f1/Editor/Unity.exe"
@@ -111,8 +135,10 @@ class AncestryTests(unittest.TestCase):
 class SystemProbeTests(unittest.TestCase):
     def probe(self, os_name, outputs, meminfo=None):
         self.calls = []
+        self.timeouts = []
 
-        def runner(argv):
+        def runner(argv, timeout_sec=30.0):
+            self.timeouts.append(timeout_sec)
             self.calls.append(list(argv))
             return outputs.get(argv[0] if os_name != "windows" else "powershell")
 
@@ -142,6 +168,13 @@ class SystemProbeTests(unittest.TestCase):
             meminfo.write_text(MEMINFO, encoding="utf-8")
             self.assertAlmostEqual(8000.0, self.probe("linux", {}, meminfo).free_memory_mib())
         self.assertIsNone(self.probe("linux", {}).free_memory_mib())
+
+    def test_the_timeout_of_a_call_follows_the_probe_setting(self):
+        probe = self.probe("macos", {"ps": PS, "vm_stat": VM_STAT})
+        probe.timeout_sec = 7.0
+        probe.processes()
+        probe.free_memory_mib()
+        self.assertEqual([7.0, 7.0], self.timeouts)
 
     def test_a_failing_tool_gives_none_not_an_exception(self):
         probe = self.probe("macos", {})

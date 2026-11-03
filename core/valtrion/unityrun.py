@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import os
 import re
+import select
 import shutil
 import signal
 import sys
@@ -28,6 +29,8 @@ DEFAULT_STALL_SEC = 600.0
 LEASE_TTL_SEC = 300
 LOG_TAIL_BYTES = 256 * 1024
 CONSOLE_TAIL_BYTES = 64 * 1024
+#: Seconds between two looks at the process list and free memory while the run waits for them (a CIM query on Windows is not cheap).
+GUARD_POLL_SEC = 5.0
 
 #: Texts in the tail of a Unity log that turn exit code 1 from a failed run into a missing prerequisite (an Editor that could not
 #: open the project or has no license). Compared in lower case.
@@ -77,10 +80,13 @@ def _absolute(text: str) -> Path:
 
 
 def _result(out: TextIO, status: str, reason: str | None) -> int:
-    if reason:
-        print(reason, file=out)
-    print(f"STATUS {status}", file=out)
-    out.flush()
+    try:
+        if reason:
+            print(reason, file=out)
+        print(f"STATUS {status}", file=out)
+        out.flush()
+    except (BrokenPipeError, ValueError):  # the reader is gone (a dropped SSH session); the work is over either way
+        pass
     return constants.exit_code_for_status(status)
 
 
@@ -158,8 +164,11 @@ def install_console_handler(handler: Callable[[int], bool]) -> Callable[[], None
     def remove() -> None:
         kernel32.SetConsoleCtrlHandler(routine, False)
 
-    remove.keep = routine  # type: ignore[attr-defined]  # the callback must outlive the registration
+    _CONSOLE_ROUTINES.append(routine)  # never dropped: Windows may still be running the callback after the registration is removed
     return remove
+
+
+_CONSOLE_ROUTINES: list = []
 
 
 class _Handlers:
@@ -175,6 +184,8 @@ class _Handlers:
         self._interrupt = interrupt
         self._remove: Callable[[], None] | None = None
         self.finished = threading.Event()
+        #: Set while the leases are being given back: a further signal then changes nothing (cleanup is not interrupted).
+        self.cleaning = False
 
     def __enter__(self) -> "_Handlers":
         if self._windows:
@@ -182,7 +193,8 @@ class _Handlers:
                 self._remove = self._install(console_stop_handler(self._interrupt, self.finished))
             except OSError:  # no console to hook (a service); the signals below still apply
                 self._remove = None
-        names = ("SIGTERM", "SIGBREAK", "SIGHUP")
+        # SIGINT too: `_thread.interrupt_main` (the end of the caller's input, a Windows console event) arrives through it.
+        names = ("SIGINT", "SIGTERM", "SIGBREAK", "SIGHUP")
         for name in names:
             number = getattr(signal, name, None)
             if number is None:
@@ -193,8 +205,9 @@ class _Handlers:
                 pass
         return self
 
-    @staticmethod
-    def _raise(number: int, frame: object) -> None:
+    def _raise(self, number: int, frame: object) -> None:
+        if self.cleaning:
+            return
         raise Interrupted(f"signal {number}")
 
     def __exit__(self, *_: object) -> None:
@@ -213,8 +226,10 @@ def run(
         lease_wait_sec: float = DEFAULT_LEASE_WAIT_SEC, timeout_sec: float = 0.0, stall_sec: float = DEFAULT_STALL_SEC,
         purpose: str = "", home: Path | None = None, out: TextIO | None = None, err: TextIO | None = None,
         ttl_sec: int = LEASE_TTL_SEC, poll_sec: float = 1.0, cancel_poll_sec: float = 1.0,
-        probe: unityguard.Probe | None = None) -> int:
-    """Run Unity with `unity_args`; returns the exit code of the final status (already printed as the last stdout line)."""
+        probe: unityguard.Probe | None = None, guard_poll_sec: float | None = None, lifeline: int | None = None) -> int:
+    """Run Unity with `unity_args`; returns the exit code of the final status (already printed as the last stdout line).
+    `lifeline`: a file descriptor whose end of input means the caller is gone (the standard input of a command run over SSH); the run is then
+    interrupted like by Ctrl+C."""
     out = out or sys.stdout
     err = err or sys.stderr
     args = normalize_assembly_names(unity_args)
@@ -261,28 +276,35 @@ def run(
     deadline = time.monotonic() + max(0.0, lease_wait_sec)
     work = Path(tempfile.mkdtemp(prefix="valtrion-unity-"))
     keeper = lease.LeaseKeeper(manager, session, pid, ttl_sec / 3, owner)
-    held: list[str] = []
+    #: Every lease this run may hold, in the order taken. A name is listed before its acquire call starts, so an interrupt between the
+    #: moment a lease is created and the moment the run notes it still finds it at cleanup (releasing a lease of another holder does nothing).
+    may_hold: list[str] = []
     stop_watching = threading.Event()
     handlers = _Handlers()
+    guard_poll = guard_poll_sec if guard_poll_sec is not None else max(poll_sec, GUARD_POLL_SEC)
 
     def waiting(reason: str, waited_sec: float) -> None:
-        print(lease.waiting_message(reason, waited_sec), file=err)
+        _say(err, lease.waiting_message(reason, waited_sec))
 
-    try:
-        with handlers:
+    input_watcher: threading.Thread | None = None
+    with handlers:
+        if lifeline is not None:  # after the handlers: the end of the input must arrive as an `Interrupted`, not as a bare Ctrl+C
+            input_watcher = threading.Thread(target=_watch_input, args=(lifeline, stop_watching), name="valtrion-unity-input-watch", daemon=True)
+            input_watcher.start()
+        try:
             try:
+                may_hold.append(project_resource)
                 taken = manager.acquire(project_resource, owner, session, ttl_sec, what, pid, wait_sec=max(0.0, deadline - time.monotonic()),
                                         poll_sec=poll_sec, on_wait=waiting)
                 if not taken.acquired:
                     return _result(out, constants.BLOCKED, taken.reason)
-                held.append(project_resource)
                 keeper.add(project_resource)
                 keeper.start()  # the project lease is renewed while this run waits for a slot
+                may_hold += [lease.slot_resource(lease.UNITY_EDITOR_RESOURCE, number) for number in range(1, capacity + 1)]
                 slot = manager.acquire_slot(lease.UNITY_EDITOR_RESOURCE, capacity, owner, session, ttl_sec, what, pid,
                                             wait_sec=max(0.0, deadline - time.monotonic()), poll_sec=poll_sec, on_wait=waiting)
                 if not slot.acquired:
                     return _result(out, constants.BLOCKED, slot.reason)
-                held.append(slot.lease.resource)
                 keeper.add(slot.lease.resource)
                 # Holding both leases, wait (within the same budget) until no Editor runs outside a lease and enough memory is free.
                 noted: set[str] = set()
@@ -291,11 +313,14 @@ def run(
                     if keeper.lost:
                         return _result(out, constants.BLOCKED, f"the lease(s) {', '.join(keeper.lost)} were lost before Unity started")
                     holders = [s.record.pid for s in manager.list_all() if s.state == "held" and s.record is not None]
+                    remaining = max(0.0, deadline - time.monotonic())
+                    if isinstance(probe, unityguard.SystemProbe):
+                        probe.timeout_sec = max(5.0, min(unityguard.PROBE_TIMEOUT_SEC, remaining))  # a probe never outlasts the wait budget by much
                     problem, notes = unityguard.check(probe, guard_settings, holders)
                     for note in notes:
                         if note not in noted:
                             noted.add(note)
-                            print(f"valtrion unity run: note: {note}", file=err)
+                            _say(err, f"valtrion unity run: note: {note}")
                     if problem is None:
                         break
                     now = time.monotonic()
@@ -303,11 +328,12 @@ def run(
                         return _result(out, constants.BLOCKED, problem)
                     if last_notice is None or now - last_notice >= lease.WAIT_NOTICE_SEC:
                         last_notice = now
-                        print(f"waiting: {problem}", file=err)
-                    time.sleep(min(poll_sec, max(0.0, deadline - now)))
+                        _say(err, f"waiting (both leases are held): {problem}")
+                    time.sleep(min(guard_poll, max(0.0, deadline - now)))
 
                 console = work / "console.log"
                 cancel = work / "cancel"
+                before = _log_state(log_file)
                 watchdog = supervise.Watchdog(
                     timeout_sec if timeout_sec > 0 else float("inf"),
                     stall_sec if stall_sec > 0 and log_file is not None else float("inf"),
@@ -324,29 +350,81 @@ def run(
                 outcome = supervise.supervise([editor, *args], watchdog, console, None, None, exit_codes=UNITY_EXIT_CODES)
                 stop_watching.set()
                 watcher.join(timeout=5)
-                if outcome.cancelled or keeper.lost:
-                    status, reason = constants.BLOCKED, f"the lease(s) {', '.join(keeper.lost)} were lost while Unity ran; Unity was stopped"
+                lost = f"the lease(s) {', '.join(keeper.lost)} were lost while Unity ran"
+                if outcome.cancelled:
+                    status, reason = constants.BLOCKED, f"{lost}; Unity was stopped"
                 else:
-                    status, reason = classify(outcome, log_file or console)
+                    # A log from an earlier run (Unity failed before it opened the file) says nothing about this one.
+                    status, reason = classify(outcome, log_file if _log_is_new(log_file, before) else console)
+                    if keeper.lost:  # Unity had already ended: its own result stands, with the note
+                        reason = f"{reason}; note: {lost}" if reason else f"note: {lost}"
                 text = log_tail(console, CONSOLE_TAIL_BYTES)
                 if text:
-                    err.write(text if text.endswith("\n") else text + "\n")
-                    err.flush()
+                    _say(err, text.rstrip("\n"))
                 return _result(out, status, reason)
             except Interrupted as stop:
                 return _result(out, constants.BLOCKED, f"interrupted ({stop}); Unity was stopped and the leases released")
             except KeyboardInterrupt:
                 return _result(out, constants.BLOCKED, "interrupted; Unity was stopped and the leases released")
-    finally:
-        stop_watching.set()
-        keeper.stop()
-        for resource in reversed(held):  # the slot first, then the project
-            try:
-                manager.release(resource, session, pid)
-            except OSError:
-                pass
-        shutil.rmtree(work, ignore_errors=True)
-        handlers.finished.set()
+        finally:
+            handlers.cleaning = True  # signals during the release change nothing; the handlers stay until the end of the block
+            stop_watching.set()
+            for resource in reversed(may_hold):  # the slot first, then the project; under the keeper's lock, so no renewal recreates one
+                keeper.add(resource)
+                keeper.release_one(resource)
+            keeper.stop()
+            shutil.rmtree(work, ignore_errors=True)
+            handlers.finished.set()
+            if input_watcher is not None:
+                input_watcher.join(timeout=2 * INPUT_POLL_SEC + 1)  # POSIX: ends by itself within one poll; never left to finalization
+
+
+def _say(stream: TextIO, text: str) -> None:
+    try:
+        print(text, file=stream)
+        stream.flush()
+    except (BrokenPipeError, ValueError):  # the reader is gone; nothing to tell
+        pass
+
+
+INPUT_POLL_SEC = 0.2
+
+
+def _watch_input(fd: int, stop: threading.Event) -> None:
+    """Wait for the end of the caller's input, then interrupt the main thread like Ctrl+C: the caller (an SSH client) is gone, so the
+    run stops Unity and gives its leases back. Used only when the caller said so (`--stop-on-stdin-eof`).
+
+    It reads the raw descriptor, never `sys.stdin`: a thread blocked inside the buffered reader holds its lock, and finalizing the
+    interpreter then aborts the process. On POSIX it polls with a timeout and ends when `stop` is set; Windows cannot poll a pipe, so
+    there the thread blocks in `os.read` (a raw call, harmless at exit)."""
+    try:
+        while not stop.is_set():
+            if os.name != "nt":
+                ready, _, _ = select.select([fd], [], [], INPUT_POLL_SEC)
+                if not ready:
+                    continue
+            if not os.read(fd, 4096):
+                break
+        else:
+            return
+    except (OSError, ValueError):  # a closed or invalid descriptor is the end of the input as well
+        pass
+    if not stop.is_set():
+        _thread.interrupt_main()
+
+
+def _log_state(path: Path | None) -> tuple[int, int] | None:
+    try:
+        info = path.stat() if path is not None else None
+    except OSError:
+        return None
+    return (info.st_size, info.st_mtime_ns) if info is not None else None
+
+
+def _log_is_new(path: Path | None, before: tuple[int, int] | None) -> bool:
+    """Whether the log was written after `before` (taken when the run started): a missing file before counts as new once it exists."""
+    now = _log_state(path)
+    return now is not None and now != before
 
 
 def _user() -> str:

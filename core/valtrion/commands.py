@@ -56,10 +56,11 @@ def _entry(arguments: argparse.Namespace) -> config.HostEntry | None:
     return None if entry.kind == "local" else entry
 
 
-def _remote(entry: config.HostEntry, arguments: argparse.Namespace, retry: bool = True) -> remote.Remote:
-    """The valtrion entry on `entry`. Commands that start something (not idempotent) pass `retry=False`: a retried start could run twice."""
+def _remote(entry: config.HostEntry, arguments: argparse.Namespace, retry: bool = True, lifeline: bool = False) -> remote.Remote:
+    """The valtrion entry on `entry`. Commands that start something (not idempotent) pass `retry=False`: a retried start could run twice.
+    A foreground command that must stop when the connection ends passes `lifeline=True` (see `SshTransport.lifeline`)."""
     project = getattr(arguments, "remote_project", None) or os.environ.get("GDV_REMOTE_PROJECT")
-    return remote.remote_for(entry, project, remote.make_transport(entry, retry=retry))
+    return remote.remote_for(entry, project, remote.make_transport(entry, retry=retry, lifeline=lifeline))
 
 
 def _strip_host_options(raw: Sequence[str]) -> list[str]:
@@ -78,14 +79,16 @@ def _strip_host_options(raw: Sequence[str]) -> list[str]:
 
 
 def _forward(arguments: argparse.Namespace, entry: config.HostEntry, extra: Sequence[str] = (), timeout: int = REMOTE_TIMEOUT_SEC,
-             retry: bool = True, lost_hint: str = "") -> int:
+             retry: bool = True, lost_hint: str = "", lifeline: bool = False) -> int:
     """Run the same command on the SSH host and relay its output and exit code. Only idempotent commands use this with `retry`.
     `lost_hint` is added to the message when the answer is lost (a command that may still run on the host says so)."""
     try:
-        target = _remote(entry, arguments, retry)
+        target = _remote(entry, arguments, retry, **({"lifeline": True} if lifeline else {}))
     except ValueError as error:
         return _blocked(arguments.command, str(error))
-    result = target.call([*_strip_host_options(arguments.raw_argv), *extra], timeout)
+    line = _strip_host_options(arguments.raw_argv)
+    place = line.index("--") if "--" in line else len(line)  # `extra` options go before the user's own command after `--`
+    result = target.call([*line[:place], *extra, *line[place:]], timeout)
     sys.stdout.write(result.stdout)
     sys.stderr.write(result.stderr)
     if result.timed_out:
@@ -1227,8 +1230,10 @@ def _workroot(arguments: argparse.Namespace) -> int:
 
 REMOTE_UNITY_NO_TIMEOUT_SEC = 24 * 3600
 REMOTE_UNITY_MARGIN_SEC = 300
-REMOTE_UNITY_LOST_HINT = ("; if the connection broke during the run its result is unknown: the host stops Unity and releases the leases when "
-                          "the session ends (a host that cannot do so frees them after their 300 s TTL); see `valtrion lease list --host`")
+REMOTE_UNITY_LOST_HINT = ("; if the connection broke during the run its result is unknown: the run on the host is stopped (Unity killed, leases "
+                          "released) when the host sees the end of its input, which could not be confirmed on a Windows host; otherwise it "
+                          "runs on until Unity ends or --timeout-sec expires, and its leases are released then. See `valtrion lease list --host`")
+STOP_ON_STDIN_EOF = "--stop-on-stdin-eof"
 
 
 def _configure_unity(parser: argparse.ArgumentParser) -> None:
@@ -1244,6 +1249,7 @@ def _configure_unity(parser: argparse.ArgumentParser) -> None:
     run.add_argument("--stall-sec", type=_finite_seconds, default=600.0, metavar="N",
                      help="STALL when the -logFile has not grown for N s (default 600; 0 = off; also off without -logFile)")
     run.add_argument("--purpose", default="", help="text recorded in the leases")
+    run.add_argument(STOP_ON_STDIN_EOF, action="store_true", help=argparse.SUPPRESS)  # added by a caller that keeps this command's input open
     _add_host_options(run)
     run.add_argument("unity_args", nargs=argparse.REMAINDER, help="after `--`: the arguments passed to Unity")
 
@@ -1262,15 +1268,18 @@ def _unity(arguments: argparse.Namespace) -> int:
         # Starting Unity is not idempotent, so the transport does not retry; the output arrives when the run has ended.
         limit = arguments.timeout_sec if arguments.timeout_sec > 0 else REMOTE_UNITY_NO_TIMEOUT_SEC
         return _forward(arguments, entry, timeout=int(arguments.lease_wait + limit + REMOTE_UNITY_MARGIN_SEC), retry=False,
-                        lost_hint=REMOTE_UNITY_LOST_HINT)
+                        lost_hint=REMOTE_UNITY_LOST_HINT, lifeline=True, extra=(STOP_ON_STDIN_EOF,))
     from . import unityrun
 
-    try:
-        found = project.resolve_unity_project(arguments.project_dir)
-    except project.ProjectError as error:
-        return _blocked("unity", str(error))
-    return unityrun.run(_unity_arguments(arguments), found, arguments.unity, arguments.lease_wait, arguments.timeout_sec,
-                        arguments.stall_sec, arguments.purpose)
+    unity_args = _unity_arguments(arguments)
+    found = None
+    if unityrun.option_value(unity_args, "-projectPath") is None:  # -projectPath wins; a broken valtrion.json must not block such a run
+        try:
+            found = project.resolve_unity_project(arguments.project_dir)
+        except project.ProjectError as error:
+            return _blocked("unity", str(error))
+    return unityrun.run(unity_args, found or arguments.project_dir, arguments.unity, arguments.lease_wait, arguments.timeout_sec,
+                        arguments.stall_sec, arguments.purpose, lifeline=sys.stdin.fileno() if arguments.stop_on_stdin_eof else None)
 
 
 def register_all() -> None:

@@ -1,7 +1,7 @@
 """A stand-in for the Unity Editor: the tests start it as `<python> fake_unity.py <Unity arguments>`.
 
 It understands `-logFile` (like Unity) plus a few test switches: `--exit N`, `--sleep SEC`, `--grow` (keep writing to the log while
-sleeping), `--text TEXT` (written to the log first), `--dump DIR` (writes argv, the leases it sees and its pid into DIR), `--print`
+sleeping), `--text TEXT` (written to the log first), `--dump DIR` (writes argv, the leases it sees and its pid into DIR), `--print`, `--no-log` (never opens the log, like a Unity that fails first).
 (also writes the text to stdout)."""
 
 import json
@@ -19,7 +19,7 @@ def value(name, default=None):
 def main():
     log = value("-logFile")
     text = value("--text", "fake unity started")
-    handle = open(log, "a", encoding="utf-8") if log and log != "-" else None
+    handle = open(log, "a", encoding="utf-8") if log and log != "-" and "--no-log" not in sys.argv else None
     if handle:
         handle.write(text + "\n")
         handle.flush()
