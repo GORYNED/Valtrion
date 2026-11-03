@@ -138,7 +138,8 @@ def ensure_free(settings: config.HostSettings, home: Path | None, protected: Seq
                                                          keep=lambda job_id: jobs.kept_work_reason(job_id, home))),
         ("expired run folders", lambda: artifacts.gc(settings.artifacts_root, settings.keep_days_under_pressure,
                                                     protected=protected_paths).removed),
-        ("expired builds", lambda: buildcache.gc(buildcache.builds_root(home), protect=active_build_keys(home, active)).removed)]
+        ("expired builds", lambda: buildcache.gc(buildcache.builds_root(home), protect=active_build_keys(home, active),
+                                                  **settings.build_cache.limits()).removed)]
     if not keep_incremental:
         # Last: the next build there compiles everything again, so it goes only when nothing else was enough.
         steps.append(("idle incremental build folders", lambda: release_idle_incremental(home)))

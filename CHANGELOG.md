@@ -2,6 +2,10 @@
 
 Core (the `valtrion` Python package) and the Unity package `com.goryned.valtrion.unity` are versioned independently. The Unity changelog is in `integrations/unity/com.goryned.valtrion.unity/CHANGELOG.md`; `compat.json` lists compatible pairs.
 
+## Unreleased
+
+- **Published-build retention is configurable.** New optional `host.json` setting `buildCache`: `{ "maxEntries": 20, "keepDays": 14, "dirtyKeepDays": 2 }` (all optional; the values shown are the defaults, so nothing changes without it). It sets the limits of the automatic cleanup after each publish, of `valtrion gc`, of the `disk.minFreeGiB` pressure cleanup and the default of `valtrion builds gc`; `--keep-days`, `--dirty-keep-days` and `--max-entries` still win. A build used in the last hour, an active job's build and the build just published are never removed. `maxEntries` is a non-negative integer, the day counts non-negative numbers; anything else, or an unknown key, is a `host.json` error. See `docs/work-root.md`.
+
 ## 0.8.6
 
 - **A wired iOS device with an idle tunnel is attached (#22).** CoreDevice drops the tunnel of an idle device, and `devicectl list devices` then shows a wired, paired device as `available (paired)`; iOS discovery skipped it, so pipelines ended `BLOCKED: no attached device satisfies ...` with the device on the cable. Discovery now treats a wired, paired physical device as attachable and wakes its tunnel first with `devicectl device info lockState` (one bounded probe per idle device, then one more listing). Wireless devices whose tunnel is down are still not used. When no attached device fits, the reason says `device offline: <id> ...` for a registered device that would fit, or `no attached device satisfies: ... (no device with these settings is known on this host)`.

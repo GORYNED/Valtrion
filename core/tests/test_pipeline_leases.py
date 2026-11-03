@@ -775,6 +775,41 @@ class BuildCacheTests(unittest.TestCase):
             self.assertEqual(0, code)
             self.assertEqual(1, len(buildcache.entries(self.root)), "the entry was used a moment ago, so it is guarded")
 
+    def test_host_json_build_cache_sets_the_limits_of_the_publish_gc_and_the_builds_command(self):
+        import contextlib
+        import io
+        from datetime import timedelta
+        from types import SimpleNamespace
+        from valtrion import cli
+        home = self.base / "home"
+        home.mkdir(exist_ok=True)
+        (home / "host.json").write_text(json.dumps({"buildCache": {"maxEntries": 1, "keepDays": 5, "dirtyKeepDays": 1}}), encoding="utf-8")
+        with mock.patch.dict(os.environ, {core.HOME_ENV: str(home)}):
+            self.root = buildcache.builds_root()
+            now = core.now()
+
+            def fill(*ages):
+                for key, days in ages:
+                    entry = self.publish(key)
+                    stamp = core.format_utc(now - timedelta(days=days))
+                    core.atomic_write_json(entry.directory / buildcache.MANIFEST, {**entry.manifest, "lastUsedUtc": stamp})
+
+            def run(*argv):
+                with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                    return cli.main(list(argv))
+
+            fill(("a", 10), ("b", 3), ("c", 2))
+            self.assertEqual(0, run("builds", "gc", "--max-entries", "5", "--keep-days", "4"))
+            self.assertEqual(["b", "c"], sorted(e.key for e in buildcache.entries(self.root)), "flags win over host.json")
+            self.assertEqual(0, run("builds", "gc"))
+            self.assertEqual(["c"], [e.key for e in buildcache.entries(self.root)], "host.json maxEntries is the default")
+            fill(("d", 3))
+            events = SimpleNamespace(emit=mock.Mock())
+            pipeline._collect_build_cache(SimpleNamespace(home=home, events=events), "d")
+            self.assertEqual(["d"], [e.key for e in buildcache.entries(self.root)], "the publish gc keeps the new build, drops the rest")
+            (home / "host.json").write_text(json.dumps({"buildCache": {"maxEntries": -1}}), encoding="utf-8")
+            self.assertEqual(2, run("builds", "gc"), "a broken buildCache is BLOCKED")
+
     def test_lease_keeper_release_one_gives_back_only_that_lease(self):
         manager = LeaseManager(self.base / "home")
         for name in ("device:x", "unity-project:y"):

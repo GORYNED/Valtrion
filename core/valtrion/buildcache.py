@@ -31,6 +31,18 @@ SCHEMA = "valtrion.build/1"
 DEFAULT_KEEP_DAYS = 14.0
 DEFAULT_DIRTY_KEEP_DAYS = 2.0
 DEFAULT_MAX_ENTRIES = 20
+
+
+@dataclass(frozen=True)
+class Retention:
+    """How long published builds are kept (`host.json` `buildCache`); the defaults are the built-in limits."""
+    max_entries: int = DEFAULT_MAX_ENTRIES
+    keep_days: float = DEFAULT_KEEP_DAYS
+    dirty_keep_days: float = DEFAULT_DIRTY_KEEP_DAYS
+
+    def limits(self) -> dict[str, Any]:
+        """Keyword arguments for `gc`."""
+        return {"keep_days": self.keep_days, "dirty_keep_days": self.dirty_keep_days, "max_entries": self.max_entries}
 #: An entry used (published, reused or installed from) within this many seconds is never removed: a job may be installing it.
 GUARD_SEC = 3600.0
 _INCOMING = ".incoming-"

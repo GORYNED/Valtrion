@@ -15,7 +15,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Sequence
 
-from . import core, workroot
+from . import buildcache, core, workroot
 from .adapter import DeviceInfo
 from .resolver import HostInfo
 from .schema import Validator, validate_document
@@ -136,6 +136,8 @@ class HostSettings:
     tools_root: Path | None = None
     #: `unityAccelerator`: the cache server every Unity batch build of the platform adapters uses; None (the default) uses none.
     unity_accelerator: "UnityAccelerator | None" = None
+    #: `buildCache`: retention of the published builds (`maxEntries`, `keepDays`, `dirtyKeepDays`); the built-in limits by default.
+    build_cache: buildcache.Retention = field(default_factory=buildcache.Retention)
 
     def project(self, name: str) -> "ManagedProject | None":
         return next((item for item in self.projects if item.name == name), None)
@@ -222,7 +224,28 @@ def _load_host_settings(home: Path | None = None) -> HostSettings:
     return HostSettings(Path(root).expanduser() if root else default_root, float(days),
                         Path(work).expanduser() if work else default_work, float(minimum) if minimum is not None else None,
                         float(pressure_days), projects, float(wait_sec), tools_root=home / "tools",
-                        unity_accelerator=_load_unity_accelerator(document.get("unityAccelerator")))
+                        unity_accelerator=_load_unity_accelerator(document.get("unityAccelerator")),
+                        build_cache=_load_build_cache(document.get("buildCache")))
+
+
+def _load_build_cache(value: Any) -> buildcache.Retention:
+    if value is None:
+        return buildcache.Retention()
+    if not isinstance(value, dict):
+        raise ConfigError("host.json: buildCache must be an object")
+    unknown = sorted(set(value) - {"maxEntries", "keepDays", "dirtyKeepDays"})
+    if unknown:
+        raise ConfigError(f"host.json: buildCache has unknown keys: {', '.join(unknown)}")
+    entries = value.get("maxEntries", buildcache.DEFAULT_MAX_ENTRIES)
+    if isinstance(entries, bool) or not isinstance(entries, int) or entries < 0:
+        raise ConfigError("host.json: buildCache.maxEntries must be a non-negative integer")
+    days = {}
+    for key, default in (("keepDays", buildcache.DEFAULT_KEEP_DAYS), ("dirtyKeepDays", buildcache.DEFAULT_DIRTY_KEEP_DAYS)):
+        number = value.get(key, default)
+        if isinstance(number, bool) or not isinstance(number, (int, float)) or not math.isfinite(number) or number < 0:
+            raise ConfigError(f"host.json: buildCache.{key} must be a non-negative number")
+        days[key] = float(number)
+    return buildcache.Retention(entries, days["keepDays"], days["dirtyKeepDays"])
 
 
 def default_checkout_path(home: Path, project: str, checkout_id: str) -> Path:

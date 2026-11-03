@@ -1241,8 +1241,9 @@ def _merge_runs(runs: list[dict], plan: Mapping[str, Any], plan_sha: str) -> dic
 def _collect_build_cache(ctx: JobContext, keep_key: str) -> None:
     """Retention of the published builds, applied after each publish (the new build is never removed by it)."""
     try:
-        report = buildcache.gc(buildcache.builds_root(ctx.home), protect=[keep_key, *diskspace.active_build_keys(ctx.home)])
-    except (OSError, ValueError):
+        limits = config.load_host_settings(ctx.home).build_cache.limits()
+        report = buildcache.gc(buildcache.builds_root(ctx.home), protect=[keep_key, *diskspace.active_build_keys(ctx.home)], **limits)
+    except (OSError, ValueError, config.ConfigError):
         return
     if report.removed:
         ctx.events.emit("log", "build cache: removed " + ", ".join(report.removed), data={"removed": list(report.removed)})
