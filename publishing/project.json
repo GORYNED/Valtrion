@@ -30,12 +30,12 @@
       "height": 1024
     },
     "cover": {
-      "path": "assets/valtrion-website-light.png",
-      "width": 1920,
-      "height": 640,
+      "path": "assets/valtrion-cover-light.png",
+      "width": 2400,
+      "height": 1260,
       "alt": {
-        "en": "Valtrion: Build. Run. Prove the result. Cross-platform device validation, backed by evidence.",
-        "ru": "Valtrion: собрать, запустить, доказать результат. Кроссплатформенная проверка на устройствах с подтверждением."
+        "en": "Valtrion trident logo above the name Valtrion, the line Cross-platform device validation and github.com/GORYNED/Valtrion.",
+        "ru": "Логотип-трезубец Valtrion над названием Valtrion, строкой «Cross-platform device validation» и адресом github.com/GORYNED/Valtrion."
       }
     },
     "social": {
