@@ -36,7 +36,8 @@ class FakeHost(Transport):
     kind = "ssh"
 
     def __init__(self, installed=None, python_ok=True, down=False, windows=False, version_after=None, pythons=None, pipx=False,
-                 prune_output="", busy=False, by_name=True):
+                 prune_output="", busy=False, by_name=True, busy_fails=False, copy_fails=False):
+        self.busy_fails, self.copy_fails = busy_fails, copy_fails
         self.installed, self.python_ok, self.down, self.windows = installed, python_ok, down, windows
         self.pipx, self.prune_output, self.busy, self.by_name = pipx, prune_output, busy, by_name
         self.version_after = version_after
@@ -69,7 +70,9 @@ class FakeHost(Transport):
             return CommandResult(0, {"PIPX_LOCAL_VENVS": f"{self.home}/.local/pipx/venvs", "PIPX_BIN_DIR": f"{self.home}/.local/bin"}[command[-1]] + "\n")
         if len(command) > 2 and command[1].endswith("valtrion_host.py"):
             if command[2] == "busy":
-                return CommandResult(0, "busy\n" if self.busy else "")
+                if self.busy_fails:
+                    return CommandResult(1, "", "cannot list processes: boom")
+                return CommandResult(0, "busy=job j1 is running\n" if self.busy else "")
             if command[2] == "prune":
                 return CommandResult(0, self.prune_output)
             if command[2] == "path":
@@ -77,6 +80,8 @@ class FakeHost(Transport):
         return CommandResult(0, "")
 
     def put(self, local, remote_path, timeout_sec):
+        if self.copy_fails and remote_path.endswith("valtrion_host.py"):
+            return CommandResult(1, "", "disk full")
         self.puts.append((Path(local).name, remote_path))
         return CommandResult(0, "")
 

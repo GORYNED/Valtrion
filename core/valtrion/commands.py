@@ -132,6 +132,8 @@ def _configure_hosts(parser: argparse.ArgumentParser) -> None:
     add.add_argument("--python", help="absolute path of a Python 3.10+ on the host (hosts sync finds one when this is not given)")
     sync = sub.add_parser("sync", help="install this core version on every SSH host and record the remote valtrion command")
     sync.add_argument("--only", action="append", default=[], metavar="HOST", help="sync only this host (repeatable)")
+    sync.add_argument("--prune", action="store_true", help="on a host with pipx also remove old core/<version> folders (older than this "
+                      "version, unused); without pipx they are always cleaned up")
     sync.add_argument("--ensure-path", action="store_true", help="also add the folder of the recorded command to the PATH of "
                       "non-interactive shells on the host (macOS: a line in ~/.zshenv); nothing like this is done without the flag")
     parser.add_argument("--json", action="store_true")
@@ -174,7 +176,7 @@ def _hosts_sync(arguments: argparse.Namespace, entries: Sequence[config.HostEntr
         rows = []
         for entry in remote_entries:
             transport = remote.make_transport(entry)
-            row = hostsync.sync_host(entry, transport, built, config.set_host_command)
+            row = hostsync.sync_host(entry, transport, built, config.set_host_command, prune_pipx=arguments.prune)
             if arguments.ensure_path and row.command and row.status in (hostsync.OK, hostsync.UPDATED):
                 note = hostsync.ensure_path(entry, transport, row.command)
                 row = dataclasses.replace(row, reason="; ".join(part for part in (row.reason, note) if part))

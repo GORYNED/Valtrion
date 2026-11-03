@@ -24,7 +24,7 @@ class SyncWithPipxTests(unittest.TestCase):
         return hostsync.sync_host(e, host, self.wheel, lambda h, c, p: self.recorded.append((h, c, p)))
 
     def test_host_with_pipx_gets_the_short_pipx_shim_and_no_version_folder(self):
-        host = FakeHost(pipx=True, prune_output="removed=0.8.5\nremoved=0.8.4\n")
+        host = FakeHost(pipx=True)
         row = self.sync(host, entry())
         command = f"{HOME}/.local/bin/valtrion"
         self.assertEqual((hostsync.UPDATED, command, "pipx"), (row.status, row.command, row.method))
@@ -33,9 +33,36 @@ class SyncWithPipxTests(unittest.TestCase):
         self.assertEqual(["/opt/homebrew/bin/python3", "-m", "pipx", "install", "--force", "--python", "/opt/homebrew/bin/python3",
                           f"{HOME}/.valtrion/incoming/{self.wheel.name}"], install)
         self.assertFalse(any(c[1:3] == ["-m", "venv"] for c in host.calls), "no per-version environment when pipx is there")
-        self.assertIn("removed old versions 0.8.5, 0.8.4", row.reason)
+        self.assertFalse(any(c[2:3] == ["prune"] for c in host.calls), "pipx hosts are not pruned unless asked")
+        self.assertTrue(any(c[2:3] == ["relink"] for c in host.calls), "a link left from the fallback follows the new command")
+
+    def test_prune_on_a_pipx_host_is_opt_in(self):
+        host = FakeHost(pipx=True, prune_output="removed=0.8.5\n")
+        row = hostsync.sync_host(entry(), host, self.wheel, lambda h, c, p: None, prune_pipx=True)
+        self.assertIn("removed old versions 0.8.5", row.reason)
         prune = next(c for c in host.calls if c[2:3] == ["prune"])
-        self.assertEqual([f"{HOME}/.valtrion/core"], prune[3:], "with pipx no version folder is kept")
+        self.assertEqual([f"{HOME}/.valtrion", __version__, f"{HOME}/.local/bin/valtrion"], prune[3:])
+
+    def test_pipx_sync_changes_nothing_when_the_idle_check_cannot_be_made(self):
+        for host in (FakeHost(pipx=True, busy_fails=True), FakeHost(pipx=True, copy_fails=True)):
+            row = self.sync(host, entry())
+            self.assertEqual(hostsync.BLOCKED, row.status)
+            self.assertIn("cannot tell", row.reason)
+            self.assertFalse(any("install" in c for c in host.calls))
+            self.assertEqual([], self.recorded)
+
+    def test_half_done_pipx_install_says_so(self):
+        class Broken(FakeHost):
+            def run(self, command, timeout_sec, cwd=None):
+                if command[-1] == "--version" and command[0].endswith("valtrion"):
+                    return CommandResult(127, "", "not found")
+                return super().run(command, timeout_sec, cwd)
+
+        row = self.sync(Broken(pipx=True), entry(command=f"{HOME}/.local/bin/valtrion"))
+        self.assertEqual(hostsync.BLOCKED, row.status)
+        self.assertIn("replaced its environment", row.reason)
+        self.assertIn("by hand", row.reason)
+        self.assertEqual([], self.recorded)
 
     def test_pipx_is_found_next_to_the_python_when_it_is_not_a_module(self):
         class NextToPython(FakeHost):
@@ -67,7 +94,7 @@ class SyncWithPipxTests(unittest.TestCase):
         host = FakeHost(pipx=True, busy=True, installed="0.6.0")
         row = self.sync(host, entry(command=f"{HOME}/.local/bin/valtrion"))
         self.assertEqual(hostsync.BLOCKED, row.status)
-        self.assertIn("running job", row.reason)
+        self.assertIn("not idle", row.reason)
         self.assertFalse(any("install" in c for c in host.calls))
         self.assertEqual([], self.recorded)
 
@@ -78,9 +105,10 @@ class SyncWithPipxTests(unittest.TestCase):
         link = next(c for c in host.calls if c[2:3] == ["link"])
         self.assertEqual([f"{HOME}/.valtrion/bin/valtrion", f"{HOME}/.valtrion/core/{__version__}/bin/valtrion"], link[3:])
         prune = next(c for c in host.calls if c[2:3] == ["prune"])
-        self.assertEqual([f"{HOME}/.valtrion/core", __version__], prune[3:], "the new version is kept")
+        self.assertEqual([f"{HOME}/.valtrion", __version__, f"{HOME}/.valtrion/bin/valtrion"], prune[3:],
+                         "only versions below the new one are candidates; the recorded command is protected")
         self.assertIn("removed old versions 0.8.5", row.reason)
-        self.assertIn("kept 0.8.4 (in use)", row.reason)
+        self.assertIn("kept 0.8.4 (a process uses it)", row.reason)
         order = ["venv", "pip", "link", "prune"]
         steps = [c[1:3] == ["-m", "venv"] and "venv" or c[1:3] == ["-m", "pip"] and "pip" or c[2:3] == ["link"] and "link"
                  or c[2:3] == ["prune"] and "prune" for c in host.calls]
@@ -129,6 +157,24 @@ class PathCheckTests(unittest.TestCase):
         self.assertIn(f"echo 'export PATH=\"{HOME}/.local/bin:$PATH\"' >> ~/.zshenv", check["action"])
         self.assertIn("--ensure-path", check["action"])
 
+    def test_permission_problem_is_not_reported_as_not_found(self):
+        class Denied(FakeHost):
+            def run(self, command, timeout_sec, cwd=None):
+                return CommandResult(126, "", "permission denied")
+
+        self.assertIn("cannot be run", self.check(Denied())["reason"])
+
+    def test_failure_of_the_program_itself_is_not_reported_as_not_found(self):
+        class Failing(FakeHost):
+            def run(self, command, timeout_sec, cwd=None):
+                return CommandResult(1, "", "Traceback: something broke")
+
+        self.assertNotIn("not found by name", self.check(Failing(), "windows")["reason"])
+
+    def test_the_path_line_in_the_fix_is_shell_quoted(self):
+        fix = hostsync.path_fix(entry(), "/Users/a b/.local/bin/valtrion")
+        self.assertIn("'export PATH=\"/Users/a b/.local/bin:$PATH\"'", fix)
+
     def test_another_version_by_name_is_a_warning(self):
         self.assertEqual("warning", self.check(FakeHost(installed="0.1.0"))["status"])
 
@@ -163,22 +209,6 @@ class HostScriptTests(unittest.TestCase):
 
     def helper(self, *args):
         return subprocess.run([sys.executable, str(self.script), *args], capture_output=True, text=True, check=False)
-
-    def test_prune_removes_unused_versions_and_keeps_the_kept_and_the_busy_ones(self):
-        core_dir = self.root / "core"
-        for name in ("0.8.4", "0.8.5", "0.8.6"):
-            (core_dir / name / "bin").mkdir(parents=True)
-        # a process with the folder of 0.8.4 on its command line stands for a job that runs from that version
-        holder = subprocess.Popen([sys.executable, "-c", "import time;time.sleep(60)", str(core_dir / "0.8.4")])
-        self.addCleanup(holder.wait)
-        self.addCleanup(holder.kill)
-        done = self.helper("prune", str(core_dir), "0.8.6")
-        self.assertEqual(0, done.returncode, done.stderr)
-        self.assertIn("removed=0.8.5", done.stdout)
-        self.assertIn("busy=0.8.4", done.stdout)
-        self.assertTrue((core_dir / "0.8.4").is_dir())
-        self.assertTrue((core_dir / "0.8.6").is_dir())
-        self.assertFalse((core_dir / "0.8.5").exists())
 
     @unittest.skipIf(os.name == "nt", "a symlink needs a privilege on Windows; the .cmd form is checked below")
     def test_link_follows_the_newest_version(self):

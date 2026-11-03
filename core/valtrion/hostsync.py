@@ -15,6 +15,7 @@ no process uses are removed; one a running job uses stays, and a pipx environmen
 from __future__ import annotations
 
 import re
+import shlex
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -173,9 +174,12 @@ def _pipx_value(transport: Transport, pipx: tuple[str, ...], name: str) -> str |
 
 # -- the host-side helper ---------------------------------------------------------------------------------------------------
 
-#: Copied to the host and run with the host's Python (`prune`, `link`, `busy`, `path`). It lists processes with `ps` (POSIX) or
-#: PowerShell (Windows); when that fails it changes nothing, so a folder is never removed on a guess.
-HOST_SCRIPT = r'''import os, shutil, subprocess, sys
+#: Copied to the host and run with the host's Python (`prune`, `link`, `relink`, `busy`, `path`). Nothing is removed unless the host is
+#: provably idle (no job whose runner is alive, no lease whose holder is alive, no process using the folder); when any of that cannot
+#: be established it changes nothing.
+HOST_SCRIPT = r'''import json, os, re, shutil, subprocess, sys, time
+
+VERSION = re.compile(r"^\d+\.\d+\.\d+$")
 
 
 def processes():
@@ -193,20 +197,107 @@ def in_use(text, folder):
     return (folder.lower() if os.name == "nt" else folder) in text
 
 
-def prune(core, keep):
-    if not os.path.isdir(core):
+def alive(pid):
+    try:
+        pid = int(pid)
+    except (TypeError, ValueError):
+        return False
+    if os.name == "nt":
+        done = subprocess.run(["tasklist", "/FI", "PID eq %d" % pid, "/NH"], capture_output=True, text=True, timeout=60)
+        if done.returncode != 0:
+            raise SystemExit("cannot check process %d" % pid)
+        return str(pid) in done.stdout
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def read(path):
+    try:
+        with open(path, encoding="utf-8") as handle:
+            return json.load(handle)
+    except (OSError, ValueError):
+        return None
+
+
+def activity(valtrion):
+    """Why the host is not idle (a job whose runner is alive or just created, a lease whose holder is alive); None when it is."""
+    homes = [valtrion]
+    other = os.environ.get("VALTRION_HOME")
+    if other and os.path.abspath(other) != os.path.abspath(valtrion):
+        homes.append(other)
+    for home in homes:
+        jobs = os.path.join(home, "jobs")
+        for name in sorted(os.listdir(jobs)) if os.path.isdir(jobs) else []:
+            index = read(os.path.join(jobs, name)) if name.endswith(".json") else None
+            if not isinstance(index, dict) or "dir" not in index:
+                continue
+            path = os.path.join(index["dir"], "job.json")
+            job = read(path)
+            if not isinstance(job, dict) or job.get("state") not in ("queued", "running"):
+                continue
+            starting = not job.get("pid") and time.time() - os.path.getmtime(path) < 600
+            if starting or (job.get("pid") and alive(job["pid"])):
+                return "job " + name[:-5] + " is " + job["state"]
+        for root, _, files in os.walk(os.path.join(home, "leases")):
+            for name in files:
+                record = read(os.path.join(root, name))
+                if isinstance(record, dict) and record.get("pid") and alive(record["pid"]):
+                    return "lease " + str(record.get("resource", name)) + " is held"
+    return None
+
+
+def link_target(path):
+    if os.path.islink(path):
+        return os.path.realpath(path)
+    cmd = path + ".cmd"
+    if os.path.isfile(cmd):
+        match = re.search(r'^"(.*)" %\*', open(cmd, encoding="utf-8", errors="replace").read(), re.M)
+        return match.group(1) if match else ""
+    return ""
+
+
+def inside(folder, path):
+    folder, path = os.path.normcase(os.path.abspath(folder)), os.path.normcase(os.path.abspath(path))
+    return path == folder or path.startswith(folder + os.sep)
+
+
+def prune(valtrion, below, protect):
+    """Remove `core/<X.Y.Z>` folders strictly older than `below` that nothing protects or uses. Names that are not plain versions,
+    links, newer versions, the target of the stable link and the folders of `protect` commands are never touched."""
+    core = os.path.join(valtrion, "core")
+    key = lambda name: tuple(int(part) for part in name.split("."))
+    names = sorted(os.listdir(core)) if os.path.isdir(core) else []
+    target = link_target(os.path.join(valtrion, "bin", "valtrion"))
+    candidates = []
+    for name in names:
+        folder = os.path.join(core, name)
+        if not VERSION.match(name) or os.path.islink(folder) or not os.path.isdir(folder) or key(name) >= key(below):
+            continue
+        if any(inside(folder, path) for path in [target, *protect] if path):
+            continue
+        candidates.append(name)
+    if not candidates:
         return
-    names = [n for n in sorted(os.listdir(core)) if os.path.isdir(os.path.join(core, n)) and n not in keep]
-    if not names:
+    reason = activity(valtrion)
+    if reason:
+        print("skipped=" + reason)
         return
     text = processes()
-    for name in names:
+    for name in candidates:
         folder = os.path.join(core, name)
         if in_use(text, folder):
             print("busy=" + name)
             continue
-        shutil.rmtree(folder)
-        print("removed=" + name)
+        try:
+            shutil.rmtree(folder)
+            print("removed=" + name)
+        except OSError as error:
+            print("failed=%s: %s" % (name, error))
 
 
 def link(path, target):
@@ -222,9 +313,18 @@ def link(path, target):
     os.replace(temporary, path)
 
 
-def busy(folder):
-    if os.path.isdir(folder) and in_use(processes(), folder):
-        print("busy")
+def relink(path, target):
+    if os.path.lexists(path):
+        link(path, target)
+        print("relinked")
+
+
+def busy(valtrion, folder):
+    reason = activity(valtrion)
+    if reason:
+        print("busy=" + reason)
+    elif os.path.isdir(folder) and in_use(processes(), folder):
+        print("busy=a process uses " + folder)
 
 
 def add_path(rc, directory):
@@ -241,11 +341,13 @@ def add_path(rc, directory):
 
 mode, rest = sys.argv[1], sys.argv[2:]
 if mode == "prune":
-    prune(rest[0], set(rest[1:]))
+    prune(rest[0], rest[1], rest[2:])
 elif mode == "link":
     link(rest[0], rest[1])
+elif mode == "relink":
+    relink(rest[0], rest[1])
 elif mode == "busy":
-    busy(rest[0])
+    busy(rest[0], rest[1])
 elif mode == "path":
     add_path(rest[0], rest[1])
 else:
@@ -263,19 +365,30 @@ def _put_script(entry: HostEntry, transport: Transport, python: str, home: str) 
     return ([python, remote_path] if result.ok else None), result
 
 
-def prune_versions(entry: HostEntry, transport: Transport, python: str, home: str, keep: Sequence[str]) -> str:
-    """Remove `core/<version>` folders not in `keep` that no process uses. Best effort: returns a sentence for the report."""
+def prune_versions(entry: HostEntry, transport: Transport, python: str, home: str, below: str, protect: Sequence[str]) -> str:
+    """Remove `core/<X.Y.Z>` folders older than `below` that nothing uses (see HOST_SCRIPT). Best effort: returns a sentence for the
+    report; whatever cannot be shown to be unused stays."""
     script, _ = _put_script(entry, transport, python, home)
     if script is None:
         return "old versions were not cleaned up (could not copy the helper)"
-    result = transport.run([*script, "prune", _join(entry, home, ".valtrion", "core"), *keep], STEP_TIMEOUT_SEC)
+    result = transport.run([*script, "prune", _join(entry, home, ".valtrion"), below, *protect], STEP_TIMEOUT_SEC)
+    marks = [line.strip() for line in result.stdout.splitlines() if "=" in line]
     if not result.ok:
         detail = (result.stderr or result.stdout).strip().splitlines()
         return "old versions were not cleaned up" + (f" ({detail[-1]})" if detail else "")
-    marks = [line.strip() for line in result.stdout.splitlines() if "=" in line]
-    removed = [m.split("=", 1)[1] for m in marks if m.startswith("removed=")]
-    busy = [m.split("=", 1)[1] for m in marks if m.startswith("busy=")]
-    parts = ([f"removed old versions {', '.join(removed)}"] if removed else []) + ([f"kept {', '.join(busy)} (in use)"] if busy else [])
+
+    def values(prefix: str) -> list[str]:
+        return [m.split("=", 1)[1] for m in marks if m.startswith(prefix + "=")]
+
+    parts = []
+    if values("skipped"):
+        parts.append(f"old versions were kept: {values('skipped')[0]}")
+    if values("removed"):
+        parts.append(f"removed old versions {', '.join(values('removed'))}")
+    if values("busy"):
+        parts.append(f"kept {', '.join(values('busy'))} (a process uses it)")
+    if values("failed"):
+        parts.append("could not remove " + "; ".join(values("failed")))
     return "; ".join(parts)
 
 
@@ -283,8 +396,10 @@ def _joined(*parts: str) -> str:
     return "; ".join(part for part in parts if part)
 
 
-def sync_host(entry: HostEntry, transport: Transport, wheel: Path, record: Callable[[str, str, str], None], version: str = __version__) -> SyncRow:
-    """Bring one SSH host to `version`. `record(host id, command, python)` stores the command and Python paths (hosts.json) once verified."""
+def sync_host(entry: HostEntry, transport: Transport, wheel: Path, record: Callable[[str, str, str], None], version: str = __version__,
+              prune_pipx: bool = False) -> SyncRow:
+    """Bring one SSH host to `version`. `record(host id, command, python)` stores the command and Python paths (hosts.json) once verified.
+    On a host with pipx, old `core/<version>` folders are removed only with `prune_pipx`."""
     if entry.valtrion_command:
         found, result = remote_version(transport, entry.valtrion_command)
         if found == version and not is_versioned_command(entry.valtrion_command):
@@ -312,20 +427,26 @@ def sync_host(entry: HostEntry, transport: Transport, wheel: Path, record: Calla
             return _failed(entry.id, step, result)
     pipx = find_pipx(entry, transport, python, home)
     if pipx is not None:
-        return _sync_with_pipx(entry, transport, python, home, pipx, remote_wheel, record, version)
+        return _sync_with_pipx(entry, transport, python, home, pipx, remote_wheel, record, version, prune_pipx)
     return _sync_with_venv(entry, transport, python, home, remote_wheel, record, version)
 
 
 def _sync_with_pipx(entry: HostEntry, transport: Transport, python: str, home: str, pipx: tuple[str, ...], remote_wheel: str,
-                    record: Callable[[str, str, str], None], version: str) -> SyncRow:
-    venvs = _pipx_value(transport, pipx, "PIPX_LOCAL_VENVS")
-    if venvs:  # pipx replaces its environment; not under a job that runs from it
-        script, _ = _put_script(entry, transport, python, home)
-        if script is not None:
-            probe = transport.run([*script, "busy", _join(entry, venvs, "valtrion")], STEP_TIMEOUT_SEC)
-            if probe.ok and "busy" in probe.stdout.split():
-                return SyncRow(entry.id, BLOCKED, method="pipx", reason="a running job uses the pipx environment of valtrion, so it is "
-                               "not replaced under it; run `valtrion hosts sync` again when the job has ended")
+                    record: Callable[[str, str, str], None], version: str, prune_pipx: bool) -> SyncRow:
+    # pipx replaces its environment, so nothing is changed unless the host is shown to be idle.
+    venvs = _pipx_value(transport, pipx, "PIPX_LOCAL_VENVS") or _join(entry, home, ".local", "pipx", "venvs")
+    script, copied = _put_script(entry, transport, python, home)
+    if script is None:
+        return SyncRow(entry.id, BLOCKED, method="pipx", reason="cannot tell whether a job is running (could not copy the helper); nothing was replaced")
+    probe = transport.run([*script, "busy", _join(entry, home, ".valtrion"), _join(entry, venvs, "valtrion")], STEP_TIMEOUT_SEC)
+    if not probe.ok:
+        detail = (probe.stderr or probe.stdout).strip().splitlines()
+        return SyncRow(entry.id, BLOCKED, method="pipx", reason="cannot tell whether a job is running" + (f" ({detail[-1]})" if detail else "")
+                       + "; nothing was replaced")
+    busy = [line.split("=", 1)[1] for line in probe.stdout.splitlines() if line.startswith("busy=")]
+    if busy:
+        return SyncRow(entry.id, BLOCKED, method="pipx", reason=f"the host is not idle ({busy[0]}), so the pipx environment of valtrion "
+                       "is not replaced under it; run `valtrion hosts sync` again when it is")
     result = transport.run([*pipx, "install", "--force", "--python", python, remote_wheel], INSTALL_TIMEOUT_SEC)
     if not result.ok:
         return _failed(entry.id, "install the wheel with pipx", result)
@@ -333,9 +454,14 @@ def _sync_with_pipx(entry: HostEntry, transport: Transport, python: str, home: s
     command = pipx_command(entry, bin_dir)
     found, result = remote_version(transport, command)
     if found != version:
-        return SyncRow(entry.id, BLOCKED, found, command, f"after the install the host reports {found or 'no version'}, expected {version}", "pipx")
+        why = ("pipx did not create that command; check `pipx environment` on the host" if found is None and is_tool_missing(result)
+               else f"the host reports {found or 'no version'}, expected {version}")
+        return SyncRow(entry.id, BLOCKED, found, command, f"pipx replaced its environment, but {why}; the recorded command was not changed and "
+                       "may not work until pipx install --force is run on the host by hand", "pipx")
     record(entry.id, command, python)
-    cleanup = prune_versions(entry, transport, python, home, ())
+    stable = shim_command(entry, home)
+    transport.run([*script, "relink", stable, command], STEP_TIMEOUT_SEC)  # a link left from the fallback must not point at a removed version
+    cleanup = prune_versions(entry, transport, python, home, version, (command,)) if prune_pipx else ""
     return SyncRow(entry.id, UPDATED, found, command, _joined("installed with pipx", cleanup), "pipx")
 
 
@@ -364,7 +490,7 @@ def _sync_with_venv(entry: HostEntry, transport: Transport, python: str, home: s
     if found != version:
         return SyncRow(entry.id, BLOCKED, found, command, f"the stable command reports {found or 'no version'}, expected {version}", "venv")
     record(entry.id, command, python)
-    cleanup = prune_versions(entry, transport, python, home, (version,))
+    cleanup = prune_versions(entry, transport, python, home, version, (command,))
     return SyncRow(entry.id, UPDATED, found, command, _joined("installed in a virtual environment (pipx is not available)", cleanup), "venv")
 
 
@@ -378,21 +504,27 @@ def _folder_of(entry: HostEntry, command: str) -> str:
 def path_fix(entry: HostEntry, command: str) -> str:
     """The one-line fix that makes `valtrion` resolvable by name in a non-interactive SSH session."""
     folder = _folder_of(entry, command)
+    line = shlex.quote(f'export PATH="{folder}:$PATH"')
     if entry.os == "macos":
-        return f"on the host run: echo 'export PATH=\"{folder}:$PATH\"' >> ~/.zshenv   (or run `valtrion hosts sync --ensure-path`)"
+        return f"on the host run: echo {line} >> ~/.zshenv   (or run `valtrion hosts sync --ensure-path`)"
     if entry.os == "linux":
-        return f"on the host add `export PATH=\"{folder}:$PATH\"` at the top of ~/.bashrc, above any interactive-shell guard"
+        return f"on the host add the line {line} at the top of ~/.bashrc, above any interactive-shell guard"
     return f"on the host add {folder} to the user PATH (`pipx ensurepath` does it for the pipx folder)"
 
 
 def path_check(entry: HostEntry, transport: Transport, version: str = __version__) -> dict | None:
     """Whether `valtrion` is found by plain name in a non-interactive SSH session of the host (what a script on the host does).
-    None when the host has no recorded command or does not answer; otherwise {"status", "reason", "action"}."""
+    None when the host has no recorded command or does not answer; otherwise {"status", "reason", "action"}. Exit 127 and the shell's
+    own "not found" message mean not found; on Windows a cmd.exe "not recognized" message does too, but an exit 1 without it is the
+    program's own failure, reported as such."""
     if not entry.valtrion_command:
         return None
     result = transport.run(["valtrion", "--version"], STEP_TIMEOUT_SEC)
     if result.timed_out or result.returncode == SSH_FAILURE:
         return None
+    if result.returncode == 126:
+        return {"status": "warning", "reason": "`valtrion` is found by name on this host but cannot be run (exit 126, no permission?)",
+                "action": "check the permissions of the first `valtrion` in the host's PATH"}
     if is_tool_missing(result):
         return {"status": "warning", "reason": "`valtrion` is not found by name in a non-interactive SSH session on this host "
                 f"(the recorded command {entry.valtrion_command} works, but scripts that run `valtrion` do not find it)",
