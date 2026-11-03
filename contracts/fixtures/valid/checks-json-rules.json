@@ -1,0 +1,28 @@
+{
+  "schema": "gdv.checks/1",
+  "platforms": { "required": ["ios"], "dev": ["editor"] },
+  "areas": [
+    { "glob": "app/**", "kind": "app" },
+    { "glob": "libs/**", "kind": "libs-all" }
+  ],
+  "jsonRules": [
+    {
+      "glob": "libs/manifest.json",
+      "root": "dependencies",
+      "keys": [
+        { "match": "libs.core*", "kinds": ["libs-core", "libs-ui"] },
+        { "match": "libs.ui*", "kind": "libs-ui" },
+        { "match": "*", "kind": "libs-all" }
+      ]
+    },
+    { "glob": "libs/lock.json", "root": "packages", "keys": [{ "match": "libs.*", "kind": "libs-lock" }] }
+  ],
+  "kinds": {
+    "app": { "L2": ["editmode:App.Tests"] },
+    "libs-all": { "L2": ["editmode:Libs.Tests"] },
+    "libs-core": { "L2": ["editmode:Libs.Core.Tests"] },
+    "libs-ui": { "L2": ["editmode:Libs.Ui.Tests"] },
+    "libs-lock": { "L0": ["l0"] }
+  },
+  "unclassified": "widest"
+}

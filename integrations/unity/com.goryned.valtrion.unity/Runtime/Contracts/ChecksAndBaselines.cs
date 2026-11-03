@@ -52,6 +52,57 @@ namespace Valtrion.Unity.Contracts
         }
     }
 
+    /// <summary>For child keys whose name matches <see cref="Match"/> (a glob), a changed key counts as <see cref="Kind"/>.</summary>
+    public sealed class ChecksJsonKey
+    {
+        public string Match { get; set; }
+
+        /// <summary>One kind (the short form); null when <see cref="Kinds"/> is used.</summary>
+        public string Kind { get; set; }
+
+        /// <summary>A list of kinds; null when <see cref="Kind"/> is used.</summary>
+        public List<string> Kinds { get; set; }
+
+        internal static ChecksJsonKey Read(ContractReader reader)
+        {
+            var key = new ChecksJsonKey { Match = reader.Str("match"), Kind = reader.OptIdentifier("kind"), Kinds = reader.OptStrings("kinds") };
+            if (key.Kind == null && key.Kinds == null)
+                throw new ContractException($"{reader.Path}: give kind or kinds");
+            if (key.Kinds != null && key.Kinds.Count == 0)
+                throw new ContractException($"{reader.Path}.kinds: expected at least one kind");
+            reader.Done();
+            return key;
+        }
+
+        internal JsonValue Write()
+        {
+            var node = JsonValue.NewObject().Set("match", JsonValue.From(Match));
+            if (Kind != null) node.Set("kind", JsonValue.From(Kind));
+            if (Kinds != null) node.Set("kinds", JsonBuild.Strings(Kinds));
+            return node;
+        }
+    }
+
+    /// <summary>For a changed JSON file matching <see cref="Glob"/>, the kinds of the child keys of <see cref="Root"/> that changed.</summary>
+    public sealed class ChecksJsonRule
+    {
+        public string Glob { get; set; }
+
+        public string Root { get; set; }
+
+        public List<ChecksJsonKey> Keys { get; set; } = new List<ChecksJsonKey>();
+
+        internal static ChecksJsonRule Read(ContractReader reader)
+        {
+            var rule = new ChecksJsonRule { Glob = reader.Str("glob"), Root = reader.Str("root"), Keys = reader.Items("keys", ChecksJsonKey.Read, 1) };
+            reader.Done();
+            return rule;
+        }
+
+        internal JsonValue Write() =>
+            JsonValue.NewObject().Set("glob", JsonValue.From(Glob)).Set("root", JsonValue.From(Root)).Set("keys", JsonBuild.Array(Keys, key => key.Write()));
+    }
+
     /// <summary>The markers of a block comment that starts and ends on one line.</summary>
     public sealed class ChecksBlockComment
     {
@@ -169,6 +220,9 @@ namespace Valtrion.Unity.Contracts
         /// <summary>Optional rules that map a comment-only or layout-only change of matching paths to a cheaper kind.</summary>
         public List<ChecksContentRule> ContentRules { get; set; }
 
+        /// <summary>Optional rules that classify a changed JSON file by the keys that changed.</summary>
+        public List<ChecksJsonRule> JsonRules { get; set; }
+
         public Dictionary<string, ChecksLevels> Kinds { get; set; } = new Dictionary<string, ChecksLevels>();
 
         public string Unclassified { get; set; }
@@ -191,6 +245,7 @@ namespace Valtrion.Unity.Contracts
                 Runners = runners,
                 Areas = reader.Items("areas", ChecksArea.Read),
                 ContentRules = reader.OptItems("contentRules", ChecksContentRule.Read),
+                JsonRules = reader.OptItems("jsonRules", ChecksJsonRule.Read),
                 Kinds = reader.Map("kinds", ChecksLevels.Read),
                 Unclassified = reader.Choice("unclassified", Enums.Unclassified),
             };
@@ -204,6 +259,7 @@ namespace Valtrion.Unity.Contracts
                 .Set("schema", JsonValue.From(Schema)).Set("platforms", Platforms.Write()).SetIf("unityEditorSlots", UnityEditorSlots);
             if (Runners != null) node.Set("runners", JsonBuild.StringMap(Runners));
             node.Set("areas", JsonBuild.Array(Areas, area => area.Write()));
+            if (JsonRules != null) node.Set("jsonRules", JsonBuild.Array(JsonRules, rule => rule.Write()));
             if (ContentRules != null) node.Set("contentRules", JsonBuild.Array(ContentRules, rule => rule.Write()));
             return node.Set("kinds", JsonBuild.Map(Kinds, levels => levels.Write())).Set("unclassified", JsonValue.From(Unclassified));
         }
