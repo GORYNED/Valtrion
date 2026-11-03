@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- `ChecksDocument.ContentRules` (`ChecksContentRule` with `Reindent` and `CodePrefixes`, `ChecksBlockComment`): the optional `contentRules` key of `gdv.checks/1` is read and written. Documents without it behave as before.
+
 ## 0.8.0 (2026-11-03)
 
 - The contract readers and writers catch up with the schemas of Core 0.8.x and 0.9.0. All additions are optional keys, so documents written for 0.7.x still read and write unchanged:

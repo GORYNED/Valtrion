@@ -1,0 +1,18 @@
+{
+  "schema": "gdv.checks/1",
+  "platforms": { "required": ["ios"], "dev": ["editor"] },
+  "areas": [
+    { "glob": "Assets/Project/**", "kind": "runtime" },
+    { "glob": "docs/**", "kind": "docs" }
+  ],
+  "contentRules": [
+    { "glob": "Assets/Project/**/*.cs", "kind": "cosmetic", "lineComment": ["//"], "blockComment": { "start": "/*", "end": "*/" }, "reindent": true },
+    { "glob": "scripts/**/*.sh", "kind": "cosmetic", "lineComment": ["#"], "codePrefixes": ["#!"] }
+  ],
+  "kinds": {
+    "runtime": { "L2": ["editmode:Project.Runtime.Tests"] },
+    "cosmetic": { "L0": ["l0"] },
+    "docs": { "L0": ["l0"] }
+  },
+  "unclassified": "widest"
+}
