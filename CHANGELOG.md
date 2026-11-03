@@ -2,7 +2,7 @@
 
 Core (the `valtrion` Python package) and the Unity package `com.goryned.valtrion.unity` are versioned independently. The Unity changelog is in `integrations/unity/com.goryned.valtrion.unity/CHANGELOG.md`; `compat.json` lists compatible pairs.
 
-## 0.8.8 (unreleased)
+## 0.8.8
 
 - **The default number of Unity Editors at once is 2 on every platform.** It was 1 on macOS and 2 elsewhere. `host.json` `unityEditorSlots` still overrides it (for example `3` on a Windows host that can take three). A macOS host that needs the old limit sets `unityEditorSlots` to `1`.
 
