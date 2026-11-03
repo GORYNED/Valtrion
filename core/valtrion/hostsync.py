@@ -262,7 +262,7 @@ def link_target(path):
 
 
 def inside(folder, path):
-    folder, path = os.path.normcase(os.path.abspath(folder)), os.path.normcase(os.path.abspath(path))
+    folder, path = os.path.normcase(os.path.realpath(folder)), os.path.normcase(os.path.realpath(path))
     return path == folder or path.startswith(folder + os.sep)
 
 
