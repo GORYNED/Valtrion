@@ -2,7 +2,7 @@
 
 Core (the `valtrion` Python package) and the Unity package `com.goryned.valtrion.unity` are versioned independently. The Unity changelog is in `integrations/unity/com.goryned.valtrion.unity/CHANGELOG.md`; `compat.json` lists compatible pairs.
 
-## Unreleased (next minor version, 0.10.0 candidate)
+## 0.10.0
 
 - **Changes that only touch comments or layout can map to a cheaper kind (#47).** Optional top-level `contentRules` in `gdv.checks/1`: `{"glob", "kind", "lineComment": [...], "blockComment": {"start", "end"}, "reindent", "codePrefixes"}`. When the whole `git diff -U0` of a changed path that matches a rule is blank lines, comment lines (a line marker, or a block comment that starts and ends on one line) (and, only with the rule option `reindent`, re-indentation), the path has the rule's kind instead of its area kinds. It is opt-in per glob and fails closed: a code edit, a moved or reordered line, code turned into a comment, a trailing comment on a code line, a whitespace change inside a line, a multi-line block comment, a binary file, a mode change or rename, a line-ending change, bytes that are not UTF-8 or an untracked file keeps the normal kinds; `codePrefixes` (for example `#!`) mark lines that are code although a comment marker starts them. `select --json` has `cosmeticPaths`; `check-config` validates the rules; the Unity package reader/writer knows the key (see its changelog). Nothing changes for a map without `contentRules`.
 
