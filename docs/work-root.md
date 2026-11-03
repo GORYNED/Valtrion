@@ -15,7 +15,8 @@ Machine-local state lives under `~/.valtrion`. `VALTRION_HOME` overrides it (for
 | `jobs/` | Job id to run folder index |
 | `hostcache/` | Five-minute cache of remote `doctor` reports |
 | `artifacts/` | Default artifacts root (retained results, baselines, run folders) |
-| `core/<version>/` | Virtual environment created by `tools/install.py --venv` or `valtrion hosts sync`; uses the real `~/.valtrion` even when `VALTRION_HOME` is set. The local installer's `--home DIR` instead uses `DIR/.valtrion/core/<version>`. |
+| `core/<version>/` | Virtual environment created by `tools/install.py --venv`, or by `valtrion hosts sync` on a host without pipx (a host with pipx has none); uses the real `~/.valtrion` even when `VALTRION_HOME` is set. The local installer's `--home DIR` instead uses `DIR/.valtrion/core/<version>`. `hosts sync` removes older plain-version folders when the host is idle (see install.md). |
+| `bin/valtrion` | On a host without pipx: the stable link (`valtrion.cmd` on Windows) to the newest `core/<version>`, recorded as `valtrionCommand` by `valtrion hosts sync`. |
 | `ssh/` | SSH control sockets |
 | `incremental/` | Persistent build folders of managed checkouts (Xcode export, DerivedData) |
 | `checkouts/` | Default place of managed build checkouts (`checkouts/<project>/<id>`), when `host.json` names no `path` |

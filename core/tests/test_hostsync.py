@@ -35,8 +35,11 @@ class FakeHost(Transport):
 
     kind = "ssh"
 
-    def __init__(self, installed=None, python_ok=True, down=False, windows=False, version_after=None, pythons=None):
+    def __init__(self, installed=None, python_ok=True, down=False, windows=False, version_after=None, pythons=None, pipx=False,
+                 prune_output="", busy=False, by_name=True, busy_fails=False, copy_fails=False):
+        self.busy_fails, self.copy_fails = busy_fails, copy_fails
         self.installed, self.python_ok, self.down, self.windows = installed, python_ok, down, windows
+        self.pipx, self.prune_output, self.busy, self.by_name = pipx, prune_output, busy, by_name
         self.version_after = version_after
         self.pythons = pythons  # {absolute path: runs 3.10+}; any other interpreter is not found
         self.calls, self.puts = [], []
@@ -47,7 +50,11 @@ class FakeHost(Transport):
         self.calls.append(command)
         if self.down:
             return CommandResult(255, "", "ssh: connect failed")
+        if command[-1] == "--version" and (command[0].endswith("pipx") or command[1:2] == ["-m"] and command[2:3] == ["pipx"]):
+            return CommandResult(0, "1.7.1\n") if self.pipx else CommandResult(127, "", "not found")
         if command[-1] == "--version":
+            if command[0] == "valtrion" and not self.by_name:
+                return CommandResult(127, "", "valtrion: command not found")
             if self.installed is None:
                 return CommandResult(127, "", "not found")
             return CommandResult(0, f"valtrion {self.installed} (contract 1)\n")
@@ -57,11 +64,24 @@ class FakeHost(Transport):
                     return CommandResult(127, "", "not found")
                 return CommandResult(0, f"{self.home}\n{self.pythons[command[0]]}\n")
             return CommandResult(0, f"{self.home}\n{self.python_ok}\n")
-        if command[1:3] == ["-m", "pip"]:
+        if command[1:3] == ["-m", "pip"] or ("install" in command and "--force" in command):
             self.installed = self.version_after or __version__
+        if "environment" in command:
+            return CommandResult(0, {"PIPX_LOCAL_VENVS": f"{self.home}/.local/pipx/venvs", "PIPX_BIN_DIR": f"{self.home}/.local/bin"}[command[-1]] + "\n")
+        if len(command) > 2 and command[1].endswith("valtrion_host.py"):
+            if command[2] == "busy":
+                if self.busy_fails:
+                    return CommandResult(1, "", "cannot list processes: boom")
+                return CommandResult(0, "busy=job j1 is running\n" if self.busy else "")
+            if command[2] == "prune":
+                return CommandResult(0, self.prune_output)
+            if command[2] == "path":
+                return CommandResult(0, "added\n")
         return CommandResult(0, "")
 
     def put(self, local, remote_path, timeout_sec):
+        if self.copy_fails and remote_path.endswith("valtrion_host.py"):
+            return CommandResult(1, "", "disk full")
         self.puts.append((Path(local).name, remote_path))
         return CommandResult(0, "")
 
@@ -84,16 +104,17 @@ class SyncHostTests(unittest.TestCase):
     def test_fresh_host_gets_a_venv_install_and_the_command_path_is_recorded(self):
         host = FakeHost()
         row = self.sync(host, entry())
-        command = f"{HOME}/.valtrion/core/{__version__}/bin/valtrion"
+        command = f"{HOME}/.valtrion/bin/valtrion"
         self.assertEqual((hostsync.UPDATED, command), (row.status, row.command))
         self.assertEqual([("mac", command, "/opt/homebrew/bin/python3")], self.recorded)
-        self.assertEqual([(self.wheel.name, f"{HOME}/.valtrion/incoming/{self.wheel.name}")], host.puts)
+        self.assertEqual((self.wheel.name, f"{HOME}/.valtrion/incoming/{self.wheel.name}"), host.puts[0])
         self.assertTrue(any(c[1:3] == ["-m", "venv"] for c in host.calls))
         pip = [c for c in host.calls if c[1:3] == ["-m", "pip"]]
         self.assertEqual([f"{HOME}/.valtrion/core/{__version__}/bin/python"], [c[0] for c in pip], "pip runs from the new environment")
         self.assertIn("--no-deps", pip[0])
         order = ["expanduser", "makedirs", "venv", "pip"]
-        steps = [next(n for n in order if n in " ".join(c)) for c in host.calls if any(n in " ".join(c) for n in order)]
+        calls = [c for c in host.calls if "pipx" not in " ".join(c) and "valtrion_host" not in " ".join(c)]
+        steps = [next(n for n in order if n in " ".join(c)) for c in calls if any(n in " ".join(c) for n in order)]
         self.assertEqual(order, steps)
 
     def test_host_at_the_same_version_is_left_alone(self):
@@ -107,7 +128,7 @@ class SyncHostTests(unittest.TestCase):
         host = FakeHost(installed="0.6.0")
         row = self.sync(host, entry(command="/old/valtrion"))
         self.assertEqual(hostsync.UPDATED, row.status)
-        self.assertEqual(1, len(host.puts))
+        self.assertEqual(self.wheel.name, host.puts[0][0])
 
     def test_install_that_does_not_reach_the_version_is_blocked_and_not_recorded(self):
         row = self.sync(FakeHost(version_after="0.6.9"), entry())
@@ -133,7 +154,7 @@ class SyncHostTests(unittest.TestCase):
     def test_windows_host_uses_scripts_folder_and_backslashes(self):
         host = FakeHost(windows=True)
         row = self.sync(host, entry("win", "windows"))
-        self.assertEqual(f"C:\\Users\\dev\\.valtrion\\core\\{__version__}\\Scripts\\valtrion.exe", row.command)
+        self.assertEqual("C:\\Users\\dev\\.valtrion\\bin\\valtrion.cmd", row.command)
         self.assertEqual("python", host.calls[0][0])
 
 
@@ -154,7 +175,7 @@ class SyncCommandTests(unittest.TestCase):
             code, out, _ = run("hosts", "sync")
         self.assertEqual(0, code, out)
         recorded = json.loads((self.home / "hosts.json").read_text(encoding="utf-8"))["hosts"][0]["valtrionCommand"]
-        self.assertEqual(f"{HOME}/.valtrion/core/{__version__}/bin/valtrion", recorded)
+        self.assertEqual(f"{HOME}/.valtrion/bin/valtrion", recorded)
         self.assertEqual(recorded, config.find_host("mac", self.home).valtrion_command)
 
     def test_hosts_sync_exits_blocked_when_a_host_cannot_be_brought_to_the_version(self):
