@@ -6,7 +6,7 @@ This page describes the components of Valtrion, the boundaries between them and 
 
 ### Core (`core/`)
 
-The `valtrion` CLI and library, distribution `valtrion` 0.10.0, Python 3.10 or newer, standard library only. It is delivered in this repository. It provides:
+The `valtrion` CLI and library, distribution `valtrion` 0.11.0, Python 3.10 or newer, standard library only. It is delivered in this repository. It provides:
 
 - Host inventory and selection: this machine first, then SSH hosts by capability, or a pinned host.
 - Detached, supervised jobs with hard timeouts, stall detection and process-tree kill.

@@ -2,7 +2,7 @@
 
 Core (the `valtrion` Python package) and the Unity package `com.goryned.valtrion.unity` are versioned independently. The Unity changelog is in `integrations/unity/com.goryned.valtrion.unity/CHANGELOG.md`; `compat.json` lists compatible pairs.
 
-## Unreleased (next minor version, 0.11.0 candidate)
+## 0.11.0
 
 - **A changed JSON file can be classified by the keys that changed (#56).** Optional top-level `jsonRules` in `gdv.checks/1`: `{"glob", "root", "keys": [{"match", "kind" or "kinds": [...]}]}`. The file is read at the merge base and at `HEAD` (or the working tree with `--include-worktree`); each added, removed or changed entry under `root` (values compared as a whole) takes the kinds of the first `match` that fits its name (a list `kinds`, or one `kind`; a last `*` is the explicit fallback), and the path has the union of those kinds, each once. Opt-in and fail closed: an entry no `match` fits (when there is no `*` fallback), a change outside `root`, no changed entry, an added or deleted file, invalid or non-UTF-8 JSON (a BOM and CRLF are fine), duplicate keys, `NaN`/`Infinity`, a file replaced by a symlink or an unreadable version keep the kinds of the area map; numbers are compared by their written text. `select --json` has `jsonKeyKinds`, the text output a `JSON KEYS` block, `check-config` validates the rules, and the Unity package reader/writer knows the key (see its changelog). Nothing changes for a map without `jsonRules`.
 

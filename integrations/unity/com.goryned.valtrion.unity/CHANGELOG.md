@@ -1,8 +1,9 @@
 # Changelog
 
-## Unreleased
+## 0.10.0 (2026-11-03)
 
 - `ChecksDocument.JsonRules` (`ChecksJsonRule`, `ChecksJsonKey` with `Kind` or `Kinds`): the optional `jsonRules` key of `gdv.checks/1` is read and written. Documents without it behave as before.
+- Compatible Core versions are listed in `compat.json` (package 0.10.x: Core 0.8.0 up to, not including, 0.12).
 
 ## 0.9.0 (2026-11-03)
 
