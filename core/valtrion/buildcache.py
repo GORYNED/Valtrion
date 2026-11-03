@@ -39,10 +39,13 @@ class Retention:
     max_entries: int = DEFAULT_MAX_ENTRIES
     keep_days: float = DEFAULT_KEEP_DAYS
     dirty_keep_days: float = DEFAULT_DIRTY_KEEP_DAYS
+    #: Builds kept per source (project folder or managed checkout) and platform; None (the default) sets no such limit.
+    per_source: int | None = None
 
     def limits(self) -> dict[str, Any]:
         """Keyword arguments for `gc`."""
-        return {"keep_days": self.keep_days, "dirty_keep_days": self.dirty_keep_days, "max_entries": self.max_entries}
+        return {"keep_days": self.keep_days, "dirty_keep_days": self.dirty_keep_days, "max_entries": self.max_entries,
+                "per_source": self.per_source}
 #: An entry used (published, reused or installed from) within this many seconds is never removed: a job may be installing it.
 GUARD_SEC = 3600.0
 _INCOMING = ".incoming-"
@@ -178,7 +181,8 @@ def touch(entry: Entry, clock: Callable[[], str] = core.utc_now) -> None:
 
 
 def publish(root: Path, key: str, artifact: Path, *, out: Path, project: str, platform: str, sha: str, profile: str, dirty: bool,
-            toolchain: Mapping[str, str], config_hash: str, job_id: str, cacheable: bool, replace: bool = False) -> Entry:
+            toolchain: Mapping[str, str], config_hash: str, job_id: str, cacheable: bool, replace: bool = False,
+            source: str | None = None) -> Entry:
     """Move the build output that holds `artifact` to `<root>/<key>/artifact/` and write its manifest. `artifact` must lie inside
     `out`, the job's build output folder: a path outside it (the Editor platform's artifact is the project itself) is never moved.
     A file artifact takes its whole folder along (a Windows player needs its `_Data` folder beside the exe); a folder artifact
@@ -211,7 +215,7 @@ def publish(root: Path, key: str, artifact: Path, *, out: Path, project: str, pl
         shutil.move(str(item), str(moved))
         stamp = core.utc_now()
         core.atomic_write_json(incoming / MANIFEST, {
-            "schema": SCHEMA, "key": key, "name": item.name, "entry": entry_path, "kind": kind, "sha256": digest, "sizeBytes": size,
+            **({"source": source} if source else {}), "schema": SCHEMA, "key": key, "name": item.name, "entry": entry_path, "kind": kind, "sha256": digest, "sizeBytes": size,
             "itemSizeBytes": item_size, "project": project, "platform": platform, "sha": sha, "profile": profile, "dirty": dirty,
             "cacheable": cacheable, "toolchain": dict(toolchain), "configHash": config_hash, "builtByJob": job_id, "publishedUtc": stamp,
             "lastUsedUtc": stamp})
@@ -266,13 +270,22 @@ def _last_used(entry: Entry) -> datetime:
     return datetime.fromtimestamp(0, tz=core.now().tzinfo)
 
 
+def _published(entry: Entry) -> datetime:
+    try:
+        return core.parse_utc(entry.manifest["publishedUtc"])
+    except (KeyError, ValueError, TypeError):
+        return _last_used(entry)
+
+
 def gc(root: Path, keep_days: float = DEFAULT_KEEP_DAYS, dirty_keep_days: float = DEFAULT_DIRTY_KEEP_DAYS,
        max_entries: int = DEFAULT_MAX_ENTRIES, dry_run: bool = False, protect: Iterable[str] = (),
-       clock: Callable[[], datetime] = core.now) -> GcReport:
+       clock: Callable[[], datetime] = core.now, per_source: int | None = None) -> GcReport:
     """Remove builds unused for `keep_days` (dirty ones for `dirty_keep_days`), then the least recently used above `max_entries`.
-    Abandoned `.incoming-*` folders older than a day (a publisher that died) go too."""
-    if keep_days < 0 or dirty_keep_days < 0 or max_entries < 0:
-        raise ValueError("retention values cannot be negative")
+    With `per_source`, only that many builds of one source (the project folder or managed checkout the build came from, see
+    `publish(source=)`) and platform stay, the most recently published first: a newer build replaces the older ones of its source.
+    Builds without a recorded source are not grouped. Abandoned `.incoming-*` folders older than a day (a publisher that died) go too."""
+    if keep_days < 0 or dirty_keep_days < 0 or max_entries < 0 or (per_source is not None and per_source < 1):
+        raise ValueError("retention values cannot be negative, and per_source must be at least 1")
     now = clock()
     protected = set(protect)
     removed: list[str] = []
@@ -301,6 +314,20 @@ def gc(root: Path, keep_days: float = DEFAULT_KEEP_DAYS, dirty_keep_days: float 
             remove(entry, f"unused for {age.days} days")
         else:
             survivors.append(entry)
+    if per_source is not None:
+        groups: dict[tuple[str, str], list[Entry]] = {}
+        for entry in survivors:
+            if entry.manifest.get("source"):
+                groups.setdefault((entry.manifest["source"], str(entry.manifest.get("platform"))), []).append(entry)
+        replaced: set[str] = set()
+        for group in groups.values():
+            group.sort(key=_published, reverse=True)
+            for entry in group[per_source:]:
+                if entry.key in protected or now - _last_used(entry) < timedelta(seconds=GUARD_SEC):
+                    continue
+                remove(entry, f"replaced by a newer build of the same source (keeping {per_source})")
+                replaced.add(entry.key)
+        survivors = [entry for entry in survivors if entry.key not in replaced]
     surplus = len(survivors) - max_entries
     for entry in survivors:  # oldest use first
         if surplus <= 0:

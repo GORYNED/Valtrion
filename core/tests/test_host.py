@@ -79,9 +79,10 @@ class ConfigTests(HostTestCase):
         self.assertEqual((20, 14.0, 2.0), self._retention())
         path.write_text(json.dumps({"buildCache": {"maxEntries": 3, "keepDays": 0.5, "dirtyKeepDays": 0}}), encoding="utf-8")
         self.assertEqual((3, 0.5, 0.0), self._retention())
-        path.write_text(json.dumps({"buildCache": {"maxEntries": 4}}), encoding="utf-8")
+        path.write_text(json.dumps({"buildCache": {"maxEntries": 4, "perSource": 1}}), encoding="utf-8")
         self.assertEqual((4, 14.0, 2.0), self._retention())
-        for broken in ({"maxEntries": 1.5}, {"maxEntries": -1}, {"maxEntries": True}, {"keepDays": -1}, {"keepDays": "7"},
+        self.assertEqual(1, config.load_host_settings(self.home).build_cache.per_source)
+        for broken in ({"maxEntries": 1.5}, {"maxEntries": -1}, {"perSource": 0}, {"perSource": 1.5}, {"perSource": True}, {"maxEntries": True}, {"keepDays": -1}, {"keepDays": "7"},
                        {"dirtyKeepDays": float("inf")}, {"dirtyKeepDays": False}, {"keep": 1}, 5):
             path.write_text(json.dumps({"buildCache": broken}), encoding="utf-8")
             with self.assertRaises(config.ConfigError, msg=broken):

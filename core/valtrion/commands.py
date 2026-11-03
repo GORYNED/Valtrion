@@ -917,6 +917,7 @@ def _configure_builds(parser: argparse.ArgumentParser) -> None:
     collect.add_argument("--keep-days", type=float, help="default: host.json buildCache.keepDays, 14")
     collect.add_argument("--dirty-keep-days", type=float, help="default: host.json buildCache.dirtyKeepDays, 2")
     collect.add_argument("--max-entries", type=int, help="default: host.json buildCache.maxEntries, 20")
+    collect.add_argument("--per-source", type=int, help="builds kept per project folder or checkout and platform; default: host.json buildCache.perSource, no limit")
     collect.add_argument("--dry-run", action="store_true")
     collect.add_argument("--protect", action="append", default=[], help="a build key that must stay (repeatable)")
 
@@ -935,7 +936,7 @@ def _builds(arguments: argparse.Namespace) -> int:
     try:
         limits = config.load_host_settings().build_cache.limits()
         for name, value in (("keep_days", arguments.keep_days), ("dirty_keep_days", arguments.dirty_keep_days),
-                            ("max_entries", arguments.max_entries)):
+                            ("max_entries", arguments.max_entries), ("per_source", arguments.per_source)):
             if value is not None:
                 limits[name] = value
         report = buildcache.gc(root, dry_run=arguments.dry_run, protect=[*arguments.protect, *diskspace.active_build_keys()], **limits)

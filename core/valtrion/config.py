@@ -233,7 +233,7 @@ def _load_build_cache(value: Any) -> buildcache.Retention:
         return buildcache.Retention()
     if not isinstance(value, dict):
         raise ConfigError("host.json: buildCache must be an object")
-    unknown = sorted(set(value) - {"maxEntries", "keepDays", "dirtyKeepDays"})
+    unknown = sorted(set(value) - {"maxEntries", "keepDays", "dirtyKeepDays", "perSource"})
     if unknown:
         raise ConfigError(f"host.json: buildCache has unknown keys: {', '.join(unknown)}")
     entries = value.get("maxEntries", buildcache.DEFAULT_MAX_ENTRIES)
@@ -245,7 +245,10 @@ def _load_build_cache(value: Any) -> buildcache.Retention:
         if isinstance(number, bool) or not isinstance(number, (int, float)) or not math.isfinite(number) or number < 0:
             raise ConfigError(f"host.json: buildCache.{key} must be a non-negative number")
         days[key] = float(number)
-    return buildcache.Retention(entries, days["keepDays"], days["dirtyKeepDays"])
+    per_source = value.get("perSource")
+    if per_source is not None and (isinstance(per_source, bool) or not isinstance(per_source, int) or per_source < 1):
+        raise ConfigError("host.json: buildCache.perSource must be a positive integer")
+    return buildcache.Retention(entries, days["keepDays"], days["dirtyKeepDays"], per_source)
 
 
 def default_checkout_path(home: Path, project: str, checkout_id: str) -> Path:

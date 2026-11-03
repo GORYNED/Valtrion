@@ -13,6 +13,7 @@ validated before it is written. Everything the run registered as temporary is re
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import tempfile
@@ -1058,7 +1059,7 @@ def execute(pipeline: Mapping[str, Any], pipeline_path: Path | None, ctx: JobCon
                     published = buildcache.publish(
                         buildcache.builds_root(ctx.home), cache_key, artifact, out=out, project=pipeline["candidate"]["repo"], platform=platform,
                         sha=candidate_sha, profile=profile, dirty=dirty, toolchain=toolchain, job_id=ctx.job_id,
-                        cacheable=not cache_key.startswith("dirty-"), replace=stage.get("args", {}).get("reuse") is False,
+                        cacheable=not cache_key.startswith("dirty-"), replace=stage.get("args", {}).get("reuse") is False, source=_build_source(pipeline["candidate"]["repo"], options.checkout_id, project_dir),
                         config_hash=config_hash_seen[0] or buildcache.profile_config_hash(project_dir, profile))
                 except (OSError, ValueError) as error:
                     head_note.append(f"the build artifact could not be published outside the work folder: {error}")
@@ -1236,6 +1237,13 @@ def _merge_runs(runs: list[dict], plan: Mapping[str, Any], plan_sha: str) -> dic
         base["unverified"] = sorted({u for r in runs for u in r["unverified"]} | {
             f"{name}: a repeat had fewer samples than the plan's warmup and was left out of the joined samples" for name in left_out})
     return base
+
+
+def _build_source(project: str, checkout_id: str | None, project_dir: Path) -> str:
+    """Where a published build came from, for the `buildCache.perSource` limit: the managed checkout, or else the project folder."""
+    if checkout_id is not None:
+        return f"checkout:{project}/{checkout_id}"
+    return "dir:" + os.path.normcase(str(project_dir.resolve()))
 
 
 def _collect_build_cache(ctx: JobContext, keep_key: str) -> None:

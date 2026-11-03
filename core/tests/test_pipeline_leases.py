@@ -440,6 +440,8 @@ class ScopedLeaseTests(unittest.TestCase):
         self.assertEqual((core.sha256_file(path), path.stat().st_size, "ab" * 20, False, "Validation", False),
                          (build["sha256"], build["sizeBytes"], build["candidateSha"], build["dirty"], build["profile"], build["reused"]))
         self.assertEqual("6000.6.7f1", build["toolchain"]["unity"])
+        source = buildcache.find(buildcache.builds_root(self.home), build["key"]).manifest.get("source")
+        self.assertTrue(source and source.startswith(("dir:", "checkout:")), "the manifest records where the build came from")
         events = [e for e in self.events_of(store) if e["type"] == "progress" and "build" in (e.get("data") or {})]
         self.assertEqual(build["path"], events[0]["data"]["build"]["path"])
         self.assertEqual([(("A", path))], self.world.installs, "install takes the published artifact")
@@ -809,6 +811,35 @@ class BuildCacheTests(unittest.TestCase):
             self.assertEqual(["d"], [e.key for e in buildcache.entries(self.root)], "the publish gc keeps the new build, drops the rest")
             (home / "host.json").write_text(json.dumps({"buildCache": {"maxEntries": -1}}), encoding="utf-8")
             self.assertEqual(2, run("builds", "gc"), "a broken buildCache is BLOCKED")
+
+    def test_per_source_keeps_the_newest_build_of_each_source_and_platform(self):
+        from datetime import timedelta
+        now = core.now()
+
+        def publish(key, source, platform="android", hours=5.0):
+            self.number += 1
+            out = self.base / f"out{self.number}"
+            out.mkdir()
+            (out / "app.apk").write_bytes(b"x")
+            entry = buildcache.publish(self.root, key, out / "app.apk", out=out, project="P", platform=platform, sha="a" * 40, profile="Prof",
+                                       dirty=False, toolchain={}, config_hash="n", job_id=key, cacheable=True, source=source)
+            stamp = core.format_utc(now - timedelta(hours=hours))
+            core.atomic_write_json(entry.directory / buildcache.MANIFEST, {**entry.manifest, "publishedUtc": stamp, "lastUsedUtc": stamp})
+
+        publish("w1-old", "dir:/w1", hours=30)
+        publish("w1-new", "dir:/w1", hours=20)
+        publish("w1-ios", "dir:/w1", platform="ios", hours=40)
+        publish("w2", "dir:/w2", hours=50)
+        publish("legacy", None, hours=60)
+        publish("w1-used", "dir:/w1", hours=10)
+        publish("w1-busy", "dir:/w1", hours=0.1)
+        report = buildcache.gc(self.root, per_source=1, protect=["w1-used"], dry_run=True, clock=lambda: now)
+        self.assertEqual(["w1-new", "w1-old"], sorted(item.split(" ")[0] for item in report.removed),
+                         "w1-busy is the newest; w1-used is protected; other platforms, other sources and sources not recorded are left")
+        buildcache.gc(self.root, per_source=2, clock=lambda: now)
+        self.assertEqual(["legacy", "w1-busy", "w1-ios", "w1-used", "w2"], sorted(e.key for e in buildcache.entries(self.root)))
+        with self.assertRaises(ValueError):
+            buildcache.gc(self.root, per_source=0)
 
     def test_lease_keeper_release_one_gives_back_only_that_lease(self):
         manager = LeaseManager(self.base / "home")
