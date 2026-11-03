@@ -923,8 +923,8 @@ class BuildCacheTests(unittest.TestCase):
         self.assertEqual({"dir:/a", "dir:/b"}, set(buildcache.find(self.root, "k1").sources()))
 
     def test_the_build_source_names_a_managed_checkout_or_the_normalized_project_folder(self):
+        (self.base / "Work").mkdir()
         folder = self.base / "Work" / ".." / "Work"
-        folder.mkdir()
         self.assertEqual("checkout:P/ref", pipeline._build_source("P", "ref", folder))
         self.assertEqual("dir:" + os.path.normcase(str((self.base / "Work").resolve())), pipeline._build_source("P", None, folder))
 
