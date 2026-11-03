@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.9.0 (2026-11-03)
 
 - `ChecksDocument.ContentRules` (`ChecksContentRule` with `Reindent` and `CodePrefixes`, `ChecksBlockComment`): the optional `contentRules` key of `gdv.checks/1` is read and written. Documents without it behave as before.
 

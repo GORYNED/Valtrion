@@ -151,7 +151,7 @@ class DoctorProjectTests(ProjectCase):
             return run("doctor", "--json", *args)
 
     def test_mismatch_is_blocked_with_exit_two_and_the_action(self):
-        self.lock({"version": "0.9.0", "source": "registry"})
+        self.lock({"version": "0.99.0", "source": "registry"})
         code, out, err = self.doctor("--project", str(self.unity))
         self.assertEqual(2, code)
         self.assertIn("BLOCKED", err)
@@ -179,14 +179,21 @@ class ShippedTableTests(ProjectCase):
         self.lock({"version": "0.7.1", "source": "registry"})
         for core_version in ("0.8.8", "0.9.0", "0.9.7", __import__("valtrion").__version__):
             self.assertEqual("ok", project.check_project(self.unity, core_version)["status"], core_version)
-        self.assertNotEqual("ok", project.check_project(self.unity, "0.10.0")["status"])  # outside the range: reported, not silently accepted
+        self.assertNotEqual("ok", project.check_project(self.unity, "0.11.0")["status"])  # outside the range: reported, not silently accepted
 
     def test_package_0_8_x_needs_core_0_8_or_later_and_works_with_the_current_core(self):
         self.lock({"version": "0.8.0", "source": "registry"})
         for core_version in ("0.8.0", "0.9.0", __import__("valtrion").__version__):
             self.assertEqual("ok", project.check_project(self.unity, core_version)["status"], core_version)
         self.assertNotEqual("ok", project.check_project(self.unity, "0.7.4")["status"])  # the 0.8 readers are for core 0.8 and later
-        self.assertNotEqual("ok", project.check_project(self.unity, "0.10.0")["status"])
+        self.assertNotEqual("ok", project.check_project(self.unity, "0.11.0")["status"])
+
+    def test_package_0_9_x_works_with_core_0_8_to_0_10(self):
+        self.lock({"version": "0.9.0", "source": "registry"})
+        for core_version in ("0.8.0", "0.9.0", "0.10.0", __import__("valtrion").__version__):
+            self.assertEqual("ok", project.check_project(self.unity, core_version)["status"], core_version)
+        self.assertNotEqual("ok", project.check_project(self.unity, "0.7.4")["status"])
+        self.assertNotEqual("ok", project.check_project(self.unity, "0.11.0")["status"])
 
     def test_the_package_id_comes_from_the_table(self):
         other = self.base / "other.json"
