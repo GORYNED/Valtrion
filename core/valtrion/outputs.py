@@ -65,7 +65,20 @@ def normalize(text: object) -> str:
         raise OutputError(f"cleanup path {text!r} names the working directory itself")
     if any(part.casefold() == ".git" for part in parts):
         raise OutputError(f"cleanup path {text!r} names a .git entry")
+    for part in parts:
+        # Windows resolves these to another name (a stream, the name without its trailing dots and spaces, a device), so the
+        # declared text would not be the path removed; they are refused on every host so a declaration means the same everywhere.
+        if ":" in part:
+            raise OutputError(f"cleanup path {text!r} has a ':' in {part!r} (a drive or an NTFS stream)")
+        if part.endswith((".", " ")):
+            raise OutputError(f"cleanup path {text!r} has a part ending in a dot or a space ({part!r})")
+        if part.split(".")[0].rstrip(" ").upper() in _RESERVED_NAMES:
+            raise OutputError(f"cleanup path {text!r} names the Windows device {part!r}")
     return "/".join(parts)
+
+
+_RESERVED_NAMES = frozenset({"CON", "PRN", "AUX", "NUL", *(f"COM{n}" for n in range(1, 10)), *(f"LPT{n}" for n in range(1, 10)),
+                             "COM¹", "COM²", "COM³", "LPT¹", "LPT²", "LPT³", "CONIN$", "CONOUT$"})
 
 
 def _inside(path: Path, base: Path) -> bool:
@@ -137,17 +150,41 @@ def _remove(path: Path) -> None:
         raise OSError(f"{path} is still there")
 
 
-def refusal(base: Path, relative: str, git: GitRunner = compare.run_git, walk: bool = True) -> str | None:
-    """Why the normalized `relative` must never be removed from `base`, or None. Resolves links (symlinks, junctions) of the path as it
-    exists now; a path that does not exist yet is judged by the part that does."""
+def locate(base: Path, relative: str) -> tuple[Path | None, str]:
+    """(the path on disk that removing `relative` would remove, or None, and why it is refused, or ""). The declared text must name
+    the path on disk itself: no folder on the way may be a link or junction, and the resolved name must be the declared one (letter
+    case aside), so a short 8.3 name or any other alias the file system resolves cannot reach another path. A declared path that is
+    itself a link is located as the link (removing it unlinks it)."""
     resolved_base = base.resolve()
+    parts = relative.split("/")
+    for depth in range(1, len(parts)):
+        prefix = "/".join(parts[:depth])
+        if is_link(base / prefix):
+            return None, f"the folder {prefix} on its way is a link or junction (only the declared path itself may be one)"
     candidate = base / relative
-    target = candidate.resolve()
+    leaf_link = is_link(candidate)
+    target = (candidate.parent.resolve() / candidate.name) if leaf_link else candidate.resolve()
     if not _inside(target, resolved_base):
-        return f"it resolves outside the working directory ({target})"
-    reason = _tracked(base, relative, git)
-    if reason is None and walk and candidate.exists() and not is_link(candidate):
-        reason = _working_copy_inside(candidate)
+        return None, f"it resolves outside the working directory ({candidate.resolve()})"
+    if leaf_link and not _inside(candidate.resolve(), resolved_base):
+        return None, f"it is a link that points outside the working directory ({candidate.resolve()})"
+    actual = target.relative_to(resolved_base).as_posix()
+    if actual.casefold() != relative.casefold():
+        return None, f"it names a different path on disk ({actual})"
+    return target, ""
+
+
+def refusal(base: Path, relative: str, git: GitRunner = compare.run_git, walk: bool = True) -> str | None:
+    """Why the normalized `relative` must never be removed from `base`, or None. Resolves links (symlinks, junctions) and file
+    system aliases of the path as it exists now; a path that does not exist yet is judged by the part that does. The git and
+    working-copy checks run on the path as found on disk."""
+    target, reason = locate(base, relative)
+    if target is None:
+        return reason
+    actual = target.relative_to(base.resolve()).as_posix()
+    reason = _tracked(base.resolve(), actual, git)
+    if reason is None and walk and target.exists() and not is_link(target):
+        reason = _working_copy_inside(target)
     return reason
 
 
@@ -217,8 +254,14 @@ def remove_declared(base: Path, paths: Sequence[str], in_use: InUse = lambda pat
         if busy:
             record.kept.append({"path": relative, "reason": f"in use: {busy}" if not overlap else busy})
             continue
+        # Checked once more just before the removal, and the path removed is the one found on disk, never the declared text.
+        target, located = locate(base, relative)
+        reason = located or (refusal(base, relative, git) if target is not None else None)
+        if target is None or reason:
+            record.refused.append({"path": relative, "reason": reason or located})
+            continue
         try:
-            _remove(candidate)
+            _remove(target)
         except OSError as error:
             record.kept.append({"path": relative, "reason": f"could not be removed (a process may still use it): {error}"})
             continue

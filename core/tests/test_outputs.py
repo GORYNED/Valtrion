@@ -68,7 +68,10 @@ class OutputTestCase(unittest.TestCase):
 class DeclarationTests(OutputTestCase):
     def test_absolute_parent_and_empty_paths_are_refused_with_an_explicit_error(self):
         for text in ("/etc/passwd", "C:\\Windows", "C:relative", "\\server\\share", "../escape", "out/../../escape", "a\\..\\..\\b", "",
-                     ".", "./", ".git", "sub/.git/config", "~/x"):
+                     ".", "./", ".git", "sub/.git/config", "~/x",
+                     # names Windows resolves to another path: a stream, trailing dots and spaces, devices
+                     "Assets::$INDEX_ALLOCATION", "out:stream", "ProjectSettings.", "ProjectSettings ", "out/sub.", "CON", "nul.txt",
+                     "out/COM1", "lpt9.log", "Aux"):
             with self.subTest(text=text):
                 with self.assertRaises(outputs.OutputError) as raised:
                     outputs.declare(self.base, [text])
@@ -119,6 +122,65 @@ class TrackedTests(OutputTestCase):
                     outputs.declare(self.base, [text])
                 self.assertIn("tracked by git", str(raised.exception))
         self.assertEqual(["out"], outputs.declare(self.base, ["out"]))  # untracked (an output that does not exist yet)
+
+    def assert_aliases_never_remove_tracked_files(self, declared, setup=None):
+        (self.base / "Assets" / "Textures").mkdir(parents=True, exist_ok=True)
+        (self.base / "Assets" / "Textures" / "t.png").write_text("x", encoding="utf-8")
+        _git(self.base, "add", "Assets")
+        if setup is not None and not setup():
+            self.skipTest("this platform cannot create the link")
+        with self.assertRaises(outputs.OutputError):
+            outputs.declare(self.base, [declared])
+        record = outputs.remove_declared(self.base, [declared]).to_document()
+        self.assertEqual([], record["removed"], record)
+        self.assertEqual(1, len(record["refused"]), record)
+        for tracked in ("Tools/build.sh", "README.md", "Assets/Textures/t.png"):
+            self.assertTrue((self.base / tracked).is_file(), tracked)
+
+    def test_trailing_dots_spaces_streams_and_devices_never_reach_a_tracked_folder(self):
+        for declared in ("Tools.", "Tools ", "Tools..", "Assets/Textures.", "CON", "aux.txt"):
+            with self.subTest(declared=declared):
+                self.assert_aliases_never_remove_tracked_files(declared)
+
+    @unittest.skipUnless(os.name == "nt", "NTFS streams are a Windows name form")
+    def test_an_ntfs_index_stream_never_reaches_a_tracked_folder(self):
+        self.assert_aliases_never_remove_tracked_files("Assets::$INDEX_ALLOCATION")
+
+    @unittest.skipUnless(os.name == "nt", "8.3 short names are a Windows name form")
+    def test_a_short_8_3_name_never_reaches_a_tracked_folder(self):
+        import ctypes
+        folder = self.base / "LongTrackedFolderName"
+        folder.mkdir()
+        (folder / "f.txt").write_text("x", encoding="utf-8")
+        _git(self.base, "add", "LongTrackedFolderName")
+        buffer = ctypes.create_unicode_buffer(512)
+        try:
+            ctypes.windll.kernel32.GetShortPathNameW(str(folder), buffer, 512)
+        except (AttributeError, OSError):
+            self.skipTest("GetShortPathNameW is not available")
+        short = Path(buffer.value).name
+        if not short or short.casefold() == folder.name.casefold():
+            self.skipTest("8.3 names are switched off on this volume")
+        with self.assertRaises(outputs.OutputError) as raised:
+            outputs.declare(self.base, [short])
+        self.assertIn("different path on disk", str(raised.exception))
+        record = outputs.remove_declared(self.base, [short]).to_document()
+        self.assertEqual([], record["removed"])
+        self.assertIn("different path on disk", record["refused"][0]["reason"])
+        self.assertTrue((folder / "f.txt").is_file())
+
+    def test_a_link_on_the_way_into_a_tracked_folder_is_refused(self):
+        self.assert_aliases_never_remove_tracked_files(
+            "jn/Textures", lambda: _link_folder(self.base / "jn", self.base / "Assets"))
+
+    def test_a_symlink_on_the_way_into_a_tracked_folder_is_refused(self):
+        def symlink():
+            try:
+                os.symlink(self.base / "Assets", self.base / "lnk", target_is_directory=True)
+            except (OSError, NotImplementedError):
+                return False
+            return True
+        self.assert_aliases_never_remove_tracked_files("lnk/Textures", symlink)
 
     def test_a_path_that_became_tracked_is_refused_when_the_job_ends_and_stays(self):
         self.make_outputs()
@@ -182,7 +244,8 @@ class RemovalTests(OutputTestCase):
         record = outputs.remove_declared(self.base, ["out", "out/keep.txt"]).to_document()
         self.assertEqual([], record["removed"])
         self.assertEqual(["out", "out/keep.txt"], [item["path"] for item in record["refused"]])
-        self.assertTrue(all("outside the working directory" in item["reason"] for item in record["refused"]))
+        self.assertIn("outside the working directory", record["refused"][0]["reason"])
+        self.assertIn("is a link or junction", record["refused"][1]["reason"])
         self.assertTrue((self.outside / "keep.txt").is_file())
 
     def test_a_link_inside_a_removed_folder_is_unlinked_and_its_target_survives(self):
@@ -282,6 +345,22 @@ class JobOutputTests(OutputTestCase):
         self.assertEqual(["DerivedData"], record["removed"])
         self.assertIn(f"the running job {layout.directory.name} works in", record["kept"][0]["reason"])
         self.assertTrue((self.base / "out").is_dir())
+
+    def test_an_output_inside_the_folder_another_running_job_works_in_is_kept(self):
+        self.make_outputs()
+        layout, _ = jobs.create_job(self.request([PYTHON, "-c", "pass"], [], payload={"type": "command", "argv": ["x"],
+                                                                                      "cwd": str(self.base)}), self.root, self.home)
+        job = jobs.JobStore(layout.directory).read_job()
+        job["state"] = "running"
+        core.atomic_write_json(layout.job_json, job)
+        spec = {"cleanupPaths": {"base": str(self.base), "paths": ["out/tool"]}, "artifactsRoot": str(self.root),
+                "project": "proj", "sha8": "aaaaaaaa", "protectedPaths": []}
+        record = jobs.clean_declared_outputs(spec, "this-job", self.home)
+        self.assertEqual([], record["removed"])
+        self.assertIn(f"the running job {layout.directory.name} works in", record["kept"][0]["reason"])
+        self.assertTrue((self.base / "out" / "tool").is_file())
+        # The finishing job's own working directory does not count.
+        self.assertEqual(["out/tool"], jobs.clean_declared_outputs(spec, layout.directory.name, self.home)["removed"])
 
     def test_a_retained_run_keeps_its_outputs(self):
         self.make_outputs()

@@ -124,7 +124,7 @@ def _declared(spec: Mapping[str, Any]) -> tuple[Path | None, list[str]]:
 
 def output_users(target: Path, job_id: str, home: Path | None = None, probe: Callable[[str], "str | None"] | None = None) -> str | None:
     """Why something other than job `job_id` uses `target` right now, or None: a live `unity-project:` lease of `target` or of a folder
-    it lies in held by another session, another active job whose working directory is `target` or lies inside it, or another active
+    it lies in held by another session, another active job whose working directory is `target`, lies inside it or contains it, or another active
     job that declared an overlapping output path (that job removes it itself)."""
     resolved = target.resolve()
     if probe is None:
@@ -150,7 +150,8 @@ def output_users(target: Path, job_id: str, home: Path | None = None, probe: Cal
         base, paths = _declared(spec)
         for folder in filter(None, (payload.get("cwd"), payload.get("projectDir"), base)):
             used = Path(folder).resolve()
-            if used == resolved or artifacts._is_within(used, resolved):
+            # Its working directory is the path, lies inside it, or contains it (it may be writing into the path right now).
+            if used == resolved or artifacts._is_within(used, resolved) or artifacts._is_within(resolved, used):
                 return f"the running job {other} works in {folder}"
         for item in paths if base is not None else []:
             declared = (base / item).resolve()
