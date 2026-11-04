@@ -85,6 +85,13 @@ class RecognitionTests(unittest.TestCase):
         for path in ("C:\\x\\MyUnity.exe", "C:\\x\\Unity.exe.bak", "C:\\Unity Hub\\Unity Hub.exe"):
             self.assertFalse(unityguard.is_unity_editor(Proc(1, 0, path, path), "windows"), path)
 
+    def test_the_unity_cli_is_not_an_editor_on_windows(self):
+        # `unity.exe serve` of the Hub and `unity mcp` of an agent session live as long as the Hub or the session; counting them made
+        # every guarded run wait for an "Editor" that never ends.
+        for path in ("C:\\Program Files\\Unity Hub\\resources\\unity.exe", "C:\\Users\\me\\AppData\\Local\\Unity\\bin\\unity.exe"):
+            self.assertFalse(unityguard.is_unity_editor(Proc(1, 0, path, path + " serve"), "windows"), path)
+            self.assertFalse(unityguard.is_unity_editor(Proc(1, 0, "", f'"{path}" mcp --project-path .'), "windows"), path)
+
     def test_a_program_that_only_has_the_editor_among_its_arguments_is_not_an_editor(self):
         editor = "/Applications/Unity/Hub/Editor/6000.6.7f1/Unity.app/Contents/MacOS/Unity"
         for command in (

@@ -147,7 +147,8 @@ def parse_cim_memory(text: str) -> float | None:
 # -- recognising an Editor ----------------------------------------------------------------------------------------------------
 
 _POSIX_EDITOR = re.compile(r"(?:/Unity\.app/Contents/MacOS/Unity|/Editor/Unity)(?:\s|$)")
-_WINDOWS_EDITOR = re.compile(r'(?:^|[\\/])Unity\.exe$', re.IGNORECASE)
+# An Editor is `<install>\Editor\Unity.exe`. The Unity CLI (`unity.exe serve`, `unity.exe mcp`, the Hub's `resources\unity.exe`) is not one.
+_WINDOWS_EDITOR = re.compile(r'(?:^|[\\/])Editor[\\/]Unity\.exe$', re.IGNORECASE)
 
 
 def _first_word(command: str) -> str:

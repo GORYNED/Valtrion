@@ -2,6 +2,10 @@
 
 Core (the `valtrion` Python package) and the Unity package `com.goryned.valtrion.unity` are versioned independently. The Unity changelog is in `integrations/unity/com.goryned.valtrion.unity/CHANGELOG.md`; `compat.json` lists compatible pairs.
 
+## 0.12.1
+
+- **The Unity CLI is no longer taken for an Editor on Windows.** The pre-start check counted every `unity.exe` as an Editor, so `unity.exe serve` (Unity Hub) and `unity mcp` (an agent session) made every guarded run wait for an "Editor outside any lease" that never ended. On Windows an Editor is now `...\Editor\Unity.exe`, as on macOS and Linux (`/Editor/Unity`).
+
 ## 0.12.0
 
 - **Waiting for an Editor outside a lease no longer holds an Editor slot.** `unity run`, the build stage, the Editor provider and `job start --lease unity-editor` make the `unityGuard` checks (no Editor outside a lease, enough free memory) before the `unity-editor` slot is taken, and once more with it taken (a slot is given back when something appeared meanwhile). A waiter refused by the checks keeps no ticket in the slot's waiting line, so other runs can use the free slots. `LeaseManager.acquire_slot` takes a `precondition` for this; `unityguard.Gate` and `unityguard.build_gate` build it from `host.json`.
