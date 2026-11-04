@@ -1266,12 +1266,30 @@ def _collect_build_cache(ctx: JobContext, keep_key: str) -> None:
         ctx.events.emit("log", "build cache: removed " + ", ".join(report.removed), data={"removed": list(report.removed)})
 
 
+def build_check_key(pipeline: Mapping[str, Any]) -> str | None:
+    """The check key a build-only pipeline stands for: `stage.args.checkKey` of its build stage, else `player:<device.platform>`."""
+    stages = pipeline.get("stages", [])
+    build = next((s for s in stages if s.get("stage") == "build"), None)
+    if build is None or any(s.get("stage") == "run" for s in stages):
+        return None
+    named = build.get("args", {}).get("checkKey")
+    if isinstance(named, str) and named.startswith("player:") and len(named) > len("player:"):
+        return named
+    platform = pipeline.get("device", {}).get("platform")
+    return f"player:{platform}" if platform else None
+
+
 def _early_result(ctx, pipeline, plans, load_plan, first_plan, device, host, unity, dirty, extra_layers, status, reason,
                   head_note: Sequence[str] = (), build: Mapping[str, Any] | None = None,
                   checkout: Mapping[str, Any] | None = None) -> dict:
     """The result of a pipeline that stopped before any run (a failed build, no device) or has no run stage (build only,
     install only): no metrics, a clear reason."""
     plan_id, plan_sha = "unknown", core.sha256_bytes(b"")
+    key = build_check_key(pipeline)
+    if key and not first_plan:
+        # A pipeline that only builds has no plan: its result names the `player:TARGET` check of `valtrion select` it settles, and
+        # plan.sha256 is the hash of that key's text (as `valtrion result write` does).
+        plan_id, plan_sha = key, core.sha256_bytes(key.encode("utf-8"))
     if first_plan:
         try:
             _, plan, plan_sha = load_plan(first_plan)

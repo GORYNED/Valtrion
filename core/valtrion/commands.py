@@ -910,6 +910,8 @@ def _configure_build(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--device-class", help="iOS signs for one device: the class to build for")
     parser.add_argument("--device-id", help="iOS signs for one device: the device to build for")
     parser.add_argument("--no-reuse", action="store_true", help="build even when a clean build of this commit, profile and toolchain is cached")
+    parser.add_argument("--check-key", help="the check this build settles, as `valtrion select --json` lists it; its result has this plan.id "
+                                           "(default: player:<platform>)")
     parser.add_argument("--clean", action="store_true", help="a managed checkout keeps its export, DerivedData and caches between builds; "
                                                               "build from nothing this time")
     _common_run_options(parser)
@@ -918,16 +920,19 @@ def _configure_build(parser: argparse.ArgumentParser) -> None:
 def _build(arguments: argparse.Namespace) -> int:
     """Build-only pipeline: one `build` stage, no device. The artifact is published (path, hash, key in `result.json`) and a later
     `valtrion pipeline` / `valtrion run --artifact-key KEY` installs it without building."""
+    if arguments.check_key and not re.fullmatch(r"player:[A-Za-z0-9][A-Za-z0-9._:-]{0,190}", arguments.check_key):
+        return _blocked("build", f"--check-key {arguments.check_key!r} must be a player check key such as player:windows (letters, digits and ._:-)")
     device = {k: v for k, v in (("class", arguments.device_class), ("id", arguments.device_id), ("platform", arguments.platform)) if v}
     stage: dict = {"stage": "build"}
-    if arguments.no_reuse or arguments.clean:
-        stage["args"] = {**({"reuse": False} if arguments.no_reuse else {}), **({"clean": True} if arguments.clean else {})}
+    if arguments.no_reuse or arguments.clean or arguments.check_key:
+        stage["args"] = {**({"reuse": False} if arguments.no_reuse else {}), **({"clean": True} if arguments.clean else {}),
+                         **({"checkKey": arguments.check_key} if arguments.check_key else {})}
     document = {"schema": "gdv.pipeline/1", "id": core.safe_identifier(f"build-{arguments.repo}-{arguments.profile}"),
                 "candidate": {"repo": arguments.repo, "profile": arguments.profile}, "device": device, "stages": [stage]}
     _, errors = validate_document(document)
     if errors:
         return _blocked("build", "; ".join(errors))
-    own = ("--repo", "--profile", "--platform", "--target", "--device-class", "--device-id")
+    own = ("--repo", "--profile", "--platform", "--target", "--device-class", "--device-id", "--check-key")
     forwarded = [item for item in arguments.raw_argv[1:] if item not in ("--no-reuse", "--clean")]
     for option in own:
         forwarded = submit.drop_option(forwarded, option)
