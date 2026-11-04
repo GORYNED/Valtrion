@@ -1,0 +1,9 @@
+{
+  "schema": "gdv.pipeline/1",
+  "id": "example.external-ui",
+  "candidate": { "repo": "ExampleApp", "profile": "Validation" },
+  "device": { "platform": "ios" },
+  "stages": [
+    { "stage": "run", "plan": "plans/touch.plan.json", "externalUi": { "timeoutSec": 120 } }
+  ]
+}

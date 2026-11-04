@@ -1,0 +1,18 @@
+{
+  "schema": "gdv.pipeline/1",
+  "id": "example.external-ui",
+  "candidate": { "repo": "ExampleApp", "profile": "Validation" },
+  "device": { "platform": "ios" },
+  "stages": [
+    { "stage": "build" },
+    { "stage": "install" },
+    {
+      "stage": "run",
+      "plan": "plans/touch.plan.json",
+      "externalUi": {
+        "command": ["bash", "tools/touch/tap.sh", "{device}", "{arg:target}", "{app}"],
+        "timeoutSec": 120
+      }
+    }
+  ]
+}
