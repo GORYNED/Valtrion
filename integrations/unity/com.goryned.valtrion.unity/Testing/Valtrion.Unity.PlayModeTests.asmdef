@@ -1,0 +1,28 @@
+{
+    "name": "Valtrion.Unity.PlayModeTests",
+    "rootNamespace": "Valtrion.Unity.PlayModeTests",
+    "references": [
+        "Valtrion.Unity",
+        "UnityEngine.TestRunner"
+    ],
+    "includePlatforms": [],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": true,
+    "precompiledReferences": [
+        "nunit.framework.dll"
+    ],
+    "autoReferenced": false,
+    "defineConstraints": [
+        "DEVELOPMENT_BUILD || UNITY_EDITOR",
+        "UNITY_TESTS_FRAMEWORK"
+    ],
+    "versionDefines": [
+        {
+            "name": "com.unity.test-framework",
+            "expression": "",
+            "define": "UNITY_TESTS_FRAMEWORK"
+        }
+    ],
+    "noEngineReferences": false
+}

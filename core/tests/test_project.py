@@ -202,6 +202,13 @@ class ShippedTableTests(ProjectCase):
         self.assertNotEqual("ok", project.check_project(self.unity, "0.7.4")["status"])
         self.assertNotEqual("ok", project.check_project(self.unity, "0.14.0")["status"])
 
+    def test_package_0_11_x_works_with_core_0_8_to_0_13(self):
+        self.lock({"version": "0.11.0", "source": "registry"})
+        for core_version in ("0.8.0", "0.11.0", "0.13.0", __import__("valtrion").__version__):
+            self.assertEqual("ok", project.check_project(self.unity, core_version)["status"], core_version)
+        self.assertNotEqual("ok", project.check_project(self.unity, "0.7.4")["status"])
+        self.assertNotEqual("ok", project.check_project(self.unity, "0.14.0")["status"])
+
     def test_the_package_id_comes_from_the_table(self):
         other = self.base / "other.json"
         other.write_text(json.dumps({**COMPAT, "package": "com.example.other"}), encoding="utf-8")

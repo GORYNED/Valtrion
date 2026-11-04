@@ -1,8 +1,9 @@
 {
-    "name": "Valtrion.Unity.PlayModeTests",
+    "name": "Valtrion.Unity.HarnessPlayModeTests",
     "rootNamespace": "Valtrion.Unity.PlayModeTests",
     "references": [
-        "Valtrion.Unity"
+        "Valtrion.Unity",
+        "Valtrion.Unity.PlayModeTests"
     ],
     "includePlatforms": [],
     "optionalUnityReferences": [
