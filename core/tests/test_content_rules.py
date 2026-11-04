@@ -4,6 +4,7 @@ Everything not provably cosmetic keeps the normal kinds."""
 import copy
 import json
 import os
+import tempfile
 import unittest
 
 from valtrion import select
@@ -27,6 +28,31 @@ MAP["kinds"] = {
 }
 LINE = ["//"]
 BLOCK = {"start": "/*", "end": "*/"}
+
+
+def _filesystem_allows_pattern_characters_in_names():
+    """Whether a file named `w*.cs` can be created here (NTFS refuses `*`)."""
+    with tempfile.TemporaryDirectory() as folder:
+        try:
+            with open(os.path.join(folder, "w*.cs"), "w", encoding="utf-8"):
+                pass
+        except OSError:
+            return False
+    return True
+
+
+def _filesystem_keeps_the_executable_bit():
+    """Whether `chmod 0o755` really sets an execute bit here (NTFS has none)."""
+    with tempfile.TemporaryDirectory() as folder:
+        path = os.path.join(folder, "probe.sh")
+        with open(path, "w", encoding="utf-8"):
+            pass
+        os.chmod(path, 0o755)
+        return bool(os.stat(path).st_mode & 0o111)
+
+
+NAMES_WITH_PATTERN_CHARACTERS = _filesystem_allows_pattern_characters_in_names()
+EXECUTABLE_BIT = _filesystem_keeps_the_executable_bit()
 
 
 def diff(*hunks):
@@ -201,6 +227,7 @@ class CosmeticSelectionTests(RepoCase):
         _, payload, _ = self.select_json()
         self.assertEqual({}, payload["cosmeticPaths"])
 
+    @unittest.skipUnless(EXECUTABLE_BIT, "this filesystem has no executable bit (chmod 0o755 does not set one, as on NTFS)")
     def test_a_script_made_executable_together_with_a_comment_edit_is_code(self):
 
         write(self.root, "src/run.sh", "echo hi\n")
@@ -225,6 +252,7 @@ class CosmeticSelectionTests(RepoCase):
         _, payload, _ = self.select_json()
         self.assertEqual({}, payload["cosmeticPaths"])
 
+    @unittest.skipUnless(NAMES_WITH_PATTERN_CHARACTERS, "this filesystem cannot create a file name with '*' (as on NTFS)")
     def test_a_file_name_with_pattern_characters_is_a_literal_name(self):
         write(self.root, "src/media/w*.cs", "x\n")
         write(self.root, "src/media/wx.cs", "x\n")
