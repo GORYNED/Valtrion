@@ -159,6 +159,7 @@ class AndroidAdapter(PlatformAdapter):
         self._diagnostics: dict[str, Path] = {}
         self._lock = threading.Lock()
         self._server_started = False
+        self._launches: dict[str, int] = {}  # serial -> token of the newest launch; an abandoned older launch must not stop its logcat
         self._closed: set[str] = set()  # serials terminated; an abandoned launch must not start a capture for them
 
     # -- adb ------------------------------------------------------------------------------------------------------------
@@ -579,6 +580,7 @@ class AndroidAdapter(PlatformAdapter):
         serial = self._serial(device)
         with self._lock:
             self._closed.discard(serial)
+            token = self._launches[serial] = self._launches.get(serial, 0) + 1
         self._diagnostics.pop(serial, None)  # a failure before the folder below is set must not write into an earlier attempt's
         limit = self._launch_timeout
         if isinstance(limit, bool) or not isinstance(limit, (int, float)) or not 1 <= limit <= constants.LAUNCH_TIMEOUT_MAX_SEC:
@@ -605,22 +607,30 @@ class AndroidAdapter(PlatformAdapter):
         reply = self._shell(serial, " ".join(quote(word) for word in words), timeout=CALL_TIMEOUT_SEC * 2)
         outcome = self.classify(reply, serial, "am start")
         if not outcome.ok:
-            self._stop_logcat(serial)
+            self._stop_own_logcat(serial, token)
             return outcome
         details = {"component": f"{package}/{component}"}
         if re.search(r"^(Error|Exception)\b", reply.output, re.MULTILINE):
-            self._stop_logcat(serial)
+            self._stop_own_logcat(serial, token)
             return StepOutcome(constants.FAIL, f"am start did not launch {package}/{component}: {reply.output.strip()[-300:]}")
         if re.search(r"^Status:\s*ok\b", reply.output, re.MULTILINE):
             return StepOutcome(constants.PASS, details=details)
         if not re.search(r"^Status:\s*timeout\b", reply.output, re.MULTILINE):
-            self._stop_logcat(serial)
+            self._stop_own_logcat(serial, token)
             return StepOutcome(constants.FAIL, f"am start did not launch {package}/{component}: {reply.output.strip()[-300:]}")
         waited = self._await_start(serial, package, component, reply.output, diagnostics / LAUNCH_NOTES, began, float(limit))
         if not waited.ok:
-            self._stop_logcat(serial)
+            self._stop_own_logcat(serial, token)
             return waited
         return StepOutcome(constants.PASS, details={**details, **waited.details})
+
+    def _stop_own_logcat(self, serial: str, token: int) -> None:
+        """Stop the capture of a failed launch, unless a newer launch on `serial` has begun: this one may be an abandoned call
+        (the pipeline gave up on it) and the capture is by then the newer launch's."""
+        with self._lock:
+            if self._launches.get(serial) != token:
+                return
+        self._stop_logcat(serial)
 
     # -- a slow start ---------------------------------------------------------------------------------------------------------
 
@@ -673,6 +683,17 @@ class AndroidAdapter(PlatformAdapter):
         pattern = rf"[Rr]esumed[A-Za-z]*[:=][^\n]*\b{re.escape(package)}/(?:{alternatives})\b"
         return re.search(pattern, reply.output) is not None, None
 
+    def _look(self, serial: str, package: str, component: str) -> tuple[str | None, bool, bool, StepOutcome | None]:
+        """One look at a slow start: `(crash, alive, resumed, problem)`. `problem` is the first adb call that failed (not a crash)."""
+        crash, problem = self._crash_evidence(serial, package)
+        if problem is not None or crash:
+            return crash, False, False, problem
+        alive, problem = self._alive(serial, package)
+        if problem is not None or not alive:
+            return None, alive, False, problem
+        resumed, problem = self._resumed(serial, package, component)
+        return None, alive, resumed, problem
+
     def _await_start(self, serial: str, package: str, component: str, first: str, notes: Path, began: float,
                      limit: float) -> StepOutcome:
         """`am start -W` printed `Status: timeout`: wait for the start up to `limit` seconds from `began`, deciding by evidence."""
@@ -681,30 +702,33 @@ class AndroidAdapter(PlatformAdapter):
         self._note(notes, f"am start: Status: timeout, WaitTime {wait_ms} ms; waiting up to {limit:g} s for {package}/{component}")
         seen_alive = False
         alive = False
+        retried = False
         while True:
-            elapsed = self._monotonic() - began
-            crash, problem = self._crash_evidence(serial, package)
+            crash, alive_now, resumed, problem = self._look(serial, package, component)
+            elapsed = self._monotonic() - began  # after the look: the look took time
             if problem is not None:
-                return problem
+                left = limit - elapsed
+                if retried or left <= 0:
+                    self._note(notes, f"after {elapsed:.0f} s: {problem.reason}")
+                    return problem
+                retried = True  # one transient adb failure (a hung or timed-out call) is not the end of the wait
+                self._note(notes, f"after {elapsed:.0f} s: a look failed ({problem.reason}); trying once more")
+                self._sleep(min(LAUNCH_POLL_SEC, left))
+                continue
+            retried = False
             if crash:
                 self._note(notes, f"after {elapsed:.0f} s: {crash}")
                 return StepOutcome(constants.FAIL, f"{package} crashed while starting (am start had reported a timeout, WaitTime {wait_ms} ms): {crash}")
-            alive, problem = self._alive(serial, package)
-            if problem is not None:
-                return problem
-            resumed = False
+            alive = alive_now
             if alive:
                 seen_alive = True
-                resumed, problem = self._resumed(serial, package, component)
-                if problem is not None:
-                    return problem
             elif seen_alive:
                 self._note(notes, f"after {elapsed:.0f} s: process of {package} is gone")
                 return StepOutcome(constants.FAIL, f"the process of {package} is gone while it was starting (am start had reported a timeout, WaitTime {wait_ms} ms)")
             self._note(notes, f"after {elapsed:.0f} s: process {'alive' if alive else 'not alive'}, activity {'resumed' if resumed else 'not resumed'}, no crash or ANR")
             if resumed:
                 return StepOutcome(constants.PASS, details={"launchWaitSec": f"{elapsed:.0f}", "amStartStatus": "timeout", "amStartWaitTimeMs": wait_ms})
-            left = limit - (self._monotonic() - began)  # the looks took time too
+            left = limit - elapsed
             if left <= 0:
                 break
             self._sleep(min(LAUNCH_POLL_SEC, left))

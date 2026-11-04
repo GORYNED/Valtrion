@@ -627,6 +627,84 @@ class SlowStartTests(AndroidTestCase):
         self.assertIn("timed out after 10 s", outcome.reason)
         self.assertLessEqual(self.looks(), 2, "the second look would start after the limit")
 
+    def test_one_hung_adb_call_in_a_look_is_retried_and_the_wait_goes_on(self):
+        self.slow(60, alive_after=1, resumed_after=2)
+        original = self.adapter._poll_shell  # noqa: SLF001
+        failures = []
+
+        def hang_once(serial, script):
+            if script.startswith("pidof") and not failures:
+                failures.append(script)
+                return supervise.BoundedResult(constants.TIMEOUT, "adb did not finish within 20 s", None, "")
+            return original(serial, script)
+
+        with mock.patch.object(self.adapter, "_poll_shell", hang_once):
+            outcome = self.adapter.launch(self.device(), PACKAGE, [], self.console)
+        self.assertTrue(outcome.ok, outcome.reason)
+        self.assertEqual(1, len(failures))
+        self.assertIn("trying once more", self.notes())
+
+    def test_two_failed_looks_in_a_row_end_the_launch_with_the_calls_own_reason(self):
+        self.slow(60, alive_after=1)
+
+        def always_hangs(serial, script):
+            return supervise.BoundedResult(constants.TIMEOUT, "adb did not finish within 20 s", None, "")
+
+        with mock.patch.object(self.adapter, "_poll_shell", always_hangs):
+            outcome = self.adapter.launch(self.device(), PACKAGE, [], self.console)
+        self.assertEqual(constants.TIMEOUT, outcome.status)
+        self.assertIn("pidof", outcome.reason)
+        self.assertEqual(2, self.looks(), "one look and one retry, no more")
+
+    def test_a_logcat_that_cannot_be_read_twice_is_a_failure_with_its_own_reason(self):
+        self.slow(60, alive_after=1)
+        original = self.adapter._adb  # noqa: SLF001
+
+        def broken_dump(serial, *args, **kwargs):
+            if args[:2] == ("logcat", "-d"):
+                return supervise.BoundedResult(constants.PASS, None, 1, "logcat: unable to open log device")
+            return original(serial, *args, **kwargs)
+
+        with mock.patch.object(self.adapter, "_adb", broken_dump):
+            outcome = self.adapter.launch(self.device(), PACKAGE, [], self.console)
+        self.assertEqual(constants.FAIL, outcome.status)
+        self.assertIn("logcat -d failed", outcome.reason)
+
+    def test_the_detail_and_the_note_use_the_time_after_the_look(self):
+        self.slow(60, alive_after=1, resumed_after=1)
+        original = self.adapter._poll_shell  # noqa: SLF001
+
+        def slow_look(serial, script):
+            self.clock.now += 7.0
+            return original(serial, script)
+
+        with mock.patch.object(self.adapter, "_poll_shell", slow_look):
+            outcome = self.adapter.launch(self.device(), PACKAGE, [], self.console)
+        self.assertTrue(outcome.ok, outcome.reason)
+        self.assertEqual("14", outcome.details["launchWaitSec"], "two adb calls of 7 s each")
+        self.assertIn("after 14 s: process alive, activity resumed", self.notes())
+
+    def test_an_abandoned_launch_does_not_stop_the_capture_of_a_newer_launch(self):
+        self.slow(6, alive_after=None)
+        newer = []
+        original = self.adapter._poll_shell  # noqa: SLF001
+
+        def start_newer_launch(serial, script):
+            if not newer:
+                newer.append(True)
+                with self.adapter._lock:  # noqa: SLF001 - a later run began on the same device
+                    self.adapter._launches[serial] += 1  # noqa: SLF001
+                    self.adapter._sessions["marker"] = object()  # noqa: SLF001
+            return original(serial, script)
+
+        stopped = []
+        with mock.patch.object(self.adapter, "_poll_shell", start_newer_launch), \
+                mock.patch.object(self.adapter, "_stop_logcat", lambda *a, **k: stopped.append(a)):
+            outcome = self.adapter.launch(self.device(), PACKAGE, [], self.console)
+        self.assertEqual(constants.FAIL, outcome.status)
+        self.assertEqual([("ZY22",)], stopped, "only the stop before this launch's own capture; none at its failure")
+        self.adapter._sessions.pop("marker", None)  # noqa: SLF001
+
     def test_a_dead_adb_during_the_wait_is_reported_as_what_it_is(self):
         self.slow(60, alive_after=1)
         self.set_state(devices=[{"serial": "ZY22", "state": "device", "model": "m", "props": PHONE_PROPS}])

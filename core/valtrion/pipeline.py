@@ -459,8 +459,9 @@ def run_on_device(
         # No output folder yet is normal on a first run, but a failed listing could hide an earlier result: say so.
         unverified.append(f"the device output could not be listed before the launch ({listing.reason}); an earlier run's result is not excluded")
     # The plan's budget is the time the plan itself needs; a platform that must start an Editor first adds its startup allowance.
-    # On a platform that waits for a slow start the budget counts from the start of the launch, so the wait is paid out of it and
-    # never outlives it; elsewhere it counts from the end of the launch, as before.
+    # On a platform that waits for a slow start `began` is taken before the whole launch step (readiness, activity resolution, the
+    # health record, the log capture, `am start` and the wait), so all of it is paid out of the budget and the wait never outlives
+    # it; elsewhere `began` is taken after the launch returns, as before.
     budget = float(stage.get("timeoutSec") or plan["budgetSeconds"] + float(getattr(adapter, "startup_allowance_sec", 0.0)))
     began = options.monotonic()
     if waits:
