@@ -241,7 +241,10 @@ class SystemProbe(Probe):
 
     def _powershell(self, command: str) -> str | None:
         shell = shutil.which("powershell") or shutil.which("pwsh") or "powershell"
-        return self._run([shell, "-NoProfile", "-NonInteractive", "-Command", command], self.timeout_sec)
+        # Without this, redirected output is in the console's OEM code page, and every character outside it (a Cyrillic user
+        # folder, so the default work root) arrives as `?`: a command line that names such a folder would match nothing.
+        utf8 = "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; "
+        return self._run([shell, "-NoProfile", "-NonInteractive", "-Command", utf8 + command], self.timeout_sec)
 
     def processes(self) -> list[Proc] | None:
         if self.os_name == "windows":

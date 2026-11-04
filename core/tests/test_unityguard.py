@@ -165,6 +165,8 @@ class SystemProbeTests(unittest.TestCase):
         self.assertIn("-NoProfile", command)
         self.assertIn("Win32_Process", command[-1])
         self.assertIn("ConvertTo-Json", command[-1])
+        self.assertTrue(command[-1].startswith("[Console]::OutputEncoding = [System.Text.Encoding]::UTF8;"),
+                        "output must be UTF-8, not the OEM code page")
         probe = self.probe("windows", {"powershell": "4194304"})
         self.assertAlmostEqual(4096.0, probe.free_memory_mib())
         self.assertIn("FreePhysicalMemory", self.calls[0][-1])

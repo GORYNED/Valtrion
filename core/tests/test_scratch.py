@@ -36,8 +36,16 @@ def make_dir_link(link: Path, target: Path) -> None:
         os.symlink(target, link, target_is_directory=True)
 
 
+ME = SimpleNamespace(pid=os.getpid(), ppid=0, path="python", command="python -m unittest")
+
+
 def no_processes():
-    return []
+    """A process list in which nothing but this test process runs (a list without it counts as incomplete)."""
+    return [ME]
+
+
+def with_me(*others):
+    return lambda: [ME, *others]
 
 
 def age(path: Path, seconds: float) -> None:
@@ -77,11 +85,22 @@ class ScratchBase(unittest.TestCase):
         self.outside = self.base / "outside"
         self.outside.mkdir()
         (self.outside / "precious.txt").write_text("keep me\n", encoding="utf-8")
+        self.jobs = {}  # job id -> recorded state, for the job lookups
 
     def make(self, name="tmp", hours=24.0, who=None, **extra):
+        extra.setdefault("job_state_of", self.jobs.get)
         folder, marker = scratch.create(self.roots, name, who or self.me, max_age_hours=hours, **extra)
         (folder / "work.txt").write_text("x\n", encoding="utf-8")
         return folder, marker
+
+    def rewrite_marker(self, folder: Path, **changes) -> None:
+        marker = core.read_json(folder / scratch.MARKER)
+        for key, value in changes.items():
+            if value is None:
+                marker.pop(key, None)
+            else:
+                marker[key] = value
+        core.atomic_write_json(folder / scratch.MARKER, marker)
 
     def release(self, scratch_id, **options):
         options.setdefault("manager", self.manager)
@@ -91,6 +110,7 @@ class ScratchBase(unittest.TestCase):
     def sweep(self, active=(), idle=HOUR, **options):
         options.setdefault("manager", self.manager)
         options.setdefault("processes", no_processes)
+        options.setdefault("job_state_of", self.jobs.get)
         return scratch.sweep(self.roots, self.me, list(active), idle, **options)
 
     def expire(self, folder: Path, hours_ago: float = 2.0, idle_sec: float = 2 * HOUR) -> None:
@@ -208,13 +228,13 @@ class ReleaseRefusalTests(ScratchBase):
     def test_a_live_process_that_names_the_folder_is_refused(self):
         folder, marker = self.make()
         editor = SimpleNamespace(pid=999999, ppid=1, path="Unity", command=f'Unity -batchmode -projectPath "{folder / "checkout"}"')
-        self.assertRefused(marker["id"], "pid 999999", processes=lambda: [editor])
+        self.assertRefused(marker["id"], "pid 999999", processes=with_me(editor))
         self.assertTrue(folder.is_dir())
 
     def test_a_process_naming_a_longer_sibling_does_not_count(self):
         folder, marker = self.make()
         sibling = SimpleNamespace(pid=999999, ppid=1, path="x", command=f"tool {folder}0-more")
-        self.release(marker["id"], processes=lambda: [sibling])
+        self.release(marker["id"], processes=with_me(sibling))
         self.assertFalse(folder.exists())
 
     def test_the_caller_and_its_ancestors_do_not_count_as_users(self):
@@ -308,7 +328,7 @@ class SweepTests(ScratchBase):
         self.expire(busy)
         self.manager.acquire(lease.unity_project_resource(leased), "agent", "s1", 600, "build", os.getpid())
         editor = SimpleNamespace(pid=999999, ppid=1, path="Unity", command=f"Unity -projectPath {busy}")
-        report = self.sweep(processes=lambda: [editor])
+        report = self.sweep(processes=with_me(editor))
         self.assertEqual([], report.removed)
         self.assertTrue(leased.is_dir() and busy.is_dir())
         reasons = dict(report.kept)
@@ -317,14 +337,85 @@ class SweepTests(ScratchBase):
         self.assertEqual([], self.sweep(processes=lambda: None).removed, "an unreadable process list keeps everything")
 
     def test_a_folder_of_an_ended_job_goes_once_idle_and_one_of_a_running_job_stays(self):
+        self.jobs.update({"job-1": "finished", "job-2": "running", "job-3": "running"})
         ended, _ = self.make("ended", job="job-1")
         running, _ = self.make("running", job="job-2")
-        age(ended, 2 * HOUR)
-        age(running, 2 * HOUR)
+        dead_runner, _ = self.make("dead", job="job-3")  # left `running` by a runner that died: not recorded as ended
+        for folder in (ended, running, dead_runner):
+            age(folder, 2 * HOUR)
         report = self.sweep(active=["job-2"])
         self.assertFalse(ended.exists())
         self.assertTrue(running.is_dir())
+        self.assertTrue(dead_runner.is_dir())
         self.assertIn("job job-1 has ended", report.removed[0])
+
+    def test_an_unknown_job_is_refused_at_create_and_never_counts_as_ended(self):
+        with self.assertRaises(scratch.ScratchError) as caught:
+            self.make("ghost", job="no-such-job")
+        self.assertIn("no job", str(caught.exception))
+        self.jobs["job-1"] = "running"
+        folder, _ = self.make("later", job="job-1")
+        self.jobs.clear()  # the job record went away (index pruned)
+        age(folder, 2 * HOUR)
+        self.assertEqual([], self.sweep(active=[]).removed)
+        self.assertTrue(folder.is_dir())
+
+    def test_a_marker_without_a_readable_expiry_is_never_due(self):
+        missing, _ = self.make("missing")
+        broken, _ = self.make("broken")
+        self.rewrite_marker(missing, expiresUtc=None)
+        self.rewrite_marker(broken, expiresUtc="soon")
+        age(missing, 100 * HOUR)
+        age(broken, 100 * HOUR)
+        self.assertEqual([], self.sweep(any_owner=True).removed)
+        self.assertTrue(missing.is_dir() and broken.is_dir())
+        listed = {item["path"]: item for item in scratch.listing(self.roots)}
+        self.assertFalse(listed[str(missing)]["expired"])
+        self.assertIn("never removes", listed[str(missing)]["problem"])
+
+    def test_a_marker_without_owner_or_host_user_is_never_removed(self):
+        for key in ("user", "owner"):
+            folder, marker = self.make(key)
+            self.rewrite_marker(folder, **{key: None})
+            self.expire(folder)
+            with self.assertRaises(scratch.ScratchError) as caught:
+                self.release(marker["id"], any_owner=True)
+            self.assertIn(f"names no {key}", str(caught.exception))
+            self.rewrite_marker(folder, **{key: ""})
+            self.assertEqual([], self.sweep(any_owner=True).removed)
+            self.assertTrue(folder.is_dir())
+
+    def test_a_change_deep_in_the_tree_keeps_an_expired_folder(self):
+        folder, _ = self.make()
+        deep = folder / "a" / "b" / "c" / "d"
+        deep.mkdir(parents=True)
+        (deep / "Edit.cs").write_text("old\n", encoding="utf-8")
+        self.expire(folder)
+        os.utime(deep / "Edit.cs")  # touched now, four levels down
+        self.assertEqual([], self.sweep().removed)
+        self.assertTrue(folder.is_dir())
+        age(folder, 2 * HOUR)
+        self.assertEqual(1, len(self.sweep().removed))
+
+    def test_a_tree_not_walked_within_the_budget_counts_as_in_use(self):
+        folder, _ = self.make()
+        self.expire(folder)
+        report = self.sweep(walk_budget_sec=-1)
+        self.assertEqual([], report.removed)
+        self.assertIn("could not be walked", dict(report.kept)[str(folder)])
+        self.assertIsNone(scratch.newest_change(folder, budget_sec=-1))
+        self.assertIsNotNone(scratch.newest_change(folder))
+
+    def test_an_empty_or_incomplete_process_list_keeps_everything(self):
+        folder, marker = self.make()
+        self.expire(folder)
+        other = SimpleNamespace(pid=999999, ppid=1, path="x", command="x")
+        for listed in ([], [other]):
+            self.assertEqual([], self.sweep(processes=lambda: listed).removed)
+            with self.assertRaises(scratch.ScratchError) as caught:
+                self.release(marker["id"], processes=lambda: listed)
+            self.assertIn("incomplete", str(caught.exception))
+        self.assertTrue(folder.is_dir())
 
     def test_sweep_skips_other_owners_unless_asked_and_other_host_users_always(self):
         mine_not, _ = self.make("b", who=scratch.Caller("agent-b@host", self.me.user, self.me.uid))
@@ -408,7 +499,7 @@ class UnownedAndAdoptTests(ScratchBase):
         self.make("valid")
         (self.roots.scratch / "nomarker").mkdir()
         editor = SimpleNamespace(pid=4242, ppid=1, path="Unity", command=f"Unity -projectPath {second}")
-        found = {item["name"]: item for item in scratch.unowned(self.roots, self.manager, lambda: [editor])}
+        found = {item["name"]: item for item in scratch.unowned(self.roots, self.manager, with_me(editor))}
         self.assertEqual({"vcheck-2114bfc", "sdk-clean-553", "scratch/nomarker"}, set(found))
         self.assertEqual(2048, found["vcheck-2114bfc"]["bytes"])
         self.assertGreaterEqual(found["vcheck-2114bfc"]["ageHours"], 4.9)
@@ -416,9 +507,14 @@ class UnownedAndAdoptTests(ScratchBase):
         self.assertEqual([4242], found["sdk-clean-553"]["processes"])
         self.assertIn("is not a scratch id", found["scratch/nomarker"]["reason"])
         (self.roots.scratch / "nomarker-0123abcd").mkdir()
-        found = {item["name"]: item for item in scratch.unowned(self.roots, self.manager, lambda: [editor])}
+        found = {item["name"]: item for item in scratch.unowned(self.roots, self.manager, with_me(editor))}
         self.assertIn("no Valtrion scratch marker", found["scratch/nomarker-0123abcd"]["reason"])
-        self.assertIn("never removes", scratch.describe_unowned(found["vcheck-2114bfc"]))
+        hint = scratch.describe_unowned(found["vcheck-2114bfc"])
+        self.assertIn("never removes", hint)
+        self.assertNotIn("--yes", hint, "no ready-made command that would skip the owner's own check")
+        self.assertIn("at least", scratch.describe_unowned({**found["vcheck-2114bfc"], "bytesComplete": False}))
+        limited = {item["name"]: item for item in scratch.unowned(self.roots, self.manager, with_me(editor), size_budget_sec=-1)}
+        self.assertFalse(limited["vcheck-2114bfc"]["bytesComplete"])
         self.sweep(idle=0, any_owner=True)
         self.assertTrue(first.is_dir() and second.is_dir() and (self.roots.scratch / "nomarker").is_dir())
 
@@ -493,10 +589,153 @@ class UnownedAndAdoptTests(ScratchBase):
             self.assertIn(fragment, str(caught.exception))
         editor = SimpleNamespace(pid=4242, ppid=1, path="Unity", command=f"Unity -projectPath {first}")
         with self.assertRaises(scratch.ScratchError) as caught:
-            scratch.adopt(self.roots, first, self.me, max_age_hours=1, manager=self.manager, processes=lambda: [editor])
+            scratch.adopt(self.roots, first, self.me, max_age_hours=1, manager=self.manager, processes=with_me(editor))
         self.assertIn("in use", str(caught.exception))
         self.assertTrue(first.is_dir())
         self.assertTrue((self.outside / "precious.txt").is_file())
+
+
+class AdoptGitTests(ScratchBase):
+    """Adopting a clone must never lose work that exists only in it."""
+
+    def setUp(self):
+        super().setUp()
+        self.source = self.base / "origin"
+        self.source.mkdir()
+        git(["init", "-q", "-b", "main"], self.source)
+        git(["config", "user.email", "t@example.com"], self.source)
+        git(["config", "user.name", "T"], self.source)
+        (self.source / "file.txt").write_text("one\n", encoding="utf-8")
+        git(["add", "."], self.source)
+        git(["commit", "-q", "-m", "one"], self.source)
+        self.clone = self.roots.root / "vcheck-2114bfc"
+        git(["clone", "-q", str(self.source), str(self.clone)], self.base)
+        git(["config", "user.email", "t@example.com"], self.clone)
+        git(["config", "user.name", "T"], self.clone)
+
+    def adopt(self, **options):
+        return scratch.adopt(self.roots, self.clone, self.me, max_age_hours=1, manager=self.manager, processes=no_processes, **options)
+
+    def assertKept(self, fragment):
+        with self.assertRaises(scratch.ScratchError) as caught:
+            self.adopt()
+        self.assertIn(fragment, str(caught.exception))
+        self.assertIn("--discard-unsaved-work", str(caught.exception))
+        self.assertTrue(self.clone.is_dir())
+
+    def test_a_clean_clone_with_everything_pushed_is_adopted(self):
+        folder, _ = self.adopt()
+        self.assertTrue((folder / "file.txt").is_file())
+
+    def test_uncommitted_and_untracked_changes_are_refused(self):
+        (self.clone / "file.txt").write_text("changed\n", encoding="utf-8")
+        self.assertKept("uncommitted or untracked changes")
+        git(["checkout", "-q", "--", "file.txt"], self.clone)
+        (self.clone / "new.txt").write_text("new\n", encoding="utf-8")
+        self.assertKept("uncommitted or untracked changes")
+
+    def test_stashes_and_unpushed_commits_are_refused(self):
+        (self.clone / "file.txt").write_text("changed\n", encoding="utf-8")
+        git(["stash", "-q"], self.clone)
+        self.assertKept("stashed changes")
+        git(["stash", "drop", "-q"], self.clone)
+        (self.clone / "file.txt").write_text("two\n", encoding="utf-8")
+        git(["commit", "-q", "-am", "local only"], self.clone)
+        self.assertKept("commits that are on no remote")
+
+    def test_a_nested_repository_is_checked_too_and_the_flag_overrides(self):
+        nested = self.clone / "Dependency"
+        git(["clone", "-q", str(self.source), str(nested)], self.base)
+        (nested / "file.txt").write_text("changed\n", encoding="utf-8")
+        (self.roots.root / "vcheck-2114bfc" / ".git" / "info").mkdir(exist_ok=True)
+        (self.clone / ".git" / "info" / "exclude").write_text("Dependency/\n", encoding="utf-8")
+        self.assertKept("Dependency")
+        folder, _ = self.adopt(discard_unsaved_work=True)
+        self.assertTrue(folder.is_dir())
+
+
+class RemovalSafetyTests(ScratchBase):
+    def test_a_removal_that_fails_half_way_keeps_the_id_and_marker_and_can_be_repeated(self):
+        folder, marker = self.make()
+        (folder / "b").mkdir()
+        (folder / "b" / "x.txt").write_text("x\n", encoding="utf-8")
+        original = scratch.artifacts._remove
+
+        def failing(path):
+            if path.name == "b":
+                raise PermissionError("locked")
+            original(path)
+
+        with mock.patch.object(scratch.artifacts, "_remove", failing):
+            with self.assertRaises(scratch.ScratchError) as caught:
+                self.release(marker["id"])
+        self.assertIn("release it again", str(caught.exception))
+        self.assertTrue((folder / scratch.MARKER).is_file(), "renamed back with its marker")
+        self.assertEqual([marker["id"]], [entry.name for entry in self.roots.scratch.iterdir()], "no tombstone is left")
+        self.release(marker["id"])
+        self.assertFalse(folder.exists())
+
+    def test_a_folder_swapped_for_a_link_after_the_checks_is_not_followed(self):
+        folder, marker = self.make()
+        real_locate = scratch.locate
+        calls = []
+
+        def swapping(roots, scratch_id):
+            found = real_locate(roots, scratch_id)
+            calls.append(1)
+            if len(calls) == 2:  # between the checks of release and the removal: swap in a link to outside
+                aside = self.base / "aside"
+                os.rename(found, aside)
+                make_dir_link(found, self.outside)
+                core.atomic_write_json(self.outside / scratch.MARKER, core.read_json(aside / scratch.MARKER))
+            return found
+
+        with mock.patch.object(scratch, "locate", swapping):
+            with self.assertRaises(scratch.ScratchError):
+                self.release(marker["id"])
+        self.assertTrue((self.outside / "precious.txt").is_file())
+
+
+class RealProcessTests(ScratchBase):
+    """The real process probe of this host (Win32_Process in UTF-8 on Windows, ps elsewhere) with a non-ASCII path."""
+
+    def test_a_live_process_in_a_cyrillic_folder_is_seen_and_keeps_it(self):
+        folder, marker = self.make("cyr")
+        project = folder / "Проект-Тест"
+        project.mkdir()
+        holder = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)", str(project)])
+        self.addCleanup(holder.wait)
+        self.addCleanup(holder.kill)
+        seen = []
+        deadline = time.monotonic() + 60
+        while time.monotonic() < deadline and holder.pid not in seen:
+            listed = scratch.system_processes()
+            self.assertIsNotNone(listed, "the process list of this host must be readable")
+            seen = scratch.using_processes(folder, listed)
+            if holder.pid not in seen:
+                time.sleep(1)
+        self.assertIn(holder.pid, seen, "the command line with Cyrillic characters must match the folder")
+        with self.assertRaises(scratch.ScratchError) as caught:
+            scratch.release(self.roots, marker["id"], self.me, manager=self.manager)
+        self.assertIn(f"pid {holder.pid}", str(caught.exception))
+        self.assertTrue(project.is_dir())
+        holder.kill()
+        holder.wait()
+        scratch.release(self.roots, marker["id"], self.me, manager=self.manager)
+        self.assertFalse(folder.exists())
+
+
+class LsofTests(unittest.TestCase):
+    def test_lsof_cwd_output_is_parsed(self):
+        text = "p12\nfcwd\nn/Users/a/work/scratch/x-0123abcd\np13\nfcwd\nn/\n"
+        self.assertEqual({12: "/Users/a/work/scratch/x-0123abcd", 13: "/"}, scratch.parse_lsof_cwd(text))
+
+    def test_a_working_directory_inside_the_folder_counts(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as base:
+            folder = Path(base) / "x-0123abcd"
+            (folder / "deep").mkdir(parents=True)
+            shell = SimpleNamespace(pid=77, ppid=1, path="zsh", command="-zsh", cwd=str(folder / "deep"))
+            self.assertEqual([77], scratch.using_processes(folder, [ME, shell]))
 
 
 class ConfigAndCliTests(ScratchBase):

@@ -207,10 +207,14 @@ def work_root_report(work_root: Path, processes: "scratch.ProcessList | None" = 
     roots = workroot.WorkRoots(work_root)
     report = {"path": str(work_root), "usage": workroot.usage(roots), "disk": disk_report(work_root)}
     report["staleJobDirectories"] = [p.name for p in workroot.stale_job_directories(roots)]
-    report["scratch"] = scratch.listing(roots)
+    try:
+        report["scratch"] = scratch.listing(roots)
+    except OSError as error:  # an unreadable scratch folder must not break the whole report
+        report["scratch"] = []
+        report["scratchError"] = str(error)
     try:
         report["unowned"] = scratch.unowned(roots, processes=processes)
-    except (OSError, ValueError) as error:  # an unreadable lease directory must not break the whole report
+    except (OSError, ValueError) as error:  # nor an unreadable lease directory
         report["unowned"] = []
         report["unownedError"] = str(error)
     return report

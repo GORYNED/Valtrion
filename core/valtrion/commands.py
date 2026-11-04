@@ -1225,6 +1225,8 @@ def _configure_workroot(parser: argparse.ArgumentParser) -> None:
     adopt.add_argument("--yes", action="store_true", help="required: confirms that the owner wants valtrion to remove it once it expires")
     adopt.add_argument("--name", help="scratch name; default: the folder's name")
     adopt.add_argument("--ttl-hours", type=float, help="lifetime from now; default host.json scratch.maxAgeHours (24)")
+    adopt.add_argument("--discard-unsaved-work", action="store_true",
+                       help="adopt a git repository even with uncommitted changes, stashes or commits on no remote (lost when it expires)")
 
 
 def _workroot(arguments: argparse.Namespace) -> int:
@@ -1253,7 +1255,8 @@ def _workroot(arguments: argparse.Namespace) -> int:
                 return _blocked("workroot", "adopt moves the folder into scratch/ and lets valtrion remove it once it expires; the owner "
                                             "confirms that with --yes")
             hours = settings.scratch_max_age_hours if arguments.ttl_hours is None else arguments.ttl_hours
-            folder, marker = scratch.adopt(roots, arguments.path, scratch.caller(), max_age_hours=hours, name=arguments.name)
+            folder, marker = scratch.adopt(roots, arguments.path, scratch.caller(), max_age_hours=hours, name=arguments.name,
+                                           discard_unsaved_work=arguments.discard_unsaved_work)
             _out({"scratch": str(folder), "id": marker["id"], "expiresUtc": marker["expiresUtc"], "adoptedFrom": marker["adoptedFrom"]})
             return constants.EXIT_PASS
         if arguments.action == "inbox":

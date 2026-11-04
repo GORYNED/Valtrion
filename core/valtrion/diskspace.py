@@ -140,10 +140,12 @@ def ensure_free(settings: config.HostSettings, home: Path | None, protected: Seq
     steps: list[tuple[str, Callable[[], Iterable[str]]]] = [
         ("abandoned job folders", lambda: workroot.sweep(settings.roots, active, PRESSURE_STALE_SEC,
                                                          keep=lambda job_id: jobs.kept_work_reason(job_id, home))),
-        # Expired scratch copies of any owner of this host user (the owner turned this cleanup on with disk.minFreeGiB); one in use,
-        # unexpired or of another host user stays, as in `workroot sweep`.
-        ("expired scratch directories", lambda: scratch.sweep(settings.roots, scratch.caller(), active, PRESSURE_STALE_SEC, any_owner=True,
-                                                              manager=lease.LeaseManager(home or core.valtrion_home())).removed),
+        # Expired scratch copies of any owner (agent) of this host user: the host's owner turned this cleanup on with disk.minFreeGiB,
+        # which deliberately goes beyond the owner match of `workroot sweep` (#75 item 5). A folder of another host user, one in
+        # use, unexpired or not shown idle always stays.
+        ("expired scratch directories", lambda: scratch.sweep(
+            settings.roots, scratch.caller(), active, PRESSURE_STALE_SEC, any_owner=True,
+            manager=lease.LeaseManager(home or core.valtrion_home()), job_state_of=lambda job: scratch.job_state(job, home)).removed),
         ("expired run folders", lambda: artifacts.gc(settings.artifacts_root, settings.keep_days_under_pressure,
                                                     protected=protected_paths).removed),
         ("expired builds", lambda: buildcache.gc(buildcache.builds_root(home), protect=active_build_keys(home, active),
