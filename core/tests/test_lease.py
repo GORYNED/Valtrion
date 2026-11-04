@@ -324,5 +324,68 @@ class LeaseTests(unittest.TestCase):
         self.assertEqual("dead-session", taken.reclaimed.session)
 
 
+class SlotPreconditionTests(unittest.TestCase):
+    def setUp(self):
+        self._folder = tempfile.TemporaryDirectory()
+        self.addCleanup(self._folder.cleanup)
+        self.time = FakeTime()
+        self.manager = lease.LeaseManager(
+            Path(self._folder.name), "test-host", self.time.clock, lambda pid: pid in {111, 222}, self.time.sleep, self.time.monotonic)
+
+    def slot(self, session="s1", pid=111, owner="alice", **options):
+        return self.manager.acquire_slot("unity-editor", 2, owner, session, 60, "test", pid, **options)
+
+    def free_slots(self):
+        return [p.name for p in self.manager.directory.glob("unity-editor*.lock")]
+
+    def test_a_refusal_keeps_the_slots_free_and_names_the_reason(self):
+        asked = []
+        result = self.slot(precondition=lambda: asked.append(1) or "an Editor runs by hand")
+        self.assertFalse(result.acquired)
+        self.assertEqual("an Editor runs by hand", result.reason)
+        self.assertTrue(result.gated)
+        self.assertEqual([], self.free_slots())
+        self.assertEqual(1, len(asked))
+
+    def test_the_slot_is_taken_once_the_precondition_passes_and_it_is_asked_again_with_the_slot_held(self):
+        answers = iter(["busy", "busy", None, None])
+        seen_slots = []
+
+        def precondition():
+            seen_slots.append(self.free_slots())
+            return next(answers)
+
+        result = self.slot(wait_sec=30, poll_sec=2, precondition=precondition)
+        self.assertTrue(result.acquired)
+        self.assertEqual([[], [], [], ["unity-editor%3Aslot1.lock"]], seen_slots)  # two refusals, a pass, the check with the slot held
+        self.assertEqual(["unity-editor%3Aslot1.lock"], self.free_slots())
+
+    def test_a_refusal_after_the_slot_was_taken_gives_it_back(self):
+        answers = iter([None, "an Editor appeared", None, None])
+        result = self.slot(wait_sec=30, poll_sec=2, precondition=lambda: next(answers))
+        self.assertTrue(result.acquired)
+        self.assertEqual(["unity-editor%3Aslot1.lock"], self.free_slots())  # taken again after the one that was given back
+
+    def test_a_waiter_held_back_by_its_precondition_does_not_keep_the_others_waiting(self):
+        gated = self.slot(session="gated", pid=111, wait_sec=5, poll_sec=1, precondition=lambda: "an Editor runs by hand")
+        self.assertFalse(gated.acquired)
+        other = self.slot(session="other", pid=222, owner="bob")
+        self.assertTrue(other.acquired, other.reason)  # no ticket of the gated waiter stands in front
+        self.assertEqual([], list((self.manager.directory / "queue" / "unity-editor").glob("*.ticket"))
+                         if (self.manager.directory / "queue" / "unity-editor").is_dir() else [])
+
+    def test_a_holder_that_has_a_slot_is_not_asked_again(self):
+        self.assertTrue(self.slot().acquired)
+        self.assertTrue(self.slot(precondition=lambda: self.fail("asked although the slot is held")).acquired)
+
+    def test_a_full_resource_still_queues_in_order(self):
+        self.assertTrue(self.slot(session="a", pid=111).acquired)
+        self.assertTrue(self.slot(session="b", pid=111).acquired)
+        waited = self.slot(session="c", pid=222, owner="bob", wait_sec=3, poll_sec=1, precondition=lambda: None)
+        self.assertFalse(waited.acquired)
+        self.assertFalse(waited.gated)
+        self.assertIn("all 2 slots", waited.reason)
+
+
 if __name__ == "__main__":
     unittest.main()

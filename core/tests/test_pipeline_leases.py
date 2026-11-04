@@ -337,6 +337,31 @@ class ScopedLeaseTests(unittest.TestCase):
         self.assertEqual([], [entry for entry in self.world.timeline if entry[0] == "C"])  # the blocked job built nothing
         self.assertEqual([], self.world.held())
 
+    def test_a_build_waiting_for_an_editor_outside_any_lease_holds_the_project_but_not_the_slot(self):
+        editor = unityguard.Proc(4242, 1, "/x/Unity.app/Contents/MacOS/Unity", "/x/Unity.app/Contents/MacOS/Unity -batchmode")
+        held_meanwhile = []
+        home = self.home
+
+        class Orphan(unityguard.Probe):
+            os_name = "macos"
+
+            def processes(self):
+                held_meanwhile.append(sorted(p.name for p in (home / "leases").glob("*.lock")))
+                return [editor]
+
+            def free_memory_mib(self):
+                return 1.0e6
+
+        (self.home / "host.json").write_text('{"unityEditorSlots": 1, "unityGuard": {}}', encoding="utf-8")
+        with mock.patch.object(unityguard, "probe_factory", Orphan):
+            _, store = self.run_job("C", self.document(), lease_wait=2)
+        self.assertEqual("BLOCKED", store.read_job()["status"])
+        self.assertTrue(held_meanwhile)
+        for names in held_meanwhile:
+            self.assertEqual([], [n for n in names if n.startswith("unity-editor")], names)
+            self.assertEqual(1, len([n for n in names if n.startswith("unity-project")]), names)
+        self.assertEqual([], self.world.held())
+
     def test_too_little_memory_blocks_the_build_and_unity_guard_can_turn_it_off(self):
         class Starved(unityguard.Probe):
             os_name = "macos"

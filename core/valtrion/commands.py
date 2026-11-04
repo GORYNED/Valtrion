@@ -117,6 +117,14 @@ def _unity_project(arguments: argparse.Namespace) -> Path | None:
     return found
 
 
+def _lease_wait(value: float | None, fallback: float = 0.0) -> float:
+    """The wait for leases: the caller's `--lease-wait`, else `leaseWaitSec` of host.json, else `fallback`."""
+    if value is not None:
+        return value
+    configured = config.default_lease_wait()
+    return fallback if configured is None else configured
+
+
 def _owner() -> str:
     return os.environ.get("GDV_OWNER") or f"{getpass.getuser()}@{core.local_host_id()}"
 
@@ -495,7 +503,7 @@ def _configure_job(parser: argparse.ArgumentParser) -> None:
     start.add_argument("--cpu-progress", action="store_true", help="CPU time of the process tree counts as progress")
     start.add_argument("--contract-exit-codes", action="store_true", help="read exit 2 as BLOCKED and 3 as TIMEOUT")
     start.add_argument("--lease", action="append", default=[], help="resource[=slots] to hold for the job (repeatable)")
-    start.add_argument("--lease-wait", type=float, default=0)
+    start.add_argument("--lease-wait", type=float, default=None, help="seconds to wait for a leased resource; default: leaseWaitSec of host.json, 0")
     start.add_argument("--lease-ttl", type=int, default=jobs.DEFAULT_LEASE_TTL_SEC)
     start.add_argument("--cwd")
     start.add_argument("--domain", choices=("auto", "user", "gui"), default="auto",
@@ -582,7 +590,7 @@ def _job_start(arguments: argparse.Namespace, entry: config.HostEntry | None) ->
         payload={"type": "command", "argv": command_line, "cwd": arguments.cwd}, host=host, stall_sec=arguments.stall_sec,
         timeout_sec=arguments.timeout_sec, progress_files=tuple(arguments.progress_file), heartbeat=arguments.heartbeat,
         cpu_counts=arguments.cpu_progress, contract_exit_codes=arguments.contract_exit_codes,
-        leases=tuple(_split_lease(item) for item in arguments.lease), lease_wait_sec=arguments.lease_wait, lease_ttl_sec=arguments.lease_ttl,
+        leases=tuple(_split_lease(item) for item in arguments.lease), lease_wait_sec=_lease_wait(arguments.lease_wait), lease_ttl_sec=arguments.lease_ttl,
         owner=_owner(), purpose=f"valtrion job {arguments.label}")
     info = jobs.start_job(request, settings.artifacts_root, domain=arguments.domain, foreground=arguments.foreground,
                           work_roots=settings.roots)
@@ -768,7 +776,7 @@ def _start_pipeline(arguments: argparse.Namespace, pipeline: dict, payload: dict
     request = jobs.JobRequest(
         kind="pipeline", project=candidate["repo"], sha=sha, label=label, payload=payload, host=host,
         stall_sec=arguments.stall_sec, timeout_sec=arguments.timeout_sec, owner=_owner(), purpose=f"valtrion {arguments.command} {label}",
-        lease_wait_sec=arguments.lease_wait, protected_paths=tuple(arguments.protect), disk_wait_sec=getattr(arguments, "disk_wait", None))
+        lease_wait_sec=_lease_wait(arguments.lease_wait), protected_paths=tuple(arguments.protect), disk_wait_sec=getattr(arguments, "disk_wait", None))
     domain = arguments.domain
     if domain == "auto" and _request_for(pipeline, base, project_dir).platform in SIGNING_PLATFORMS:
         domain = "gui"  # signing needs the login keychain, which only the GUI session has
@@ -844,7 +852,8 @@ def _common_run_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--project-dir", type=Path, help="Unity project folder (Unity version, git state, builds); default: GDV_UNITY_PROJECT or the project named by the nearest valtrion.json")
     parser.add_argument("--stall-sec", type=float, default=supervise.DEFAULT_STALL_SEC)
     parser.add_argument("--timeout-sec", type=float, default=7200)
-    parser.add_argument("--lease-wait", type=float, default=0, help="seconds to wait for a leased device or editor slot")
+    parser.add_argument("--lease-wait", type=float, default=None, metavar="SEC",
+                        help="seconds to wait for a leased device or editor slot; default: leaseWaitSec of host.json, 0")
     parser.add_argument("--disk-wait", type=_finite_seconds, default=None, metavar="SEC",
                         help="seconds a build waits for free disk space (host.json disk.minFreeGiB) before it is BLOCKED; default: disk.waitSec of host.json, 0")
     parser.add_argument("--protect", action="append", default=[], help="path cleanup must never remove (repeatable)")
@@ -1243,8 +1252,8 @@ def _configure_unity(parser: argparse.ArgumentParser) -> None:
                                      "exit codes: PASS 0, FAIL 1, BLOCKED 2, STALL and TIMEOUT 3.")
     run.add_argument("--project-dir", type=Path, help="Unity project (when the Unity arguments carry no -projectPath); default: GDV_UNITY_PROJECT or valtrion.json")
     run.add_argument("--unity", help="path of the Unity executable (or a macOS .app) instead of the Editor of ProjectSettings/ProjectVersion.txt")
-    run.add_argument("--lease-wait", type=_finite_seconds, default=1800.0, metavar="SEC",
-                     help="seconds to wait for the project and an Editor slot before BLOCKED (default 1800)")
+    run.add_argument("--lease-wait", type=_finite_seconds, default=None, metavar="SEC",
+                     help="seconds to wait for the project and an Editor slot before BLOCKED (default: leaseWaitSec of host.json, 1800)")
     run.add_argument("--timeout-sec", type=_finite_seconds, default=0.0, metavar="N", help="hard timeout of Unity; 0 (default) = none")
     run.add_argument("--stall-sec", type=_finite_seconds, default=600.0, metavar="N",
                      help="STALL when the -logFile has not grown for N s (default 600; 0 = off; also off without -logFile)")
@@ -1263,13 +1272,18 @@ def _unity_arguments(arguments: argparse.Namespace) -> list[str]:
 
 
 def _unity(arguments: argparse.Namespace) -> int:
+    from . import unityrun
+
     entry = _entry(arguments)
+    try:  # the remote host applies its own host.json when no wait was given; here the wait only sizes the transport timeout
+        wait = _lease_wait(arguments.lease_wait, unityrun.DEFAULT_LEASE_WAIT_SEC)
+    except config.ConfigError as error:
+        return _blocked("unity", str(error))
     if entry is not None:
         # Starting Unity is not idempotent, so the transport does not retry; the output arrives when the run has ended.
         limit = arguments.timeout_sec if arguments.timeout_sec > 0 else REMOTE_UNITY_NO_TIMEOUT_SEC
-        return _forward(arguments, entry, timeout=int(arguments.lease_wait + limit + REMOTE_UNITY_MARGIN_SEC), retry=False,
+        return _forward(arguments, entry, timeout=int(wait + limit + REMOTE_UNITY_MARGIN_SEC), retry=False,
                         lost_hint=REMOTE_UNITY_LOST_HINT, lifeline=True, extra=(STOP_ON_STDIN_EOF,))
-    from . import unityrun
 
     unity_args = _unity_arguments(arguments)
     found = None
@@ -1278,7 +1292,7 @@ def _unity(arguments: argparse.Namespace) -> int:
             found = project.resolve_unity_project(arguments.project_dir)
         except project.ProjectError as error:
             return _blocked("unity", str(error))
-    return unityrun.run(unity_args, found or arguments.project_dir, arguments.unity, arguments.lease_wait, arguments.timeout_sec,
+    return unityrun.run(unity_args, found or arguments.project_dir, arguments.unity, wait, arguments.timeout_sec,
                         arguments.stall_sec, arguments.purpose, lifeline=sys.stdin.fileno() if arguments.stop_on_stdin_eof else None)
 
 

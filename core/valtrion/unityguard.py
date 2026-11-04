@@ -320,6 +320,62 @@ def wait_until_clear(
         sleep(min(poll_sec, max(0.0, deadline - now)))
 
 
+class Gate:
+    """The pre-start checks as a `precondition` of `LeaseManager.acquire_slot`: it returns the reason to wait, or None to go on.
+
+    It is asked before the caller holds an Editor slot, so a run that waits for an Editor outside the leases (or for free memory) leaves
+    its slot to others instead of keeping it idle. A refusal is remembered for `poll_sec`, so a caller that retries every second does not
+    start a process listing each time; a pass is never remembered (the checks are made again once the slot is taken)."""
+
+    def __init__(self, manager: lease.LeaseManager, settings: GuardSettings, probe: Probe | None = None, poll_sec: float = GUARD_POLL_SEC,
+                 say: Callable[[str], None] | None = None, monotonic: Callable[[], float] = time.monotonic) -> None:
+        self._manager = manager
+        self._settings = settings
+        self._probe = probe
+        self._poll_sec = poll_sec
+        self._say = say
+        self._monotonic = monotonic
+        self._noted: set[str] = set()
+        self._refused_until = 0.0
+        self._refusal: str | None = None
+
+    @property
+    def active(self) -> bool:
+        return self._settings.orphan_editors or self._settings.min_free_memory_mib > 0
+
+    def __call__(self) -> str | None:
+        if not self.active:
+            return None
+        now = self._monotonic()
+        if self._refusal is not None and now < self._refused_until:
+            return self._refusal
+        self._probe = self._probe or probe_factory()
+        holders = [item.record.pid for item in self._manager.list_all() if item.state == "held" and item.record is not None]
+        problem, notes = check(self._probe, self._settings, holders)
+        for note in notes:
+            if note not in self._noted:
+                self._noted.add(note)
+                if self._say is not None:
+                    self._say(f"note: {note}")
+        self._refusal = problem
+        self._refused_until = now + self._poll_sec
+        return problem
+
+
+def build_gate(manager: lease.LeaseManager, home: Path | None, say: Callable[[str], None] | None = None, probe: Probe | None = None,
+               default_on: bool = False) -> Gate | None:
+    """The gate for the `unityGuard` setting of host.json, or None when the checks are off. A setting that cannot be read is a note
+    and no check (it must not newly block builds that never asked for the check)."""
+    try:
+        settings = load_settings(home, default_on=default_on)
+    except config.ConfigError as error:
+        if say is not None:
+            say(f"note: the pre-start Unity checks were skipped: {error}")
+        return None
+    gate = Gate(manager, settings, probe, say=say)
+    return gate if gate.active else None
+
+
 def check(probe: Probe, settings: GuardSettings, protected_pids: Iterable[int]) -> tuple[str | None, list[str]]:
     """(reason the run must wait or be BLOCKED, or None; notes about checks that could not be made)."""
     notes: list[str] = []

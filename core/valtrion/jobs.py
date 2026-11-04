@@ -28,7 +28,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, ContextManager, Mapping, Sequence
 
-from . import artifacts, constants, core, lease, remote, supervise, workroot
+from . import artifacts, constants, core, lease, remote, supervise, unityguard, workroot
 from .artifacts import RunLayout
 
 EVENT_TYPES = (
@@ -465,10 +465,15 @@ class _Runner:
                 slots = lease.unity_editor_capacity(self.home)  # the host's total, so every claimant counts the same slots
             except ValueError as error:  # a broken host.json blocks the job like the CLI does
                 return str(error)
+        gate = None
+        if slots is not None and resource == lease.UNITY_EDITOR_RESOURCE:
+            # host.json unityGuard: no Editor outside a lease and enough free memory, checked before the slot is held (off without it)
+            gate = unityguard.build_gate(self.leases, self.home, lambda text: self.events.emit("log", text, data={"resource": resource}))
         self._wait_since = time.monotonic()  # the time spent here is a wait for someone else: it does not count against the timeout
         try:
             if slots is not None:
-                outcome = self.leases.acquire_slot(resource, int(slots), owner, self.job_id, ttl, purpose, pid, wait_sec=wait, on_wait=waiting)
+                outcome = self.leases.acquire_slot(resource, int(slots), owner, self.job_id, ttl, purpose, pid, wait_sec=wait, on_wait=waiting,
+                                                   precondition=gate)
             else:
                 outcome = self.leases.acquire(resource, owner, self.job_id, ttl, purpose, pid, wait_sec=wait, on_wait=waiting)
         finally:

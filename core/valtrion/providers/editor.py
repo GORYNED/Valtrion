@@ -24,7 +24,7 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
-from .. import constants, core, doctor, lease, supervise, unityguard
+from .. import config, constants, core, doctor, lease, supervise, unityguard
 from ..adapter import Capabilities, DeviceHealth, DeviceInfo, PlatformAdapter, StepOutcome
 from . import register
 from .unity import support
@@ -222,7 +222,7 @@ class EditorAdapter(PlatformAdapter):
         plan = stage / "gdv" / "inbox" / "plan.json"
         if not plan.is_file():
             return StepOutcome(constants.BLOCKED, "the plan was not pushed to the run's inbox before the launch")
-        reason = self._acquire_slot(min(float(settings.get("leaseWaitSec", 0)), MAX_LEASE_WAIT_SEC))
+        reason = self._acquire_slot(min(self._lease_wait(settings), MAX_LEASE_WAIT_SEC))
         if reason:
             self._discard_stage()
             return StepOutcome(constants.BLOCKED, reason)
@@ -269,6 +269,16 @@ class EditorAdapter(PlatformAdapter):
         self._seq = self._seen_size = 0
         return StepOutcome(constants.PASS, details={"layer.launch": constants.PASS, "runId": run_id, "assembly": str(assembly)})
 
+    def _lease_wait(self, settings: Mapping[str, Any]) -> float:
+        """The profile's `leaseWaitSec`, else the host's (`leaseWaitSec` of host.json), else 0."""
+        if "leaseWaitSec" in settings:
+            return float(settings["leaseWaitSec"])
+        try:
+            configured = config.default_lease_wait(self._home)
+        except config.ConfigError:
+            return 0.0
+        return 0.0 if configured is None else configured
+
     def _acquire_slot(self, wait_sec: float) -> str | None:
         """Take the leases an Editor needs before it starts: the project folder (one Unity process per project), then one slot of the
         host's `unity-editor` capacity (the same total every other claimant counts). All are renewed until `_release_slot`."""
@@ -289,8 +299,11 @@ class EditorAdapter(PlatformAdapter):
                                 f"valtrion editor run of {project.name}", pid, wait_sec=wait_sec)
         if not taken.acquired:
             return taken.reason or "the Unity project is in use by another run"
+        # The slot is taken only when no Editor runs outside a lease and enough memory is free (host.json unityGuard), within the same
+        # wait: the project lease is held meanwhile (but not renewed by a keeper yet: it lasts the lease TTL), the slot is left to others.
+        gate = unityguard.build_gate(manager, self._home)
         slot = manager.acquire_slot(lease.UNITY_EDITOR_RESOURCE, capacity, owner, self._session, LEASE_TTL_SEC,
-                                    "valtrion editor run", pid, wait_sec=max(0.0, deadline - self._monotonic()))
+                                    "valtrion editor run", pid, wait_sec=max(0.0, deadline - self._monotonic()), precondition=gate)
         if not slot.acquired:
             manager.release(taken.lease.resource, self._session, pid)
             return slot.reason or "no unity-editor slot is free"
@@ -300,13 +313,6 @@ class EditorAdapter(PlatformAdapter):
         self._keeper.add(taken.lease.resource)
         self._keeper.add(slot.lease.resource)
         self._keeper.start()
-        # With the leases held (and renewed): no Editor outside a lease and enough memory, within the lease wait (host.json unityGuard).
-        reason = unityguard.blocked_reason(
-            manager, self._home, max(0.0, deadline - self._monotonic()),
-            abort=lambda: f"the lease(s) {', '.join(self._keeper.lost)} were lost before the Editor started" if self._keeper.lost else None)
-        if reason:
-            self._release_slot()
-            return reason
         atexit.register(self._at_exit)  # a pipeline that stops without terminate must not leave an Editor or a lease behind
         return None
 
