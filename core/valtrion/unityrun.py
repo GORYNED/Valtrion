@@ -8,6 +8,7 @@ lost lease each end in killing the whole process tree. The last line printed on 
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import select
@@ -21,7 +22,7 @@ import time
 from pathlib import Path
 from typing import Callable, Sequence, TextIO
 
-from . import config, constants, core, lease, supervise, unityguard
+from . import config, constants, core, lease, lfs, supervise, unityguard
 from .providers.unity import support
 
 DEFAULT_LEASE_WAIT_SEC = 1800.0
@@ -230,10 +231,12 @@ def run(
         lease_wait_sec: float = DEFAULT_LEASE_WAIT_SEC, timeout_sec: float = 0.0, stall_sec: float = DEFAULT_STALL_SEC,
         purpose: str = "", home: Path | None = None, out: TextIO | None = None, err: TextIO | None = None,
         ttl_sec: int = LEASE_TTL_SEC, poll_sec: float = 1.0, cancel_poll_sec: float = 1.0,
-        probe: unityguard.Probe | None = None, guard_poll_sec: float | None = None, lifeline: int | None = None) -> int:
+        probe: unityguard.Probe | None = None, guard_poll_sec: float | None = None, lifeline: int | None = None,
+        lfs_materialize: bool | None = None, lfs_call: lfs.LfsCall | None = None, lfs_free: Callable[[Path], int] | None = None) -> int:
     """Run Unity with `unity_args`; returns the exit code of the final status (already printed as the last stdout line).
     `lifeline`: a file descriptor whose end of input means the caller is gone (the standard input of a command run over SSH); the run is then
-    interrupted like by Ctrl+C."""
+    interrupted like by Ctrl+C. `lfs_materialize`: run the Git LFS preflight (None: `lfs.materialize` of host.json, default on);
+    `lfs_call` and `lfs_free` replace `git lfs` and the free-space probe in tests."""
     out = out or sys.stdout
     err = err or sys.stderr
     args = normalize_assembly_names(unity_args)
@@ -262,6 +265,8 @@ def run(
         if not has_option(args, "-EnableCacheServer", "-cacheServer"):
             args += config.unity_accelerator_args(home)
         guard_settings = unityguard.load_settings(home)
+        materialize = config.lfs_materialize(home) if lfs_materialize is None else lfs_materialize
+        lfs_cache = lfs.cache_root(config.load_host_settings(home).work_root) if materialize else None
 
         capacity = lease.unity_editor_capacity(home)
         manager = lease.LeaseManager(home)
@@ -304,6 +309,17 @@ def run(
                     return _result(out, constants.BLOCKED, taken.reason)
                 keeper.add(project_resource)
                 keeper.start()  # the project lease is renewed while this run waits for a slot
+                if lfs_cache is not None:
+                    # Under the project lease (no other run writes this tree) and before the slot (a download holds no Editor slot).
+                    preflight = lfs.materialize(project, lfs_cache, lfs=lfs_call or lfs.run_lfs, free=lfs_free or lfs.diskspace.free_bytes,
+                                                say=lambda text: _say(err, text))
+                    if preflight.pointers:
+                        _say(err, f"lfs: {len(preflight.materialized)} of {preflight.pointers} pointer file(s) materialized "
+                                  f"({preflight.from_cache} from the shared cache, {preflight.from_repository} from the repository's LFS store, "
+                                  f"{preflight.fetched} fetched)")
+                        _say(out, "LFS-PREFLIGHT " + json.dumps(preflight.describe(), sort_keys=True))
+                    if not preflight.ok:
+                        return _result(out, constants.BLOCKED, preflight.reason)
                 may_hold += [lease.slot_resource(lease.UNITY_EDITOR_RESOURCE, number) for number in range(1, capacity + 1)]
                 # The slot is taken only once no Editor runs outside a lease and enough memory is free (the gate), all within the same
                 # wait budget: a run that waits for such an Editor holds the project lease but leaves the slot to others.

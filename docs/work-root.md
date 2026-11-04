@@ -56,6 +56,8 @@ All keys are optional. `artifactsRoot` and `workRoot` must be non-empty; `workRo
 
 **`unityGuard`.** Optional object `{"orphanEditors": true, "minFreeMemoryMiB": 2048}`: before a Unity process starts, no Editor may run outside a lease (an Editor started by hand, or left by a crashed run) and that much memory must be free (`false` and `0` turn a check off; other keys are an error). `unity run` makes the checks without this object; the build stage, the Editor provider and a job's `--lease unity-editor` make them only on a host that has it (`{}` takes the defaults). The checks are made before the slot is held, see [cli.md](cli.md#unity-run).
 
+**`lfs`.** Optional object `{"materialize": true}` (the default): `unity run` turns Git LFS pointer files of the project into their content before Unity starts, from the shared cache `<work root>/lfs-cache` (see below and [cli.md](cli.md#unity-run)). `false` turns it off on this host (`unity run --lfs-materialize` still turns it on for one run); other keys and values are an error (`BLOCKED`).
+
 **`unityEditorSlots`.** A positive integer: how many Unity processes (the `unity-editor` slots) the host runs at once. Without it the host allows 2, on every platform. Every provider counts this one total. Slots above the total are not looked at: when you lower it, a holder from an older version that still sits on a higher slot is ignored until it ends, so during a mixed-version transition one more Unity can run than the new total. `PlatformAdapter.unity_editor_slots` no longer exists; a third-party provider that set it loses that limit and must use `unityEditorSlots` here.
 
 ## Work root
@@ -87,6 +89,7 @@ Both warnings name the fix: set `workRoot` in host.json, or `GDV_WORK_ROOT` for 
 <workRoot>/jobs/<jobId>/{checkout,build,export,derived-data,tmp}   everything one job creates
 <workRoot>/jobs/inbox-<id>/                                         files a caller sent to run a plan or pipeline here (`valtrion workroot inbox`); removed with its job; otherwise swept when idle for hours and no active job uses it
 <workRoot>/mirrors/<project>.git                                   bare clone the checkouts hang off (kept: it is the cache)
+<workRoot>/lfs-cache/objects/<aa>/<bb>/<oid>                        Git LFS objects shared by every project, worktree and checkout of the host (`unity run`); verified by SHA-256 before use, never swept and without a size limit yet, safe to delete while no `unity run` is active (refetched when needed)
 <valtrion home>/tools/valtrion-<hash>/                              the CLI staged for background jobs (not in the work root: it must outlive a purge of the cache folder)
 <workRoot>/launchd/                                                job definitions and logs of macOS background jobs
 ```
