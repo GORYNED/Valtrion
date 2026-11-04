@@ -10,15 +10,18 @@ belongs, and Unity then imports text instead of a texture, a model or a scene. T
 2. Lists the tracked files of the Unity project folder that have `filter=lfs` (`git check-attr`) and reads those of at most 1024 bytes;
    a file whose text is a valid pointer is one to materialize. git-lfs itself is not needed for this.
 3. Takes each object, in this order, from the shared cache `<work root>/lfs-cache/objects/<aa>/<bb>/<oid>`, from the repository's own
-   LFS store (`<git common dir>/lfs/objects/...`, which a linked worktree shares with its main checkout) and only then from the remote:
+   LFS store (`<lfs.storage>/objects`, by default `<git common dir>/lfs/objects/...`, which a linked worktree shares with its main
+   checkout) and only then from the remote:
    one `git lfs fetch --include <the missing paths>` per batch of paths, never for an object that is already on the host. With every
    object cached nothing touches the network.
 4. Copies the object into a temporary file while hashing it, checks its SHA-256 and size against the pointer, and renames it over the
    pointer (a partial file is never left in the tree; a cache object that fails the check is removed from the cache and the next
    source is tried). Objects are linked (or copied) into the cache and into the repository's store, so the next checkout reuses them
    and git-lfs's clean filter has nothing to copy.
-5. Refreshes the index (`git update-index -q --refresh`) and checks that `git status` shows none of the materialized paths. A path that
-   shows up is put back to its pointer and reported.
+5. Rewrites the index entries of the placed files with their unchanged blob (clearing the pointer's stat data), refreshes the index and
+   checks that `git status` shows none of them. A path that shows up and still holds exactly the placed object is put back to its
+   pointer; a file or index entry someone else changed meanwhile is never touched, only reported. This also runs when the preflight
+   is interrupted after the first file was placed.
 
 Failures carry stable codes (`CODE_*`), the failed paths and a reason; `unity run` reports them as `BLOCKED` before Unity starts.
 `host.json` `lfs.materialize: false` (or `unity run --no-lfs-materialize`) turns the preflight off.
@@ -65,9 +68,13 @@ CODE_WRITE_FAILED = "lfs.write-failed"
 CODE_STATUS_DIRTY = "lfs.status-dirty"
 CODE_UNSUPPORTED = "lfs.unsupported-pointer"
 CODE_GIT_FAILED = "lfs.git-failed"
+CODE_CHANGED = "lfs.changed-meanwhile"
+CODE_OUTSIDE = "lfs.path-outside-tree"
 #: When several files fail for different reasons, the outcome carries the first of these.
 PRECEDENCE = (CODE_GIT_FAILED, CODE_GIT_LFS_MISSING, CODE_DISK_SPACE, CODE_AUTH, CODE_NETWORK, CODE_OBJECT_MISSING, CODE_FETCH_FAILED,
-              CODE_HASH_MISMATCH, CODE_WRITE_FAILED, CODE_STATUS_DIRTY, CODE_UNSUPPORTED)
+              CODE_HASH_MISMATCH, CODE_CHANGED, CODE_WRITE_FAILED, CODE_STATUS_DIRTY, CODE_OUTSIDE, CODE_UNSUPPORTED)
+#: The oldest git whose answers the preflight reads (`rev-parse --absolute-git-dir`, `ls-files -v -s`).
+MIN_GIT_VERSION = "2.13"
 
 _OID = re.compile(rb"oid sha256:([0-9a-f]{64})")
 _SIZE = re.compile(rb"size (0|[1-9][0-9]{0,18})")
@@ -127,6 +134,7 @@ class Pointer:
     extensions: bool = False
     mode: str = "100644"  # the index entry of the path: mode and blob (the committed pointer)
     blob: str = ""
+    tag: str = "H"  # `git ls-files -v` tag of the entry (assume-unchanged and skip-worktree are kept)
 
 
 def parse_pointer(data: bytes) -> tuple[str, int, bool] | None:
@@ -190,13 +198,6 @@ class Outcome:
         if self.reason:
             record["reason"] = self.reason
         return record
-
-
-def _text_runner(git: GitCall) -> compare.GitRunner:
-    def run(folder: Path, arguments: Sequence[str]) -> tuple[int, str]:
-        code, out, err = git(folder, arguments, None)
-        return code, (out.decode("utf-8", "replace").rstrip() if code == 0 else err)
-    return run
 
 
 def _fail(outcome: Outcome, pointers: Iterable[Pointer], code: str, reason: str) -> Outcome:
@@ -340,24 +341,111 @@ def _link_or_copy(source: Path, target: Path, oid: str, size: int) -> bool:
         return False
 
 
+@dataclass(frozen=True)
+class Repository:
+    top: Path  # the working tree root
+    git_dir: Path  # the git dir of this working tree (`.git`, or `<common>/worktrees/<name>` for a linked worktree)
+    common: Path  # the common git dir (the main checkout's `.git` for a linked worktree)
+
+
+def _inside_git(folder: Path) -> bool:
+    """Whether `folder` or a parent holds a `.git` entry: a git failure there is a problem to report, not "no repository"."""
+    try:
+        start = folder.resolve()
+    except OSError:
+        start = folder
+    return any((candidate / ".git").exists() for candidate in (start, *start.parents))
+
+
+def locate(project: Path, git: GitCall) -> tuple[Repository | None, str | None]:
+    """The repository that holds `project`: (repository, None); (None, None) when it is not in a git working tree; (None, why) when git
+    failed in what looks like one (dubious ownership, a git that is too old, git missing). Uses no option newer than git 2.13."""
+    code, located, error = git(project, ["rev-parse", "--show-toplevel", "--absolute-git-dir", "--git-common-dir"], None)
+    if code != 0:
+        if not _inside_git(project):
+            return None, None
+        return None, f"git rev-parse failed in {project}: {' '.join(error.split())[:240] or f'exit code {code}'}"
+    lines = located.decode("utf-8", "surrogateescape").splitlines()
+    # A git that does not know an option prints it back as a line of its own (git before 2.13: `--absolute-git-dir`).
+    if (len(lines) != 3 or not all(lines) or any(line.startswith("-") for line in lines)
+            or not Path(lines[0]).is_absolute() or not Path(lines[1]).is_absolute()):
+        return None, (f"git rev-parse gave an answer that cannot be read ({' | '.join(lines)[:200]}); "
+                      f"git {MIN_GIT_VERSION} or newer is needed")
+    top, git_dir = Path(lines[0]), Path(lines[1])
+    common = Path(lines[2])
+    if not common.is_absolute():  # relative to the working directory of the call (older git: to the top-level folder)
+        common = (project / common) if (project / common).is_dir() else (top / common)
+    return Repository(top, git_dir, Path(os.path.abspath(common))), None
+
+
+def _declares_lfs(repository: Repository, git: GitCall) -> bool:
+    """Whether a `filter=lfs` attribute applies in the repository: in any tracked `.gitattributes` (the Unity project may be a
+    subfolder with its own) or in `info/attributes` of the common git dir."""
+    places: list[Path] = [repository.common / "info" / "attributes"]
+    code, listed, _ = git(repository.top, ["ls-files", "-z", "--", ":(glob).gitattributes", ":(glob)**/.gitattributes"], None)
+    if code == 0:
+        places += [repository.top / name.decode("utf-8", "surrogateescape") for name in listed.split(b"\0") if name]
+    for place in places:
+        try:
+            if checkout.LFS_FILTER in place.read_text(encoding="utf-8", errors="replace"):
+                return True
+        except OSError:
+            continue
+    return False
+
+
+def local_store(repository: Repository, git: GitCall) -> Path:
+    """The repository's LFS object folder, as git-lfs uses it: `<lfs.storage>/objects` (a relative `lfs.storage` is taken from the
+    common git dir), else `<common git dir>/lfs/objects`."""
+    code, output, _ = git(repository.top, ["config", "--get", "lfs.storage"], None)
+    value = output.decode("utf-8", "surrogateescape").strip() if code == 0 else ""
+    if not value:
+        return repository.common / "lfs" / "objects"
+    storage = Path(os.path.expanduser(value))
+    return (storage if storage.is_absolute() else repository.common / storage) / "objects"
+
+
+@dataclass(frozen=True)
+class _Entry:
+    tag: str  # `git ls-files -v` tag: H normal, lowercase assume-unchanged, S skip-worktree
+    mode: str
+    blob: str
+
+
+def _index_entries(project: Path, git: GitCall) -> tuple[dict[str, _Entry] | None, str]:
+    """Stage-0 regular files of the index below `project`: path (repository-relative) -> entry; (None, why) when git cannot list it."""
+    code, listed, error = git(project, ["ls-files", "-z", "-s", "-v", "--full-name", "--", "."], None)
+    if code != 0:
+        return None, f"git ls-files failed: {error[:200]}"
+    entries: dict[str, _Entry] = {}
+    for record in listed.split(b"\0"):
+        meta, _, name = record.partition(b"\t")
+        parts = meta.split()
+        if len(parts) == 4 and parts[1] in (b"100644", b"100755") and parts[3] == b"0":
+            entries[name.decode("utf-8", "surrogateescape")] = _Entry(parts[0].decode("ascii"), parts[1].decode("ascii"),
+                                                                      parts[2].decode("ascii"))
+    return entries, ""
+
+
+def _inside_tree(top: Path, path: str) -> bool:
+    """Whether `top/path` resolves inside `top`: a symlinked or junctioned parent folder must not let a write land elsewhere."""
+    try:
+        root = os.path.realpath(top)
+        target = os.path.realpath(top / path)
+        return os.path.commonpath([os.path.normcase(root), os.path.normcase(target)]) == os.path.normcase(root)
+    except (OSError, ValueError):
+        return False
+
+
 def _scan(project: Path, top: Path, git: GitCall, outcome: Outcome) -> list[Pointer] | None:
     """The unmaterialized pointers among the tracked `filter=lfs` files of the project folder; None when git could not list them."""
-    code, listed, error = git(project, ["ls-files", "-z", "-s", "--full-name", "--", "."], None)
-    if code != 0:
-        outcome.notes.append(f"git ls-files failed: {error[:200]}")
+    entries, problem = _index_entries(project, git)
+    if entries is None:
+        outcome.notes.append(problem)
         return None
-    paths: list[str] = []
-    entries: dict[str, tuple[str, str]] = {}
-    for entry in listed.split(b"\0"):
-        if not entry:
-            continue
-        meta, _, name = entry.partition(b"\t")
-        parts = meta.split()
-        if len(parts) == 3 and parts[0] in (b"100644", b"100755") and parts[2] == b"0":
-            paths.append(name.decode("utf-8", "surrogateescape"))
-            entries[paths[-1]] = (parts[0].decode("ascii"), parts[1].decode("ascii"))
-    if not paths:
+    if not entries:
         return []
+    paths = list(entries)
     feed = b"\0".join(path.encode("utf-8", "surrogateescape") for path in paths) + b"\0"
     code, attributes, error = git(top, ["check-attr", "-z", "--stdin", "filter"], feed)
     if code != 0:
@@ -376,8 +464,10 @@ def _scan(project: Path, top: Path, git: GitCall, outcome: Outcome) -> list[Poin
         except OSError:
             continue
         parsed = parse_pointer(data)
-        if parsed is not None:
-            found.append(Pointer(path, parsed[0], parsed[1], data, parsed[2], *entries.get(path, ("100644", ""))))
+        if parsed is None:
+            continue
+        entry = entries[path]
+        found.append(Pointer(path, parsed[0], parsed[1], data, parsed[2], entry.mode, entry.blob, entry.tag))
     return found
 
 
@@ -388,25 +478,45 @@ def _filter_configured(top: Path, git: GitCall) -> bool:
     return any(len(line.split(maxsplit=1)) == 2 for line in output.decode("utf-8", "replace").splitlines())
 
 
+def _digest(path: Path) -> tuple[int, str] | None:
+    """(size, SHA-256) of a file, None when it cannot be read."""
+    digest = hashlib.sha256()
+    size = 0
+    try:
+        with open(path, "rb") as reader:
+            while True:
+                block = reader.read(_COPY_CHUNK)
+                if not block:
+                    break
+                digest.update(block)
+                size += len(block)
+    except OSError:
+        return None
+    return size, digest.hexdigest()
+
+
 def materialize(project: Path, cache: Path, *, git: GitCall = run_git, lfs: LfsCall = run_lfs,
                 free: Callable[[Path], int] = diskspace.free_bytes, say: Callable[[str], None] | None = None) -> Outcome:
     """Turn the LFS pointer files of the Unity project folder `project` into their content; see the module text. `cache` is the
-    shared cache root (`cache_root(work root)`). Never raises for a repository problem: the outcome says what happened."""
+    shared cache root (`cache_root(work root)`). Never raises for a repository problem: the outcome says what happened. An interrupt
+    (KeyboardInterrupt, a signal) still leaves the index consistent with the files already placed."""
     outcome = Outcome(SKIPPED)
     project = Path(project)
-    code, located, error = git(project, ["rev-parse", "--path-format=absolute", "--show-toplevel", "--absolute-git-dir",
-                                         "--git-common-dir"], None)
-    lines = located.decode("utf-8", "surrogateescape").splitlines() if code == 0 else []
-    if len(lines) != 3:
-        outcome.notes.append("not a git working tree" if code != 0 else "git did not name the repository folders")
+    repository, problem = locate(project, git)
+    if repository is None:
+        if problem is None:
+            outcome.notes.append("not a git working tree")
+            return outcome
+        outcome.code = CODE_GIT_FAILED
+        outcome.reason = (f"Git LFS preflight failed [{CODE_GIT_FAILED}]: the project's LFS files could not be checked: {problem}; "
+                          "turn the preflight off with --no-lfs-materialize or host.json lfs.materialize false to start Unity anyway")
         return outcome
-    top, git_dir, common = (Path(line) for line in lines)
-    if not checkout._uses_lfs(top, _text_runner(git)):  # noqa: SLF001 - the same attribute rule as the managed checkouts
+    top = repository.top
+    if not _declares_lfs(repository, git):
         outcome.notes.append("no filter=lfs attribute")
         return outcome
     pointers = _scan(project, top, git, outcome)
     if pointers is None:
-        outcome.pointers = 0
         outcome.code = CODE_GIT_FAILED
         outcome.reason = f"Git LFS preflight failed [{CODE_GIT_FAILED}]: " + "; ".join(outcome.notes)
         return outcome
@@ -414,10 +524,15 @@ def materialize(project: Path, cache: Path, *, git: GitCall = run_git, lfs: LfsC
     if not pointers:
         outcome.code = OK
         return outcome
-    supported = [item for item in pointers if not item.extensions]
-    if len(supported) != len(pointers):
-        _fail(outcome, [item for item in pointers if item.extensions], CODE_UNSUPPORTED,
+    outside = [item for item in pointers if not _inside_tree(top, item.path)]
+    if outside:
+        _fail(outcome, outside, CODE_OUTSIDE, "a parent folder is a symbolic link or junction that leads out of the working tree; such "
+                                              "files are not written")
+    unsupported = [item for item in pointers if item.extensions and item not in outside]
+    if unsupported:
+        _fail(outcome, unsupported, CODE_UNSUPPORTED,
               "pointers with LFS extensions (ext-*) are not materialized by Valtrion; run `git lfs pull` in the project")
+    supported = [item for item in pointers if item not in outside and item not in unsupported]
     if not supported:
         return _finish(outcome)
     if not _filter_configured(top, git):
@@ -426,8 +541,8 @@ def materialize(project: Path, cache: Path, *, git: GitCall = run_git, lfs: LfsC
                              "materialized files would show as modified: install git-lfs and run `git lfs install`"))
 
     objects = cache / "objects"
-    store = common / "lfs" / "objects"
-    temp_dir = git_dir / TEMP_FOLDER
+    store = local_store(repository, git)
+    temp_dir = repository.git_dir / TEMP_FOLDER
     _sweep_temp(temp_dir)
     by_oid: dict[str, list[Pointer]] = {}
     for item in supported:
@@ -480,8 +595,8 @@ def materialize(project: Path, cache: Path, *, git: GitCall = run_git, lfs: LfsC
             try:
                 if target.read_bytes() != item.raw:  # changed since the scan: leave it alone
                     _unlink(temp)
-                    outcome.notes.append(f"{item.path} changed while it was materialized; left as it is")
-                    return CODE_WRITE_FAILED
+                    outcome.notes.append(f"{item.path} was changed by someone else meanwhile; it was left as it is")
+                    return CODE_CHANGED
                 mode = target.stat().st_mode
             except OSError as error:
                 _unlink(temp)
@@ -514,84 +629,112 @@ def materialize(project: Path, cache: Path, *, git: GitCall = run_git, lfs: LfsC
             outcome.sources[item.path] = kind
         return True, None
 
-    pending: list[str] = []
-    for oid, items in by_oid.items():
-        size = items[0].size
-        cached, stored = object_path(objects, oid), object_path(store, oid)
-        done = False
-        if present(cached, size):
-            done, problem = from_source(oid, cached, "cache")
-            if problem == CODE_HASH_MISMATCH:
+    def left(items: list[Pointer]) -> list[Pointer]:
+        return [item for item in items if item.path not in outcome.materialized]
+
+    synced = False
+    try:
+        pending: list[str] = []
+        for oid, items in by_oid.items():
+            size = items[0].size
+            cached, stored = object_path(objects, oid), object_path(store, oid)
+            if present(cached, size):
+                done, problem = from_source(oid, cached, "cache")
+                if done:
+                    _link_or_copy(cached, stored, oid, size)  # so git-lfs's clean filter finds it and copies nothing
+                    continue
+                if problem != CODE_HASH_MISMATCH:
+                    _fail(outcome, left(items), problem or CODE_WRITE_FAILED, "")
+                    continue
                 _unlink(cached)  # a damaged cache object is the cache's own: drop it and try the next source
                 outcome.notes.append(f"removed the damaged cache object {oid[:12]}")
-            elif not done:
-                _fail(outcome, [item for item in items if item.path not in outcome.materialized], problem or CODE_WRITE_FAILED, "")
-                continue
-            if done:
-                _link_or_copy(cached, stored, oid, size)  # so git-lfs's clean filter finds it and copies nothing
-                continue
-        if present(stored, size):
-            done, problem = from_source(oid, stored, "repository")
-            if done:
-                _link_or_copy(stored, cached, oid, size)
-                continue
-            _fail(outcome, [item for item in items if item.path not in outcome.materialized], problem or CODE_WRITE_FAILED,
-                  "the repository's LFS store holds a damaged object; run `git lfs fsck`" if problem == CODE_HASH_MISMATCH else "")
-            continue
-        pending.append(oid)
-
-    if pending:
-        waiting = [item for oid in pending for item in by_oid[oid]]
-        code, version = lfs(top, ["version"])
-        if code != 0:
-            _fail(outcome, waiting, CODE_GIT_LFS_MISSING,
-                  f"{len(pending)} object(s) are not on this host and git-lfs cannot fetch them ({' '.join(version.split())[:160]}); "
-                  "install git-lfs")
-        else:
-            patterns = list(dict.fromkeys(include_pattern(item.path) for item in waiting))
-            texts: list[str] = []
-            for batch in _chunks(patterns):
-                outcome.fetch_calls += 1
-                if say is not None:
-                    say(f"lfs: fetching {len(batch)} path(s) whose objects are not on this host")
-                code, text = lfs(top, ["fetch", "--include", ",".join(batch), "--exclude", ""])
-                if code != 0:
-                    texts.append(text)
-            for oid in pending:
-                items = by_oid[oid]
-                stored = object_path(store, oid)
-                if not present(stored, items[0].size):
-                    joined = " ".join(" ".join(texts).split())
-                    failure = classify_fetch_error(joined) if joined else CODE_OBJECT_MISSING
-                    _fail(outcome, items, failure,
-                          f"git lfs fetch failed: {joined[:300]}" if joined else
-                          f"the remote did not deliver the object {oid[:12]} (it is not on the remote)")
-                    continue
-                done, problem = from_source(oid, stored, "fetched")
+            if present(stored, size):
+                done, problem = from_source(oid, stored, "repository")
                 if done:
-                    _link_or_copy(stored, object_path(objects, oid), oid, items[0].size)
-                else:
-                    _fail(outcome, [item for item in items if item.path not in outcome.materialized], problem or CODE_WRITE_FAILED,
-                          "the fetched object does not match its pointer" if problem == CODE_HASH_MISMATCH else "")
+                    _link_or_copy(stored, cached, oid, size)
+                    continue
+                _fail(outcome, left(items), problem or CODE_WRITE_FAILED,
+                      "the repository's LFS store holds a damaged object; run `git lfs fsck`" if problem == CODE_HASH_MISMATCH else "")
+                continue
+            pending.append(oid)
 
-    if placed:
-        _verify_clean(top, git, placed, outcome)
+        if pending:
+            waiting = [item for oid in pending for item in by_oid[oid]]
+            code, version = lfs(top, ["version"])
+            if code != 0:
+                _fail(outcome, waiting, CODE_GIT_LFS_MISSING,
+                      f"{len(pending)} object(s) are not on this host and git-lfs cannot fetch them "
+                      f"({' '.join(version.split())[:160]}); install git-lfs")
+            else:
+                patterns = list(dict.fromkeys(include_pattern(item.path) for item in waiting))
+                texts: list[str] = []
+                for batch in _chunks(patterns):
+                    outcome.fetch_calls += 1
+                    if say is not None:
+                        say(f"lfs: fetching {len(batch)} path(s) whose objects are not on this host")
+                    code, text = lfs(top, ["fetch", "--include", ",".join(batch), "--exclude", ""])
+                    if code != 0:
+                        texts.append(text)
+                for oid in pending:
+                    items = by_oid[oid]
+                    stored = object_path(store, oid)
+                    if not present(stored, items[0].size):
+                        joined = " ".join(" ".join(texts).split())
+                        failure = classify_fetch_error(joined) if joined else CODE_OBJECT_MISSING
+                        _fail(outcome, items, failure,
+                              f"git lfs fetch failed: {joined[:300]}" if joined else
+                              f"the remote did not deliver the object {oid[:12]} into {store} (it is not on the remote)")
+                        continue
+                    done, problem = from_source(oid, stored, "fetched")
+                    if done:
+                        _link_or_copy(stored, object_path(objects, oid), oid, items[0].size)
+                    else:
+                        _fail(outcome, left(items), problem or CODE_WRITE_FAILED,
+                              "the fetched object does not match its pointer" if problem == CODE_HASH_MISMATCH else "")
+        if placed:
+            unsynced = _sync_index(project, top, git, placed, outcome)
+            synced = True
+            _verify_clean(top, git, placed, unsynced, outcome)
+    finally:
+        if placed and not synced:  # interrupted: the files placed so far must not stay "modified" for git
+            _sync_index(project, top, git, placed, outcome)
     return _finish(outcome)
 
 
-def _verify_clean(top: Path, git: GitCall, placed: list[Pointer], outcome: Outcome) -> None:
-    """Refresh the index for the new files and make sure git sees none of them as modified; put back the pointer of any it does.
+def _sync_index(project: Path, top: Path, git: GitCall, placed: list[Pointer], outcome: Outcome) -> set[str]:
+    """Make the index agree with the placed files; returns the paths it left alone because their index entry changed meanwhile.
 
     The index still holds the stat data of the pointer, and git takes an entry whose recorded size differs from the file for modified
     without looking at the content. The entries are therefore written again with the same mode and blob (`--index-info`: what the
     index holds cannot change, only its stat data is cleared), so the refresh compares the content through the clean filter and records
-    the new stat data when the filter gives back the committed pointer."""
-    info = b"".join(f"{item.mode} {item.blob}\t".encode("ascii") + item.path.encode("utf-8", "surrogateescape") + b"\0"
-                    for item in placed if item.blob)
-    code, _, error = git(top, ["update-index", "-z", "--index-info"], info)
-    if code != 0:
-        outcome.notes.append(f"git update-index --index-info failed: {error[:200]}")
-    git(top, ["update-index", "-q", "--refresh"], None)  # exit 1 only says some other entry needs an update
+    the new stat data. An entry whose blob or mode is no longer the scanned one (someone ran `git add` meanwhile) is not touched. The
+    assume-unchanged and skip-worktree flags, which `--index-info` drops, are set again afterwards."""
+    current, problem = _index_entries(project, git)
+    if current is None:
+        outcome.notes.append(f"the index could not be read again ({problem}); it was not updated")
+        return {item.path for item in placed}
+    fresh = [item for item in placed if (entry := current.get(item.path)) is not None and (entry.mode, entry.blob) == (item.mode, item.blob)]
+    unsynced = {item.path for item in placed} - {item.path for item in fresh}
+    if fresh:
+        info = b"".join(f"{item.mode} {item.blob}\t".encode("ascii") + item.path.encode("utf-8", "surrogateescape") + b"\0"
+                        for item in fresh)
+        code, _, error = git(top, ["update-index", "-z", "--index-info"], info)
+        if code != 0:
+            outcome.notes.append(f"git update-index --index-info failed: {error[:200]}")
+        git(top, ["update-index", "-q", "--refresh"], None)  # exit 1 only says some other entry needs an update
+        for flag, wanted in (("--assume-unchanged", lambda tag: tag.islower()), ("--skip-worktree", lambda tag: tag.upper() == "S")):
+            paths = [item.path for item in fresh if wanted(current[item.path].tag)]
+            if paths:
+                feed = b"".join(path.encode("utf-8", "surrogateescape") + b"\0" for path in paths)
+                code, _, error = git(top, ["update-index", flag, "-z", "--stdin"], feed)
+                if code != 0:
+                    outcome.notes.append(f"git update-index {flag} failed: {error[:200]}")
+    return unsynced
+
+
+def _verify_clean(top: Path, git: GitCall, placed: list[Pointer], unsynced: set[str], outcome: Outcome) -> None:
+    """Make sure git sees none of the placed files as modified. A file that it does see so and that still holds exactly the placed
+    object gets its pointer back; one whose content or index entry someone changed meanwhile is never touched, only reported."""
     # The whole tree: `status` compares the content (through the clean filter) also where the refresh could not write the index.
     code, output, error = git(top, ["status", "--porcelain", "-z", "--untracked-files=no", "--ignore-submodules=all"], None)
     if code != 0:
@@ -599,19 +742,27 @@ def _verify_clean(top: Path, git: GitCall, placed: list[Pointer], outcome: Outco
         dirty = {item.path for item in placed}
     else:
         dirty = {token[3:].decode("utf-8", "surrogateescape") for token in output.split(b"\0") if len(token) > 3}
+    restored = False
     for item in placed:
-        if item.path not in dirty:
+        if item.path not in dirty and item.path not in unsynced:
             continue
-        try:
-            temp = _temp_name((top / item.path).parent, Path(item.path).name)
-            temp.write_bytes(item.raw)
-            os.replace(temp, top / item.path)
-        except OSError as error:
-            outcome.notes.append(f"cannot restore the pointer of {item.path}: {error}")
+        target = top / item.path
         outcome.materialized.remove(item.path)
         outcome.sources.pop(item.path, None)
+        if item.path in unsynced or _digest(target) != (item.size, item.oid):
+            outcome.failed.append((item.path, CODE_CHANGED))
+            outcome.notes.append(f"{item.path} or its index entry was changed by someone else meanwhile; it was left as it is")
+            continue
+        try:
+            temp = _temp_name(target.parent, target.name)
+            temp.write_bytes(item.raw)
+            os.replace(temp, target)
+            restored = True
+        except OSError as error:
+            outcome.notes.append(f"cannot restore the pointer of {item.path}: {error}")
         outcome.failed.append((item.path, CODE_STATUS_DIRTY))
-    if any(code == CODE_STATUS_DIRTY for _, code in outcome.failed):
+    if restored:
         git(top, ["update-index", "-q", "--refresh"], None)
         outcome.notes.append("git status showed materialized files as modified (the clean filter does not give back the pointer); "
                              "their pointers were restored")
+

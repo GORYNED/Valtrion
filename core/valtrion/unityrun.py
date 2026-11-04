@@ -311,12 +311,16 @@ def run(
                 keeper.start()  # the project lease is renewed while this run waits for a slot
                 if lfs_cache is not None:
                     # Under the project lease (no other run writes this tree) and before the slot (a download holds no Editor slot).
+                    # Its time does not count against the lease wait: a long download must not leave the slot wait no budget.
+                    preflight_started = time.monotonic()
                     preflight = lfs.materialize(project, lfs_cache, lfs=lfs_call or lfs.run_lfs, free=lfs_free or lfs.diskspace.free_bytes,
                                                 say=lambda text: _say(err, text))
+                    deadline += time.monotonic() - preflight_started
                     if preflight.pointers:
                         _say(err, f"lfs: {len(preflight.materialized)} of {preflight.pointers} pointer file(s) materialized "
                                   f"({preflight.from_cache} from the shared cache, {preflight.from_repository} from the repository's LFS store, "
                                   f"{preflight.fetched} fetched)")
+                    if preflight.pointers or not preflight.ok:
                         _say(out, "LFS-PREFLIGHT " + json.dumps(preflight.describe(), sort_keys=True))
                     if not preflight.ok:
                         return _result(out, constants.BLOCKED, preflight.reason)

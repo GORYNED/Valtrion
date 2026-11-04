@@ -11,11 +11,13 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
 
-from valtrion import cli, config, constants, lfs  # noqa: F401  (cli first: it registers the commands)
+from valtrion import cli, config, constants, lease, lfs  # noqa: F401  (cli first: it registers the commands)
 
 from .test_unity_run import FAKE, FakeProbe, UnityRunTestCase
 
@@ -69,8 +71,9 @@ def make_repo(folder, assets, attributes=ATTRIBUTES, filter_set=True):
 class FakeLfs:
     """`git lfs` without a network: `version`, and `fetch --include` that writes the objects of `remote` into the repository's store."""
 
-    def __init__(self, remote=None, missing_tool=False, fail_text=None, corrupt=False):
+    def __init__(self, remote=None, missing_tool=False, fail_text=None, corrupt=False, on_fetch=None):
         self.remote = dict(remote or {})
+        self.on_fetch = on_fetch
         self.missing_tool = missing_tool
         self.fail_text = fail_text
         self.corrupt = corrupt
@@ -89,6 +92,8 @@ class FakeLfs:
             return 0, "git-lfs/3.5.1 (fake)"
         if argv[0] != "fetch":
             return 1, f"unexpected git lfs {argv}"
+        if self.on_fetch is not None:
+            self.on_fetch()
         if self.fail_text:
             return 2, self.fail_text
         patterns = argv[argv.index("--include") + 1].split(",")
@@ -327,6 +332,190 @@ class NoLfsTests(LfsTestCase):
         self.assertEqual(lfs.SKIPPED, outcome.code)
 
 
+class GitProblemTests(LfsTestCase):
+    def test_a_git_too_old_for_the_answer_is_a_git_failure_not_a_skip(self):
+        project = make_repo(self.base / "repo", {"Assets/a.bin": self.texture})
+
+        def old_git(cwd, argv, stdin=None):
+            if argv[:1] == ["rev-parse"]:  # git before 2.13 echoes an option it does not know
+                return 0, lfs.run_git(cwd, ["rev-parse", "--show-toplevel"], None)[1] + b"--absolute-git-dir\n.git\n", ""
+            return lfs.run_git(cwd, argv, stdin)
+
+        outcome = lfs.materialize(project, self.cache, git=old_git, lfs=FakeLfs())
+        self.assertEqual(lfs.CODE_GIT_FAILED, outcome.code)
+        self.assertFalse(outcome.ok)
+        self.assertIn(lfs.MIN_GIT_VERSION, outcome.reason)
+
+    def test_git_refusing_a_repository_is_a_git_failure_not_a_skip(self):
+        project = make_repo(self.base / "repo", {"Assets/a.bin": self.texture})
+
+        def refusing(cwd, argv, stdin=None):
+            if argv[:1] == ["rev-parse"]:
+                return 128, b"", "fatal: detected dubious ownership in repository"
+            return lfs.run_git(cwd, argv, stdin)
+
+        outcome = lfs.materialize(project, self.cache, git=refusing, lfs=FakeLfs())
+        self.assertEqual(lfs.CODE_GIT_FAILED, outcome.code)
+        self.assertIn("dubious ownership", outcome.reason)
+        self.assertEqual(pointer(self.texture), (project / "Assets" / "a.bin").read_bytes())
+
+    def test_a_staged_change_made_meanwhile_is_kept(self):
+        project = make_repo(self.base / "repo", {"Assets/a.bin": self.texture, "Assets/b.bin": self.model})
+        self.seed_cache(self.texture)
+        other = b"staged by someone " * 50
+
+        def stage():
+            (project / "Assets" / "a.bin").write_bytes(other)
+            git(project.parent, "add", "Game/Assets/a.bin")
+
+        outcome = self.run_lfs(project, FakeLfs({oid(self.model): self.model}, on_fetch=stage))
+        self.assertEqual(lfs.CODE_CHANGED, outcome.code)
+        self.assertEqual([("Game/Assets/a.bin", lfs.CODE_CHANGED)], outcome.failed)
+        self.assertEqual(other, (project / "Assets" / "a.bin").read_bytes())
+        self.assertEqual("M  Game/Assets/a.bin", git(project.parent, "status", "--porcelain"), "the staged change survives")
+
+
+def lfs_available():
+    if not HAVE_GIT:
+        return False
+    done = subprocess.run(["git", "lfs", "version"], capture_output=True, text=True)
+    return done.returncode == 0
+
+
+@unittest.skipUnless(lfs_available(), "git-lfs is not installed")
+class RealGitLfsTests(unittest.TestCase):
+    """The real git-lfs filter and transfer, without a network: a source repository pushes its LFS objects to a local bare repository
+    (`file://`), and every test materializes a fresh copy of a clone made without the smudge filter."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls._folder = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        cls.root = Path(cls._folder.name)
+        empty = cls.root / "gitconfig"
+        empty.write_text("", encoding="utf-8")
+        cls._patch = mock.patch.dict(os.environ, {"GIT_CONFIG_GLOBAL": str(empty), "GIT_CONFIG_NOSYSTEM": "1", **IDENTITY})
+        cls._patch.start()
+        source = cls.root / "src"
+        source.mkdir()
+        git(source, "init", "-q", "-b", "main")
+        git(source, "lfs", "install", "--local")
+        (source / ".gitattributes").write_text(ATTRIBUTES, encoding="utf-8")
+        (source / "P" / "Assets").mkdir(parents=True)
+        cls.a, cls.b = os.urandom(5000), os.urandom(7000)
+        (source / "P" / "Assets" / "a.bin").write_bytes(cls.a)
+        (source / "P" / "Assets" / "b.bin").write_bytes(cls.b)
+        git(source, "add", "-A")
+        git(source, "commit", "-q", "-m", "assets")
+        bare = cls.root / "bare.git"
+        git(cls.root, "clone", "-q", "--bare", str(source), str(bare))
+        git(source, "remote", "add", "origin", bare.as_uri())
+        git(source, "lfs", "push", "--all", "origin")
+        cls.clone = cls.root / "clone"
+        git(cls.root, "clone", "-q", bare.as_uri(), str(cls.clone))  # no filter configured yet: the files stay pointers
+        git(cls.clone, "lfs", "install", "--local")
+        assert lfs.parse_pointer((cls.clone / "P" / "Assets" / "a.bin").read_bytes()) is not None
+
+    @classmethod
+    def tearDownClass(cls):
+        cls._patch.stop()
+        cls._folder.cleanup()
+
+    def setUp(self):
+        self.name = self.id().rsplit(".", 1)[-1]
+        self.tree = self.root / self.name
+        shutil.copytree(self.clone, self.tree, symlinks=True)
+        self.cache = self.root / f"cache-{self.name}"
+        self.calls = []
+
+    def lfs(self, cwd, argv):
+        self.calls.append(list(argv))
+        return lfs.run_lfs(cwd, argv)
+
+    def seed(self, data):
+        target = lfs.object_path(self.cache / "objects", oid(data))
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(data)
+
+    def status(self, folder=None):
+        return git(folder or self.tree, "status", "--porcelain")
+
+    def test_fetch_then_cache_with_a_clean_status(self):
+        outcome = lfs.materialize(self.tree / "P", self.cache, lfs=self.lfs)
+        self.assertEqual((lfs.OK, 2, 1), (outcome.code, outcome.fetched, outcome.fetch_calls), outcome.reason)
+        self.assertEqual(self.a, (self.tree / "P" / "Assets" / "a.bin").read_bytes())
+        self.assertEqual("", self.status())
+        second = self.root / f"{self.name}-second"
+        shutil.copytree(self.clone, second)
+        self.calls.clear()
+        outcome = lfs.materialize(second / "P", self.cache, lfs=self.lfs)
+        self.assertEqual((lfs.OK, 2, []), (outcome.code, outcome.from_cache, self.calls), outcome.reason)
+        self.assertEqual("", self.status(second))
+
+    def test_a_custom_lfs_storage_is_where_the_fetched_objects_are_found(self):
+        store = self.root / f"store-{self.name}"
+        git(self.tree, "config", "lfs.storage", str(store))
+        outcome = lfs.materialize(self.tree / "P", self.cache, lfs=self.lfs)
+        self.assertEqual((lfs.OK, 2), (outcome.code, outcome.fetched), outcome.reason)
+        self.assertTrue(lfs.object_path(store / "objects", oid(self.b)).is_file())
+        self.assertEqual("", self.status())
+
+    def test_an_interrupt_after_the_first_file_leaves_the_index_consistent(self):
+        self.seed(self.a)
+
+        def interrupted(cwd, argv):
+            if argv[:1] == ["fetch"]:
+                raise KeyboardInterrupt
+            return lfs.run_lfs(cwd, argv)
+
+        with self.assertRaises(KeyboardInterrupt):
+            lfs.materialize(self.tree / "P", self.cache, lfs=interrupted)
+        self.assertEqual(self.a, (self.tree / "P" / "Assets" / "a.bin").read_bytes())
+        self.assertEqual("", self.status(), "the placed file is not left 'modified'")
+        outcome = lfs.materialize(self.tree / "P", self.cache, lfs=self.lfs)
+        self.assertEqual((lfs.OK, 1), (outcome.code, outcome.fetched), outcome.reason)
+        self.assertEqual("", self.status())
+
+    def test_skip_worktree_and_assume_unchanged_flags_are_kept(self):
+        git(self.tree, "update-index", "--skip-worktree", "P/Assets/b.bin")
+        git(self.tree, "update-index", "--assume-unchanged", "P/Assets/a.bin")
+        outcome = lfs.materialize(self.tree / "P", self.cache, lfs=self.lfs)
+        self.assertEqual(lfs.OK, outcome.code, outcome.reason)
+        tags = dict(line.split(" ", 1)[::-1] for line in git(self.tree, "ls-files", "-v", "--", "P").splitlines())
+        self.assertEqual({"P/Assets/a.bin": "h", "P/Assets/b.bin": "S"}, tags)
+        self.assertEqual(self.b, (self.tree / "P" / "Assets" / "b.bin").read_bytes())
+
+    def test_an_edit_made_during_the_fetch_is_never_overwritten(self):
+        self.seed(self.a)
+        edited = b"USER EDIT " * 500
+
+        def edit(cwd, argv):
+            if argv[:1] == ["fetch"]:
+                (self.tree / "P" / "Assets" / "a.bin").write_bytes(edited)
+            return lfs.run_lfs(cwd, argv)
+
+        outcome = lfs.materialize(self.tree / "P", self.cache, lfs=edit)
+        self.assertEqual(lfs.CODE_CHANGED, outcome.code, outcome.reason)
+        self.assertIn(("P/Assets/a.bin", lfs.CODE_CHANGED), outcome.failed)
+        self.assertEqual(edited, (self.tree / "P" / "Assets" / "a.bin").read_bytes())
+        self.assertEqual(self.b, (self.tree / "P" / "Assets" / "b.bin").read_bytes())
+
+    def test_a_linked_parent_folder_that_leads_outside_is_not_written_through(self):
+        outside = self.root / f"outside-{self.name}"
+        shutil.move(str(self.tree / "P" / "Assets"), str(outside))
+        try:
+            if os.name == "nt":
+                import _winapi
+                _winapi.CreateJunction(str(outside), str(self.tree / "P" / "Assets"))
+            else:
+                os.symlink(outside, self.tree / "P" / "Assets", target_is_directory=True)
+        except OSError as error:
+            self.skipTest(f"cannot create a directory link here: {error}")
+        outcome = lfs.materialize(self.tree / "P", self.cache, lfs=self.lfs)
+        self.assertEqual(lfs.CODE_OUTSIDE, outcome.code, outcome.reason)
+        self.assertEqual([], self.calls)
+        self.assertIsNotNone(lfs.parse_pointer((outside / "a.bin").read_bytes()), "the file outside the tree is untouched")
+
+
 class SettingTests(unittest.TestCase):
     def test_lfs_materialize_of_host_json(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -389,6 +578,34 @@ class UnityRunLfsTests(UnityRunTestCase):
         self.assertEqual(pointer(self.data), (self.project / "Assets" / "scene.bin").read_bytes())
         code, lines, _ = self.unity(lfs_call=FakeLfs(), lfs_materialize=True)
         self.assertEqual(self.data, (self.project / "Assets" / "scene.bin").read_bytes())
+
+    def test_the_preflight_time_does_not_use_up_the_wait_for_a_slot(self):
+        (lfs.object_path(lfs.cache_root(self.home / "work") / "objects", oid(self.data))).unlink()
+        resource = self.occupy(None, slot=True)
+
+        def slow_fetch():  # longer than the whole lease wait; the slot is given back only afterwards
+            time.sleep(2.5)
+            threading.Timer(0.5, lambda: self.manager.release(resource, "other", os.getpid())).start()
+
+        fake = FakeLfs({oid(self.data): self.data}, on_fetch=slow_fetch)
+        with mock.patch.object(lease, "unity_editor_capacity", return_value=1):
+            code, lines, err = self.unity(lfs_call=fake, lease_wait_sec=2.0)
+        self.assertEqual((constants.EXIT_PASS, "STATUS PASS"), (code, lines[-1]), err)
+        self.assertEqual(1, self.preflight(lines)["fetched"])
+        self.assertNoLeases()
+
+    def test_a_git_failure_in_a_repository_blocks_instead_of_starting_unity_on_pointers(self):
+        def refusing(cwd, argv, stdin=None):
+            if argv[:1] == ["rev-parse"]:
+                return 128, b"", "fatal: detected dubious ownership in repository"
+            return lfs.run_git(cwd, argv, stdin)
+
+        with mock.patch.object(lfs, "run_git", refusing), mock.patch.object(lfs.materialize, "__kwdefaults__",
+                                                                            {**lfs.materialize.__kwdefaults__, "git": refusing}):
+            code, lines, _ = self.unity(lfs_call=FakeLfs())
+        self.assertEqual("STATUS BLOCKED", lines[-1])
+        self.assertEqual("lfs.git-failed", self.preflight(lines)["code"])
+        self.assertFalse((self.logs / "Editor.log").exists(), "Unity was not started")
 
     def test_the_cli_option_is_passed_through(self):
         from valtrion import unityrun
