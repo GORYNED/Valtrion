@@ -380,7 +380,7 @@ def push_prelaunch_files(
 
 def run_on_device(
         adapter: PlatformAdapter, device: DeviceInfo, plan_path: Path, plan: Mapping[str, Any], stage: Mapping[str, Any],
-        directory: Path, options: PipelineOptions, cancelled: Callable[[], bool]) -> DeviceRun:
+        directory: Path, options: PipelineOptions, cancelled: Callable[[], bool], cancel_file: Path | None = None) -> DeviceRun:
     """Push the plan, launch the application and watch the device until it reports a result, stalls or runs out of time."""
     directory.mkdir(parents=True, exist_ok=True)
     started = core.utc_now()
@@ -455,7 +455,9 @@ def run_on_device(
         pulled = adapter.pull(device, DEVICE_OUT, polled)
         _, heartbeat, result = _latest_device_run(polled, previous) if pulled.ok else (None, None, None)
         if ui_host and result is None and heartbeat is not None:
-            handled, failed = _answer_external_ui(adapter, device, app, ui_host, heartbeat, answered, directory, options.project_dir)
+            left = budget - (options.monotonic() - began)
+            handled, failed = _answer_external_ui(adapter, device, app, ui_host, heartbeat, answered, directory, options.project_dir,
+                                                  cancel_file, left)
             if failed is not None:
                 status, reason = failed
                 break
@@ -505,7 +507,8 @@ def run_on_device(
 
 def _answer_external_ui(
         adapter: PlatformAdapter, device: DeviceInfo, app: str, spec: Mapping[str, Any], heartbeat: Mapping[str, Any],
-        answered: set[str], directory: Path, project_dir: Path | None) -> tuple[bool, tuple[str, str] | None]:
+        answered: set[str], directory: Path, project_dir: Path | None, cancel_file: Path | None = None,
+        remaining_sec: float | None = None) -> tuple[bool, tuple[str, str] | None]:
     """Answer a new `external.ui` request of the heartbeat (state `waiting-host`) with the stage's `externalUi` command and push the
     reply into the app's inbox. Returns `(handled, failure)`; `failure` is `(status, reason)` when the reply could not be delivered
     (the app would wait for it until its step times out). A request is answered once, whatever the command did: a failed command is a
@@ -518,7 +521,7 @@ def _answer_external_ui(
         return False, None
     answered.add(request_id)
     native = device.id.split(":", 1)[1] if ":" in device.id else device.id
-    reply = externalui.answer(spec, request, native, app, project_dir)
+    reply = externalui.answer(spec, request, native, app, project_dir, cancel_file=cancel_file, remaining_sec=remaining_sec)
     folder = directory / "external-ui"
     folder.mkdir(parents=True, exist_ok=True)
     local = folder / f"reply-{request_id}.json"
@@ -1175,7 +1178,7 @@ def execute(pipeline: Mapping[str, Any], pipeline_path: Path | None, ctx: JobCon
             for attempt in range(1, repeats + 1):
                 run_id = core.safe_identifier(f"{ctx.job_id}-{index + 1}-{attempt}")
                 run_directory = directory / "runs" / f"{index + 1:02d}-{core.safe_segment(plan['id'], 'plan', 40)}-{attempt}"
-                outcome = run_on_device(adapter, device, plan_path, plan, stage, run_directory, options, ctx.cancelled)
+                outcome = run_on_device(adapter, device, plan_path, plan, stage, run_directory, options, ctx.cancelled, ctx.store.cancel)
                 document = assemble_result(run_id, outcome, pipeline, plan, plan_sha, device, host, unity, dirty, extra_layers, head_note,
                                            build_info, checkout_info)
                 runs.append(finalize_result(document, run_directory, run_directory / "result.json", include_top=True))

@@ -486,9 +486,10 @@ class BoundedResult:
 
 def run_bounded(
         argv: Sequence[str], timeout_sec: float, stall_sec: float | None = None, cwd: str | None = None,
-        env: Mapping[str, str] | None = None, log_path: Path | None = None, **watchdog_options) -> BoundedResult:
-    """Run a command under the watchdog and return its output. Adapters use this for every external tool call
-    (`devicectl copy`, `adb`, `xcodebuild`) so that no call can hang the run."""
+        env: Mapping[str, str] | None = None, log_path: Path | None = None, tail_bytes: int | None = None,
+        **watchdog_options) -> BoundedResult:
+    """Run a command under the watchdog and return its output (only the last `tail_bytes` bytes when that is given). Adapters use this
+    for every external tool call (`devicectl copy`, `adb`, `xcodebuild`) so that no call can hang the run."""
     own_log = log_path is None
     if own_log:
         handle, name = tempfile.mkstemp(prefix="gdv-step-", suffix=".log")
@@ -498,7 +499,13 @@ def run_bounded(
     watchdog = Watchdog(timeout_sec, stall_sec if stall_sec is not None else min(timeout_sec, SHORT_STALL_SEC), **watchdog_options)
     outcome = supervise(argv, watchdog, log_path, cwd, env)
     try:
-        output = log_path.read_bytes().decode("utf-8", "replace")
+        if tail_bytes is None:
+            output = log_path.read_bytes().decode("utf-8", "replace")
+        else:
+            with open(log_path, "rb") as handle:
+                handle.seek(0, os.SEEK_END)
+                handle.seek(max(0, handle.tell() - tail_bytes))
+                output = handle.read().decode("utf-8", "replace")
     except OSError:
         output = ""
     if own_log:

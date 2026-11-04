@@ -738,21 +738,34 @@ class PipelineTests(unittest.TestCase):
         _, why = pipeline.select_device([weak], {"class": "tablet"}, plan, known=[tablet])
         self.assertNotIn("offline", why, "an attached device is never reported offline")
 
-    def ui_adapter(self, replies):
-        """An application that asks the host `touch.tap` (request `ui-1`) and ends when it finds the reply in its inbox."""
+    def ui_adapter(self, replies, requests=None, push_fails=False):
+        """An application that asks the host `requests` one per poll (default: `touch.tap` as `ui-1`) and ends after the last one."""
+        asked = requests or [{"id": "ui-1", "action": "touch.tap", "args": {"target": "footer.3"}}]
+
         class Asking(FakeAdapter):
             def push(self, device, local, remote):
                 if remote.startswith("gdv/inbox/reply-"):
                     replies[remote] = json.loads(Path(local).read_text(encoding="utf-8"))
+                    if push_fails:
+                        FakeAdapter.calls.append(f"push:{remote}")
+                        return StepOutcome(constants.FAIL, "the inbox is not writable")
                 return super().push(device, local, remote)
 
             def pull(self, device, remote, local):
-                outcome = super().pull(device, remote, local)
+                if not FakeAdapter.launched:
+                    return super().pull(device, remote, local)
+                FakeAdapter.calls.append("pull")
+                FakeAdapter.pulls += 1
                 run = local / "run-1"
-                if FakeAdapter.launched and run.is_dir() and not (run / "result.json").exists():
-                    core.atomic_write_json(run / "heartbeat.json", {"seq": FakeAdapter.pulls, "state": "waiting-host", "request": {
-                        "id": "ui-1", "action": "touch.tap", "args": {"target": "footer.3"}}})
-                return outcome
+                run.mkdir(parents=True, exist_ok=True)
+                if FakeAdapter.pulls <= len(asked):
+                    core.atomic_write_json(run / "heartbeat.json", {"seq": FakeAdapter.pulls, "state": "waiting-host",
+                                                                    "request": asked[FakeAdapter.pulls - 1]})
+                else:
+                    core.atomic_write_json(run / "heartbeat.json", {"seq": FakeAdapter.pulls})
+                    core.atomic_write_json(run / "result.json", {"status": "PASS", "reason": None, "steps": [], "metrics": [
+                        {"name": "openMs", "unit": "ms", "samples": list(FakeAdapter.current_samples)}], "unverified": []})
+                return StepOutcome(constants.PASS)
         providers.register("android", Asking)
 
     def ui_stages(self, command):
@@ -778,6 +791,42 @@ class PipelineTests(unittest.TestCase):
         self.ui_adapter(replies)
         _, store = self.run_pipeline(self.pipeline_document(self.ui_stages([sys.executable, "-c", "import sys;sys.exit(4)"])))
         self.assertEqual("FAIL", replies["gdv/inbox/reply-ui-1.json"]["status"])
+
+    def test_a_reply_that_cannot_be_pushed_ends_the_run_with_a_clear_reason(self):
+        replies = {}
+        self.ui_adapter(replies, push_fails=True)
+        _, store = self.run_pipeline(self.pipeline_document(self.ui_stages([sys.executable, "-c", "pass"])))
+        result = self.result_of(store)
+        self.assertEqual("FAIL", result["status"])
+        self.assertIn("ui-1", result["reason"])
+        self.assertIn("could not be pushed", result["reason"])
+        self.assertIn("the inbox is not writable", result["reason"])
+
+    def test_a_repeated_request_id_runs_the_command_once_and_several_requests_run_it_each(self):
+        replies = {}
+        counter = Path(self.work) / "calls.txt"
+        requests = [{"id": rid, "action": "touch.tap", "args": {"target": "t"}} for rid in ("ui-1", "ui-1", "ui-2", "ui-2", "ui-3")]
+        self.ui_adapter(replies, requests)
+        code = "import sys;open(sys.argv[1], 'a').write(sys.argv[2] + chr(10))"
+        _, store = self.run_pipeline(self.pipeline_document(self.ui_stages([sys.executable, "-c", code, str(counter), "{request}"])))
+        self.assertEqual(["ui-1", "ui-2", "ui-3"], counter.read_text(encoding="utf-8").split())
+        self.assertEqual({f"gdv/inbox/reply-ui-{n}.json" for n in (1, 2, 3)}, set(replies))
+        self.assertEqual("PASS", self.result_of(store)["status"])
+
+    def test_an_unsafe_request_is_a_blocked_reply_and_the_run_goes_on(self):
+        replies = {}
+        self.ui_adapter(replies, [{"id": "ui-1", "action": "a\u0000b", "args": {}}, {"id": "ui-2", "action": "-x", "args": {}}])
+        _, store = self.run_pipeline(self.pipeline_document(self.ui_stages([sys.executable, "-c", "pass", "{action}"])))
+        self.assertEqual("BLOCKED", replies["gdv/inbox/reply-ui-1.json"]["status"])
+        self.assertEqual("BLOCKED", replies["gdv/inbox/reply-ui-2.json"]["status"])
+        self.assertEqual("PASS", self.result_of(store)["status"], "the plan decides what a blocked reply means; the host run completes")
+
+    def test_a_command_that_runs_longer_than_the_stall_window_does_not_stall_the_run(self):
+        replies = {}
+        self.ui_adapter(replies)
+        _, store = self.run_pipeline(self.pipeline_document(self.ui_stages([sys.executable, "-c", "import time;time.sleep(2.5)"])))
+        self.assertEqual("PASS", replies["gdv/inbox/reply-ui-1.json"]["status"])
+        self.assertEqual("PASS", self.result_of(store)["status"])  # stallSec is 1 in `stages()`
 
     def test_a_stage_without_a_host_command_leaves_the_request_alone(self):
         replies = {}
