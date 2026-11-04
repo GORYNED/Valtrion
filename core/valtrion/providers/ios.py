@@ -230,6 +230,9 @@ def _not_in_gui_session(manager: str) -> str:
         return (f"iOS signing needs the login keychain, but this job already runs in the {domain} launchd domain and launchd reports the "
                 f"session as {manager or 'unknown'}, not Aqua: no user is logged in to the Mac desktop, or its login keychain is locked; "
                 "log in at the Mac and unlock the login keychain (owner action), restarting the job with the same --domain gui will not help")
+    if domain == "launchd":  # an agent whose domain the runner could not read yet: do not guess the advice
+        return (f"iOS signing needs the GUI session, but this launchd job runs outside it (launchd reports {manager or 'unknown'}, not Aqua); "
+                "start it with --domain gui, and check that a user is logged in at the Mac and the login keychain is unlocked")
     where = (f"the {domain} launchd domain" if domain else
              "the SSH or terminal context (--foreground or no launchd domain)")
     return (f"iOS signing needs the GUI session, but this job ran in {where}; start it without --foreground, with --domain gui "

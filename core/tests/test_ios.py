@@ -433,6 +433,12 @@ class IosTests(unittest.TestCase):
         self.assertIn("--domain gui", reason)
         self.assertNotIn("SSH or terminal context", reason)
 
+    def test_a_launchd_job_with_an_unrecorded_domain_gets_no_guessed_advice(self):
+        reason = self.blocked_reason("launchd")
+        self.assertNotIn("launchd launchd", reason)
+        self.assertNotIn("SSH or terminal context", reason)
+        self.assertIn("--domain gui", reason)
+
     def test_a_job_already_in_the_gui_domain_is_pointed_at_the_login_keychain(self):
         reason = self.blocked_reason("gui/501")
         self.assertIn("gui/501", reason)

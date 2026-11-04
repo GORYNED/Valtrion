@@ -143,7 +143,7 @@ class ForegroundDomainTests(unittest.TestCase):
                         cli.main(list(argv))
                 self.assertEqual(2, raised.exception.code)
                 self.assertIn("--foreground runs the job in this process", err.getvalue())
-                self.assertIn("cannot sign on macOS", err.getvalue())
+                self.assertIn("is not for signing", err.getvalue())
 
     def test_foreground_with_the_default_domain_is_not_refused_by_the_parser(self):
         arguments = cli.build_parser().parse_args(["job", "start", "--timeout-sec", "5", "--foreground", "--", "true"])
