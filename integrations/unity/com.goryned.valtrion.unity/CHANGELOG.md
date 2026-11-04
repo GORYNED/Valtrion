@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- `JobDocument.Cleanup` and `ResultDocument.Cleanup` (`OutputCleanup` with `Base`, `Removed`, `Kept` and `Refused` of `CleanupPathReason`) and `PipelineStage.Cleanup`: the optional `cleanup` keys of `gdv.job/1`, `gdv.result/1` and the `gdv.pipeline/1` stage (Core: declared job outputs, #75) are read and written. Documents without them behave as before.
+
 ## 0.10.0 (2026-11-03)
 
 - `ChecksDocument.JsonRules` (`ChecksJsonRule`, `ChecksJsonKey` with `Kind` or `Kinds`): the optional `jsonRules` key of `gdv.checks/1` is read and written. Documents without it behave as before.

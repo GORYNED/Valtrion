@@ -1,4 +1,6 @@
+import contextlib
 import hashlib
+import io
 import json
 import os
 import shutil
@@ -9,7 +11,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from valtrion import compare, constants, core, jobs, lease, pipeline, providers
+from valtrion import cli, compare, constants, core, jobs, lease, outputs, pipeline, providers
 from valtrion.adapter import Capabilities, DeviceHealth, DeviceInfo, PlatformAdapter, StepOutcome
 from valtrion.schema import Validator
 
@@ -428,6 +430,42 @@ class PipelineTests(unittest.TestCase):
             _, store = self.run_pipeline(self.pipeline_document(self.prelaunch_stages(files)))
             self.assertEqual("BLOCKED", store.read_job()["status"], files)
             self.assertEqual([], FakeAdapter.calls, f"nothing ran (not even the build) for {files}")
+
+    def test_a_run_stage_cleanup_is_removed_when_the_job_ends_and_recorded_in_the_result(self):
+        project = self.work / "project"
+        (project / "Tools" / "Helper" / "out").mkdir(parents=True)
+        (project / "Tools" / "Helper" / "out" / "tool").write_bytes(b"bin")
+        (project / "DerivedData").mkdir()
+        stages = self.stages()
+        stages[-1]["cleanup"] = ["Tools/Helper/out", "DerivedData", "missing"]
+        declared = outputs.declare(project, outputs.stage_paths(stages))
+        _, store = self.run_pipeline(self.pipeline_document(stages), cleanup_paths=tuple(declared), cleanup_base=str(project))
+        job = store.read_job()
+        self.assertEqual(("finished", "PASS"), (job["state"], job["status"]), job["reason"])
+        result = self.result_of(store)
+        expected = {"base": str(project), "removed": ["Tools/Helper/out", "DerivedData"],
+                    "kept": [{"path": "missing", "reason": outputs.ABSENT}], "refused": []}
+        self.assertEqual(expected, result["cleanup"])
+        self.assertEqual(expected, job["cleanup"])
+        self.assertFalse((project / "Tools" / "Helper" / "out").exists())
+        self.assertTrue((project / "Tools" / "Helper").is_dir(), "only the declared path goes")
+        self.assertTrue((project / "ProjectSettings" / "ProjectVersion.txt").is_file())
+
+    def test_a_pipeline_whose_run_stage_declares_a_path_outside_the_project_does_not_start(self):
+        pipeline_file = self.work / "plans" / "p.pipeline.json"
+        for stages, expected in (
+                ([{"stage": "run", "plan": "open.plan.json", "args": {"app": "com.example.app"}, "cleanup": ["../plans"]}], "parent folder"),
+                ([{"stage": "build", "cleanup": ["out"]}], "run stages only")):
+            with self.subTest(expected=expected):
+                pipeline_file.write_text(json.dumps(self.pipeline_document(stages)), encoding="utf-8")
+                out, err = io.StringIO(), io.StringIO()
+                with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                    code = cli.main(["pipeline", str(pipeline_file), "--project-dir", str(self.work / "project"), "--local", "--foreground"])
+                self.assertEqual(constants.EXIT_BLOCKED, code, out.getvalue() + err.getvalue())
+                self.assertIn(expected, out.getvalue() + err.getvalue())
+                self.assertEqual([], FakeAdapter.calls)
+                self.assertFalse(self.root.exists() and any(self.root.rglob("job.json")), "no job was created")
+        self.assertTrue((self.work / "plans" / "open.plan.json").is_file())
 
     def test_a_missing_prelaunch_file_costs_no_build(self):
         _, store = self.run_pipeline(self.pipeline_document(self.prelaunch_stages([{"local": "nope.json", "remote": "x.json"}])))

@@ -17,7 +17,10 @@ a clear result and saved logs. Docs: https://github.com/GORYNED/Valtrion#readme
    valtrion job start --project <name> --sha <git sha> --label <label> --cwd . --timeout-sec <limit> --stall-sec <limit> --watch -- <my command>
    Project name: the repo folder name. Limits: stall 120 s and timeout 900 s
    unless the check needs different ones. The job directory it prints holds
-   job.json, events.jsonl and console.log.
+   job.json, events.jsonl and console.log. If the command writes build output
+   into the repo folder, name it with `--cleanup <relative path>` (repeatable):
+   Valtrion removes it when the job ends (never tracked files) and job.json
+   `cleanup` lists what was removed, kept and refused.
 4. If this is a Unity project (Assets, Packages, ProjectSettings), also read
    https://github.com/GORYNED/Valtrion/blob/main/docs/ai-agent-setup-detailed.md
    and follow its Unity path. Pin the Unity package to a release tag, for example

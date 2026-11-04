@@ -19,6 +19,10 @@ Choose the path before installing an application integration
   archive; record the resolved SHA if you use one. Install Core only. Do not install Unity or add Unity configuration.
   Run the real command through installed `valtrion job start -- ...` with --watch,
   bounded --stall-sec and --timeout-sec, explicit --cwd and the actual --sha.
+  Declare outputs the command writes inside --cwd with --cleanup <relative path>
+  (repeatable) instead of deleting them by hand afterwards; job.json `cleanup`
+  shows what was removed, kept (with the reason) and refused (tracked files,
+  paths outside --cwd). Pipeline run stages take the same list as `cleanup`.
   Inspect job.json, events.jsonl and console.log. Test a genuine failing check and
   timeout in isolated data too. Record process evidence; do not invent a successful
   gdv.result/1 or claim compare/report coverage from a command job.
