@@ -82,7 +82,8 @@ Output around the answer does not matter: a login banner, a message of the day o
 | `collect JOB_ID --host HOST [--remote-project DIR]` | Pull a remote job's artifacts into the local artifacts root with the same layout. |
 | `gc [--keep-days N] [--dry-run] [--protect PATH]` | Remove run folders older than `--keep-days` (default `retention.keepDays` of `host.json`, 30). Active, retained and protected runs are kept. |
 | `retain JOB_ID` | Keep a run from `gc`. |
-| `workroot show/checkout/inbox/release/sweep` | The work root, see [work-root.md](work-root.md). `inbox` creates `<workRoot>/jobs/inbox-<id>` and prints `{"inbox": "<path>"}`; a caller uses it to send files (see below). |
+| `workroot show/checkout/inbox/release/sweep` | The work root, see [work-root.md](work-root.md). `inbox` creates `<workRoot>/jobs/inbox-<id>` and prints `{"inbox": "<path>"}`; a caller uses it to send files (see below). `show` and `sweep` also warn about unowned entries of the work root (never removed). |
+| `workroot scratch create/release/list`, `workroot adopt PATH --yes` | Temporary copies for an agent under `<workRoot>/scratch/<id>`, with a marker and an expiry: `scratch create --name N [--project P --sha SHA (--source URL \| --repo PATH)] [--ttl-hours H] [--job-id J] [--lease R]` prints `{"scratch", "id", "expiresUtc", "release"}` (and `checkout` with `--sha`); `scratch release ID [--any-owner] [--dry-run]` removes exactly that folder when it is idle and yours; `adopt` makes an unowned folder of the work root a scratch folder. See [Scratch copies](work-root.md#scratch-copies). |
 
 **`run` and `pipeline` on an SSH host.** The command line is forwarded to the host. The plan, the pipeline and the pre-launch files are sent, and the project is found there; every other path on the command line (`--artifact FILE`, `--protect PATH`, `--project-dir` on a host without `projectsRoot`) is a path on the host, as given:
 

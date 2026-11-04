@@ -34,6 +34,10 @@ and the test files this task needs are the only exceptions). Do not configure SS
 hosts or remote execution. Ask before installing global tools. Do not commit tokens, personal paths or device IDs.
 Do not delete data or stop processes you did not start. Report a missing tool or
 permission as BLOCKED instead of working around it.
+Temporary copies (a clean checkout to reproduce something): create them only with
+`valtrion workroot scratch create --name <name> [--project <name> --sha <sha> --source <url>]`,
+work in the folder it prints, and release them in the same task with
+`valtrion workroot scratch release <id>`. Never clone or copy elsewhere.
 ```
 
 For the full step-by-step version, including a Unity Editor smoke test, use the [detailed guide](ai-agent-setup-detailed.md). The [Quick Start](quick-start.md) shows the same flow by hand.

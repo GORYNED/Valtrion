@@ -15,7 +15,7 @@ import subprocess
 from pathlib import Path
 from typing import Callable, Sequence
 
-from . import __version__, buildcache, checkout, compare, core, diskspace, incremental, lease, workroot
+from . import __version__, buildcache, checkout, compare, core, diskspace, incremental, lease, scratch, workroot
 from .resolver import HostCapabilities
 
 PROBE_TIMEOUT_SEC = 20
@@ -201,10 +201,18 @@ def work_root_length_warnings(os_name: str, work_root: Path, long_paths_enabled:
     return [f"work root {work_root} {reason}"] if reason else []
 
 
-def work_root_report(work_root: Path) -> dict:
+def work_root_report(work_root: Path, processes: "scratch.ProcessList | None" = None) -> dict:
+    """Usage of the work root, its abandoned job directories, its scratch directories and the entries that are not Valtrion's
+    (`unowned`, reported with a warning each and never removed; see `scratch.unowned`)."""
     roots = workroot.WorkRoots(work_root)
     report = {"path": str(work_root), "usage": workroot.usage(roots), "disk": disk_report(work_root)}
     report["staleJobDirectories"] = [p.name for p in workroot.stale_job_directories(roots)]
+    report["scratch"] = scratch.listing(roots)
+    try:
+        report["unowned"] = scratch.unowned(roots, processes=processes)
+    except (OSError, ValueError) as error:  # an unreadable lease directory must not break the whole report
+        report["unowned"] = []
+        report["unownedError"] = str(error)
     return report
 
 
@@ -324,7 +332,8 @@ def probe_local(
     if xcode_ok:
         capabilities["xcode"] = apple["xcode"]
     checkouts = checkouts_report(projects, sizes=checkout_sizes)
-    lost = [f"managed checkout {item['project']}/{item['id']} at {item['path']} was created and is missing now (last used "
+    work = work_root_report(work_root)
+    lost = [scratch.describe_unowned(item) for item in work["unowned"]] + [f"managed checkout {item['project']}/{item['id']} at {item['path']} was created and is missing now (last used "
             f"{item.get('lastUsed') or 'unknown'}): the next build reclones it and Unity imports Library again; managed checkouts are "
             "working state, not cache" for item in checkouts["managed"] if item.get("missing")]
     return {
@@ -332,7 +341,7 @@ def probe_local(
         "editors": [{"version": e["version"], "path": e["path"]} for e in editors], "gui": {
             key: apple[key] for key in ("guiSession", "keychainReadable", "signingIdentities") if key in apple},
         "disk": disk_report(artifacts_root or core.valtrion_home()), "githubRunner": probe_runner(os_name, run), "blocked": blocked,
-        "workRoot": work_root_report(work_root),
+        "workRoot": work,
         "storage": storage_report(work_root, artifacts_root or core.valtrion_home() / "artifacts", min_free_gib),
         "checkouts": checkouts,
         "warnings": lost + protected_path_warnings(os_name, {
@@ -363,7 +372,9 @@ def render(report: dict) -> str:
     lines.append(f"  github runner: {runner['state']}")
     work = report.get("workRoot")  # absent in a report cached from a host that runs an older valtrion
     if work:
-        lines.append(f"  work root: {work['path']} ({work['usage']['jobDirectories']} job dir(s), {work['disk']['freeGb']} GB free)")
+        scratch_count = work["usage"].get("scratchDirectories")  # absent in a report from an older valtrion
+        scratch_text = f", {scratch_count} scratch dir(s)" if scratch_count else ""
+        lines.append(f"  work root: {work['path']} ({work['usage']['jobDirectories']} job dir(s){scratch_text}, {work['disk']['freeGb']} GB free)")
     accelerator = report.get("unityAccelerator")
     if accelerator:
         state = "reachable" if accelerator["reachable"] else f"NOT reachable ({accelerator.get('reason', 'no answer')}); Unity builds import locally"

@@ -50,6 +50,13 @@ Boundaries
   Never put tokens, personal paths or real device IDs in committed files or reports.
 - Use synthetic data and isolated output. Never delete app/user data or stop an
   Editor/process that you did not start. Do not upgrade Unity to satisfy this task.
+- Make temporary copies (a clean checkout of a branch, a dependency's test project
+  at a pinned commit) only with `valtrion workroot scratch create --name <name>`
+  (add `--project <name> --sha <full sha> --source <url>` for a checkout in its
+  checkout/ folder), work only in the folder it prints, and release each one in the
+  same task with `valtrion workroot scratch release <id>`. Never clone or copy into
+  the work root, the repository or a temp folder by other means. Report a release
+  that is refused (in use, not yours) instead of deleting anything yourself.
 
 Unity path: discover and pin
 1. Find the Unity project (Assets, Packages, ProjectSettings), its exact Editor

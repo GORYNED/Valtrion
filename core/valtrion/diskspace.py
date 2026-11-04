@@ -3,7 +3,7 @@
 `host.json` `disk.minFreeGiB` turns this on (without it nothing here runs and builds start as before). Before a `build` stage the
 pipeline checks the free space of the work root's volume; below the threshold it removes, in this order, what no job needs:
 abandoned job folders of the work root (`workroot.sweep`; a running job, a retained run and a protected path are never touched),
-run folders older than `disk.keepDaysUnderPressure` (`artifacts.gc`; active, retained and `--protect`ed runs are kept) and
+expired idle scratch copies (`scratch.sweep`; one in use or of another host user is never touched), run folders older than `disk.keepDaysUnderPressure` (`artifacts.gc`; active, retained and `--protect`ed runs are kept) and
 published builds beyond the build-cache retention (`buildcache.gc`). Still below the threshold afterwards: the build is `BLOCKED`
 with the numbers and the largest consumers, and no toolchain starts. With a wait (`disk.waitSec`, `--disk-wait`) the pipeline first
 waits, before it takes the project and Editor leases, up to the limit for the space to appear (`wait_for_space`).
@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Iterable, Sequence
 
-from . import artifacts, buildcache, config, core, incremental, jobs, lease, workroot
+from . import artifacts, buildcache, config, core, incremental, jobs, lease, scratch, workroot
 
 GIB = 1024 ** 3
 #: Under pressure a job folder untouched for this long counts as abandoned (the usual sweep waits `workroot.STALE_JOB_DIRECTORY_SEC`).
@@ -105,6 +105,10 @@ def largest_consumers(settings: config.HostSettings, home: Path | None, limit: i
         for folder in roots.jobs.iterdir():
             if folder.is_dir():
                 items.append((str(folder), folder_bytes(folder)))
+    if roots.scratch.is_dir() and not scratch.is_link(roots.scratch):
+        for folder in roots.scratch.iterdir():
+            if folder.is_dir() and not scratch.is_link(folder):
+                items.append((f"{folder} (scratch)", folder_bytes(folder)))
     items.append((f"{settings.artifacts_root} (run folders)", folder_bytes(settings.artifacts_root) if settings.artifacts_root.is_dir() else 0))
     cache = buildcache.builds_root(home)
     items.append((f"{cache} (build cache)", folder_bytes(cache) if cache.is_dir() else 0))
@@ -136,6 +140,10 @@ def ensure_free(settings: config.HostSettings, home: Path | None, protected: Seq
     steps: list[tuple[str, Callable[[], Iterable[str]]]] = [
         ("abandoned job folders", lambda: workroot.sweep(settings.roots, active, PRESSURE_STALE_SEC,
                                                          keep=lambda job_id: jobs.kept_work_reason(job_id, home))),
+        # Expired scratch copies of any owner of this host user (the owner turned this cleanup on with disk.minFreeGiB); one in use,
+        # unexpired or of another host user stays, as in `workroot sweep`.
+        ("expired scratch directories", lambda: scratch.sweep(settings.roots, scratch.caller(), active, PRESSURE_STALE_SEC, any_owner=True,
+                                                              manager=lease.LeaseManager(home or core.valtrion_home())).removed),
         ("expired run folders", lambda: artifacts.gc(settings.artifacts_root, settings.keep_days_under_pressure,
                                                     protected=protected_paths).removed),
         ("expired builds", lambda: buildcache.gc(buildcache.builds_root(home), protect=active_build_keys(home, active),
