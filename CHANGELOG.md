@@ -4,7 +4,7 @@ Core (the `valtrion` Python package) and the Unity package `com.goryned.valtrion
 
 ## Unreleased
 
-- **Tests: two `test_content_rules` cases are skipped where the filesystem cannot run them.** `CosmeticSelectionTests.test_a_file_name_with_pattern_characters_is_a_literal_name` and `test_a_script_made_executable_together_with_a_comment_edit_is_code` now carry `skipUnless` probes that really try to create a file named `w*.cs` and to set the executable bit, so on Windows (NTFS) they are reported as skipped with the reason instead of failing, and they still run on macOS and Linux. No product code changed.
+- **Tests: two `test_content_rules` cases are skipped where the filesystem cannot run them.** `CosmeticSelectionTests.test_a_file_name_with_pattern_characters_is_a_literal_name` and `test_a_script_made_executable_together_with_a_comment_edit_is_code` now carry `skipUnless` probes that really try to create a file named `w*.cs` and to set the executable bit, so on Windows (NTFS) they are reported as skipped with the reason instead of failing, and they run wherever the filesystem supports them. No product code changed.
 
 ## 0.13.0
 
