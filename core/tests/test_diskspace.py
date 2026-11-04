@@ -475,14 +475,15 @@ class PipelineDiskTests(unittest.TestCase):
         import threading
         thread = threading.Thread(target=work, daemon=True)
         thread.start()
-        deadline = time.monotonic() + 30
+        deadline = time.monotonic() + 180  # generous but bounded: late in a long run on a loaded runner the build takes far longer than on a quiet host
         entry = None
         while time.monotonic() < deadline and entry is None:
             time.sleep(0.05)
             entries = buildcache.entries(buildcache.builds_root(self.home))
             waiting = [p for p in self.root.glob("*/*/*/job.json") if core.read_json(p).get("phase") == "waiting-device"]
             entry = entries[0] if entries and waiting else None
-        self.assertIsNotNone(entry, "the job built, published and waits for the device")
+        phases = [core.read_json(p).get("phase") for p in self.root.glob("*/*/*/job.json")]
+        self.assertIsNotNone(entry, f"the job built, published and waits for the device (no such state within 180 s; builds: {len(buildcache.entries(buildcache.builds_root(self.home)))}, job phases: {phases})")
         old = core.format_utc(core.now() - timedelta(days=10))
         core.atomic_write_json(entry.directory / buildcache.MANIFEST, {**entry.manifest, "lastUsedUtc": old, "publishedUtc": old})
         outcome = diskspace.ensure_free(config.load_host_settings(self.home), self.home, free=FakeVolume(1))
