@@ -74,6 +74,18 @@ _PROFILE_KEYS = {
     "stallSec", "gitLfsPull", "destination", "xcodeProject", "unityPath", "xcodebuildSettings"}
 _BUILD_SETTING = re.compile(r"[A-Z][A-Z0-9_]*")
 
+#: The Unity switch that makes the Editor activate a platform (and recompile the project scripts for it) before `-executeMethod`.
+BUILD_TARGET_SWITCH = "-buildTarget"
+#: Values of `-buildTarget` that mean iOS (Unity matches the name case-insensitively).
+IOS_BUILD_TARGETS = frozenset({"ios", "iphone"})
+#: Result detail: what the Editor log said about the active build target (`iOS` confirmed, `unverified` no recognizable line).
+BUILD_TARGET_DETAIL = "unity.buildTarget"
+#: Lines in which the Editor names the platform it switched the project to. Only a line of this shape is evidence; a build target is
+#: never guessed from other text. Absence of such a line is not a failure (a project already on iOS does not switch).
+_TARGET_SWITCH_LINE = re.compile(
+    r"^[ \t]*(?:Successfully changed project target to\s+(?P<a>[A-Za-z][A-Za-z0-9]*)|Switching to\s+(?P<b>[A-Za-z][A-Za-z0-9]*)\s+platform)",
+    re.IGNORECASE | re.MULTILINE)
+
 #: Product types the owner's classes are named after; anything else gets a class derived from its product type.
 _CLASS_BY_PRODUCT = {"iPad13,18": "ipad-a14", "iPad13,19": "ipad-a14"}
 
@@ -133,6 +145,44 @@ def load_build_settings(project: Path, profile: str) -> BuildSettings:
             entry.get("destination", "device"), entry.get("unityPath"), tuple(f"{k}={v}" for k, v in sorted(extra.items())))
     except (TypeError, ValueError) as error:
         raise BuildSettingsError(f"{path} profiles.{profile}.{PLATFORM} has a malformed value: {error}") from error
+
+
+def build_target_args(unity_args: Sequence[str]) -> tuple[list[str], str | None]:
+    """The `-buildTarget` part of the Unity export command line and the target it names.
+
+    A profile's own `-buildTarget <value>` in `unityArgs` wins: nothing is added then, so the switch is never given twice. Otherwise
+    `-buildTarget iOS` is the default, because the Editor compiles the project assemblies (every `#if UNITY_IOS` step of
+    `PostProcessBuild` code) for the platform saved in `Library`, and `BuildPipeline.BuildPlayer(iOS)` switches the platform without
+    recompiling them. The second value is the effective target name; `None` when the profile gave the switch without a value."""
+    args = list(unity_args)
+    named = [(args[i + 1] if i + 1 < len(args) else None) for i, a in enumerate(args) if a.lower() == BUILD_TARGET_SWITCH.lower()]
+    if not named:
+        return [BUILD_TARGET_SWITCH, "iOS"], "iOS"
+    for value in named:  # every occurrence counts: Unity may honor the last one
+        if value is None or value.lower() not in IOS_BUILD_TARGETS:
+            return [], value
+    return [], named[0]
+
+
+def active_build_target(log_text: str) -> str | None:
+    """The platform the Editor log names as the one it switched the project to (the last such line), or None when it names none."""
+    found = [m.group("a") or m.group("b") for m in _TARGET_SWITCH_LINE.finditer(log_text)]
+    return found[-1] if found else None
+
+
+def verify_build_target(log_path: Path) -> tuple[str, str | None]:
+    """Check the Editor log of the export after Unity ended: (`confirmed`|`unverified`|`wrong`, the target the log names).
+
+    Covers what the log shows: a line that says the Editor switched the project to a platform other than iOS is `wrong`; one that says
+    iOS is `confirmed`; no such line is `unverified` (the argument list still carried the target). It does not read `Library`."""
+    try:
+        text = log_path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return "unverified", None
+    target = active_build_target(text)
+    if target is None:
+        return "unverified", None
+    return ("confirmed" if target.lower() in IOS_BUILD_TARGETS else "wrong"), target
 
 
 def _get(document: Mapping[str, Any], *path: str) -> Any:
@@ -387,6 +437,11 @@ class IosAdapter(PlatformAdapter):
         if unity is None:
             return done(constants.BLOCKED, f"Unity {unity_version_of(project) or '(version unreadable)'} is not installed in "
                                            f"{os.environ.get(UNITY_EDITORS_ENV, DEFAULT_UNITY_EDITORS)}")
+        target_args, target = build_target_args(settings.unity_args)
+        if target is None or target.lower() not in IOS_BUILD_TARGETS:  # before anything is created, pulled or exported
+            layers["export"] = constants.BLOCKED
+            return done(constants.BLOCKED, f"profile unityArgs set {BUILD_TARGET_SWITCH} {target or '(no value)'}; an iOS build needs "
+                                           f"{BUILD_TARGET_SWITCH} iOS (leave the switch out and Valtrion passes it)")
         out.mkdir(parents=True, exist_ok=True)
         logs.mkdir(parents=True, exist_ok=True)
         persistent = self._incremental[0] if self._incremental is not None else None
@@ -450,7 +505,7 @@ class IosAdapter(PlatformAdapter):
                 return done(lfs.status, f"git lfs pull failed: {lfs.reason or lfs.output.strip()[-200:]}")
 
         unity_log = logs / "unity-export.log"
-        argv = [str(unity), "-batchmode", "-quit", "-projectPath", str(project), *config.unity_accelerator_args(self._home)]
+        argv = [str(unity), "-batchmode", "-quit", "-projectPath", str(project), *config.unity_accelerator_args(self._home), *target_args]
         if settings.build_profile:
             argv += ["-activeBuildProfile", settings.build_profile]
         # `-buildOutput` is the switch other Unity build methods already read; `-gdv-export-path` is the neutral name.
@@ -469,6 +524,14 @@ class IosAdapter(PlatformAdapter):
                 incremental.discard(persistent.folder)  # killed half way: the export cannot be trusted
             return done(exported.status, f"Unity export {exported.status.lower()}: "
                                          f"{exported.reason or 'exit code ' + str(exported.returncode)}; see {unity_log}")
+        verdict, seen = verify_build_target(unity_log)
+        notes[BUILD_TARGET_DETAIL] = "iOS" if verdict == "confirmed" else verdict
+        if verdict == "wrong":
+            if persistent is not None:
+                incremental.discard(persistent.folder)  # a project exported for the wrong platform must not be appended to
+            layers["export"] = constants.FAIL
+            return done(constants.FAIL, f"the Editor's active build target was {seen}, not iOS: the #if UNITY_IOS code of the project "
+                                        f"was not compiled and the export cannot be trusted; see {unity_log}")
         xcodeproj = self._find_xcodeproj(export, settings.xcode_project)
         if xcodeproj is None:
             layers["export"] = constants.FAIL
