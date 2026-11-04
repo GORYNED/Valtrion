@@ -212,8 +212,8 @@ class IosTests(unittest.TestCase):
         outcome = self.adapter.build(self.project, "Internal", self.out)
         self.assertEqual(constants.PASS, outcome.status, outcome.reason)
         self.assertEqual("Game.app", outcome.artifacts[0].name)
-        self.assertEqual({"layer.export": "PASS", "layer.nativeBuild": "PASS", "layer.sign": "PASS", "xcodebuild.container": "project"},
-                         dict(outcome.details))
+        self.assertEqual({"layer.export": "PASS", "layer.nativeBuild": "PASS", "layer.sign": "PASS", "xcodebuild.container": "project",
+                          ios.BUILD_TARGET_DETAIL: "unverified"}, dict(outcome.details))
         unity = self.recorder.named("unity")[0]
         self.assertIn("-activeBuildProfile", unity["argv"])
         self.assertIn("My.Build.IosBuild.Internal", unity["argv"])
@@ -223,6 +223,84 @@ class IosTests(unittest.TestCase):
         self.assertIn(f"platform=iOS,id={UDID}", xcode["argv"], "the destination comes from discovery, not from a script constant")
         self.assertIn("-allowProvisioningUpdates", xcode["argv"])
         self.assertNotIn("-EnableCacheServer", unity["argv"], "no accelerator unless host.json names one")
+
+    def export_with_log(self, line):
+        def run(argv, call):
+            Path(argv[argv.index("-logFile") + 1]).write_text(f"Opening project\n{line}\nBuilding\n", encoding="utf-8")
+            return self.make_export(argv, call)
+        return run
+
+    def test_the_unity_export_passes_build_target_ios_by_default_and_once(self):
+        self.recorder.answers["unity"] = self.export_with_log("Targeting platform: iOS")
+        self.recorder.answers["xcodebuild"] = self.make_app
+        outcome = self.adapter.build(self.project, "Internal", self.out)
+        self.assertEqual(constants.PASS, outcome.status, outcome.reason)
+        argv = self.recorder.named("unity")[0]["argv"]
+        self.assertEqual(["-buildTarget", "iOS"], argv[argv.index("-buildTarget"):argv.index("-buildTarget") + 2])
+        self.assertEqual(1, argv.count("-buildTarget"))
+        self.assertLess(argv.index("-buildTarget"), argv.index("-executeMethod"), "the platform is switched before the method runs")
+        self.assertEqual("iOS", dict(outcome.details)[ios.BUILD_TARGET_DETAIL])
+
+    def test_a_profile_build_target_wins_and_is_not_duplicated(self):
+        self.write_profiles({"executeMethod": "My.Build.IosBuild.Internal", "configuration": "ReleaseForRunning",
+                             "unityArgs": ["-buildTarget", "iOS", "-gdvX", "1"]})
+        self.recorder.answers["unity"] = self.make_export
+        self.recorder.answers["xcodebuild"] = self.make_app
+        self.assertTrue(self.adapter.build(self.project, "Internal", self.out).ok)
+        argv = self.recorder.named("unity")[0]["argv"]
+        self.assertEqual(1, argv.count("-buildTarget"))
+        self.assertEqual(["-buildTarget", "iOS", "-gdvX", "1"], argv[-4:])
+
+    def test_a_profile_build_target_that_is_not_ios_is_blocked_before_unity_starts(self):
+        for unity_args in (["-buildTarget", "Android"], ["-buildTarget"]):
+            with self.subTest(unity_args=unity_args):
+                self.write_profiles({"executeMethod": "My.Build.IosBuild.Internal", "unityArgs": unity_args})
+                outcome = self.adapter.build(self.project, "Internal", self.out)
+                self.assertEqual(constants.BLOCKED, outcome.status)
+                self.assertIn("-buildTarget", outcome.reason)
+                self.assertEqual([], self.recorder.named("unity"))
+
+    def test_an_editor_log_that_names_another_active_build_target_fails_the_export(self):
+        self.recorder.answers["unity"] = self.export_with_log("Targeting platform: Android")
+        outcome = self.adapter.build(self.project, "Internal", self.out)
+        self.assertEqual(constants.FAIL, outcome.status)
+        self.assertIn("active build target was Android, not iOS", outcome.reason)
+        self.assertEqual("FAIL", dict(outcome.details)["layer.export"])
+        self.assertEqual("wrong", dict(outcome.details)[ios.BUILD_TARGET_DETAIL])
+        self.assertEqual([], self.recorder.named("xcodebuild"), "no xcodebuild on an export that cannot be trusted")
+
+    def test_a_wrong_target_in_an_incremental_build_discards_the_persistent_export(self):
+        self.recorder.answers["unity"] = self.export_with_log("Targeting platform: Android")
+        plan = self.incremental_plan()
+        outcome = self.incremental_build(plan)
+        self.assertEqual(constants.FAIL, outcome.status)
+        self.assertFalse((plan.folder / "export").exists(), "an export made for the wrong platform is never appended to")
+
+    def test_any_non_ios_build_target_in_the_profile_blocks_and_case_does_not_matter(self):
+        self.write_profiles({"executeMethod": "M", "configuration": "ReleaseForRunning", "unityArgs": ["-buildtarget", "IOS"]})
+        self.recorder.answers["unity"] = self.make_export
+        self.recorder.answers["xcodebuild"] = self.make_app
+        self.assertTrue(self.adapter.build(self.project, "Internal", self.out).ok)
+        self.assertEqual(1, [a.lower() for a in self.recorder.named("unity")[0]["argv"]].count("-buildtarget"))
+        self.write_profiles({"executeMethod": "M", "unityArgs": ["-buildTarget", "iOS", "-buildTarget", "Android"]})
+        self.assertEqual(constants.BLOCKED, self.adapter.build(self.project, "Internal", self.out).status)
+
+    def test_the_last_target_line_of_the_log_counts_and_only_at_the_start_of_a_line(self):
+        self.assertEqual("iOS", ios.active_build_target("Targeting platform: Android\nTargeting platform: iOS\n"))
+        self.assertIsNone(ios.active_build_target("  Targeting platform: Android\nmy script: Targeting platform: Android\n"))
+        self.assertEqual("unverified", ios.verify_build_target(self.out / "missing.log")[0])
+
+    def test_an_editor_log_without_a_target_line_is_reported_unverified_not_failed(self):
+        self.recorder.answers["unity"] = self.make_export
+        self.recorder.answers["xcodebuild"] = self.make_app
+        outcome = self.adapter.build(self.project, "Internal", self.out)
+        self.assertEqual(constants.PASS, outcome.status, outcome.reason)
+        self.assertEqual("unverified", dict(outcome.details)[ios.BUILD_TARGET_DETAIL])
+
+    def test_build_target_log_parsing(self):
+        self.assertEqual("iOS", ios.active_build_target("Targeting platform: iOS\n"))
+        self.assertEqual("Android", ios.active_build_target("Targeting platform: iOS\nTargeting platform: Android\n"))
+        self.assertIsNone(ios.active_build_target("Switching to scene Main\nTargeting platform:\n"))
 
     def test_the_unity_export_uses_the_configured_accelerator(self):
         self.home.mkdir(parents=True, exist_ok=True)
