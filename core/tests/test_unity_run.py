@@ -659,8 +659,39 @@ class GuardTests(UnityRunTestCase):
         threading.Timer(0.6, lambda: setattr(probe, "process_list", [])).start()
         code, lines, err = self.unity(probe=probe, lease_wait_sec=10)
         self.assertEqual("STATUS PASS", lines[-1])
-        self.assertIn("waiting (both leases are held)", err)
+        self.assertIn("lease waiting", err)
+        self.assertIn("outside any lease", err)
         self.assertNoLeases()
+
+    def test_the_slot_is_free_while_the_run_waits_for_an_editor_outside_the_leases(self):
+        slots_held_while_waiting = []
+
+        class WatchingProbe(FakeProbe):
+            def processes(inner):
+                slots_held_while_waiting.append(sorted(p.name for p in self.manager.directory.glob("unity-editor*.lock")))
+                return super().processes()
+
+        probe = WatchingProbe([self.EDITOR])
+        threading.Timer(0.8, lambda: setattr(probe, "process_list", [])).start()
+        code, lines, _ = self.unity(probe=probe, lease_wait_sec=10)
+        self.assertEqual("STATUS PASS", lines[-1])
+        self.assertGreaterEqual(len(slots_held_while_waiting), 2)
+        self.assertEqual([[]], [held for held in slots_held_while_waiting[:1]])
+        self.assertTrue(all(held == [] for held in slots_held_while_waiting[:-1]), slots_held_while_waiting)
+        self.assertNoLeases()
+
+    def test_another_run_can_take_the_free_slot_while_this_one_waits_for_the_editor(self):
+        (self.home / "host.json").write_text(json.dumps({"unityEditorSlots": 1}), encoding="utf-8")
+        probe = FakeProbe([self.EDITOR])
+        results = []
+        waiter = threading.Thread(target=lambda: results.append(self.unity(probe=probe, lease_wait_sec=2.5)[1][-1]))
+        waiter.start()
+        time.sleep(0.6)  # the first run is waiting for the Editor and holds no slot
+        taken = self.manager.acquire_slot(lease.UNITY_EDITOR_RESOURCE, 1, OTHER, "other", 300, "a run that is not guarded", os.getpid())
+        self.assertTrue(taken.acquired, taken.reason)
+        self.manager.release(taken.lease.resource, "other", os.getpid())
+        waiter.join(10)
+        self.assertEqual(["STATUS BLOCKED"], results)
 
     def test_too_little_free_memory_blocks_with_the_numbers(self):
         code, lines, _ = self.unity(probe=FakeProbe(memory=512.0))

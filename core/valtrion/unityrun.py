@@ -305,17 +305,17 @@ def run(
                 keeper.add(project_resource)
                 keeper.start()  # the project lease is renewed while this run waits for a slot
                 may_hold += [lease.slot_resource(lease.UNITY_EDITOR_RESOURCE, number) for number in range(1, capacity + 1)]
+                # The slot is taken only once no Editor runs outside a lease and enough memory is free (the gate), all within the same
+                # wait budget: a run that waits for such an Editor holds the project lease but leaves the slot to others.
+                gate = unityguard.Gate(manager, guard_settings, probe, guard_poll, lambda text: _say(err, text))
                 slot = manager.acquire_slot(lease.UNITY_EDITOR_RESOURCE, capacity, owner, session, ttl_sec, what, pid,
-                                            wait_sec=max(0.0, deadline - time.monotonic()), poll_sec=poll_sec, on_wait=waiting)
+                                            wait_sec=max(0.0, deadline - time.monotonic()), poll_sec=poll_sec, on_wait=waiting,
+                                            precondition=gate)
                 if not slot.acquired:
                     return _result(out, constants.BLOCKED, slot.reason)
                 keeper.add(slot.lease.resource)
-                # Holding both leases, wait (within the same budget) until no Editor runs outside a lease and enough memory is free.
-                problem = unityguard.wait_until_clear(
-                    manager, guard_settings, probe, max(0.0, deadline - time.monotonic()), guard_poll, lambda text: _say(err, text),
-                    abort=lambda: f"the lease(s) {', '.join(keeper.lost)} were lost before Unity started" if keeper.lost else None)
-                if problem is not None:
-                    return _result(out, constants.BLOCKED, problem)
+                if keeper.lost:
+                    return _result(out, constants.BLOCKED, f"the lease(s) {', '.join(keeper.lost)} were lost before Unity started")
 
                 console = work / "console.log"
                 cancel = work / "cancel"

@@ -11,13 +11,56 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from valtrion import constants, core, lease, unityguard
+from valtrion import cli, commands, config, constants, core, lease, unityguard  # noqa: F401  (cli first: it registers the commands)
 from valtrion.providers import editor as editor_module
 from valtrion.providers.editor import EditorAdapter
 
 from .test_platform_editor import make_hub
 
 OWNER = "other@host"
+
+
+class DefaultLeaseWaitTests(unittest.TestCase):
+    def setUp(self):
+        folder = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        self.addCleanup(folder.cleanup)
+        self.home = Path(folder.name)
+
+    def write(self, document):
+        (self.home / "host.json").write_text(json.dumps(document), encoding="utf-8")
+
+    def test_it_is_unset_without_host_json_or_the_setting(self):
+        self.assertIsNone(config.default_lease_wait(self.home))
+        self.write({"unityEditorSlots": 2})
+        self.assertIsNone(config.default_lease_wait(self.home))
+
+    def test_host_json_sets_it_and_a_bad_value_is_refused(self):
+        self.write({"leaseWaitSec": 3600})
+        self.assertEqual(3600.0, config.default_lease_wait(self.home))
+        self.write({"leaseWaitSec": 0})
+        self.assertEqual(0.0, config.default_lease_wait(self.home))
+        for bad in (-1, True, "600", float("inf")):
+            self.write({"leaseWaitSec": bad})
+            with self.assertRaises(config.ConfigError, msg=repr(bad)):
+                config.default_lease_wait(self.home)
+
+    def test_the_command_line_wait_wins_then_the_host_then_the_fallback(self):
+        with mock.patch.object(config, "default_lease_wait", return_value=3600.0):
+            self.assertEqual(30.0, commands._lease_wait(30.0))
+            self.assertEqual(0.0, commands._lease_wait(0.0), "an explicit 0 is kept: no wait")
+            self.assertEqual(3600.0, commands._lease_wait(None))
+            self.assertEqual(3600.0, commands._lease_wait(None, 1800.0))
+        with mock.patch.object(config, "default_lease_wait", return_value=None):
+            self.assertEqual(0.0, commands._lease_wait(None))
+            self.assertEqual(1800.0, commands._lease_wait(None, 1800.0))
+
+    def test_the_editor_provider_uses_the_profile_wait_then_the_host_wait(self):
+        adapter = EditorAdapter.__new__(EditorAdapter)
+        adapter._home = self.home
+        self.assertEqual(0.0, adapter._lease_wait({}))
+        self.write({"leaseWaitSec": 1800})
+        self.assertEqual(1800.0, adapter._lease_wait({}))
+        self.assertEqual(45.0, adapter._lease_wait({"leaseWaitSec": 45}))
 
 
 class CapacityTests(unittest.TestCase):

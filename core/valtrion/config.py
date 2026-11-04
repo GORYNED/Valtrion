@@ -251,6 +251,24 @@ def _load_build_cache(value: Any) -> buildcache.Retention:
     return buildcache.Retention(entries, days["keepDays"], days["dirtyKeepDays"], per_source)
 
 
+def default_lease_wait(home: Path | None = None) -> float | None:
+    """`leaseWaitSec` of host.json: how long a run, build or job waits for a leased device or Editor slot when its caller names no wait
+    (`--lease-wait`, a profile's `leaseWaitSec`). None when host.json does not set it (builds then do not wait, `unity run` waits 1800 s)."""
+    base = home or core.valtrion_home()
+    try:
+        document = core.read_json(host_json_path(base))
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError) as error:
+        raise ConfigError(f"cannot read {host_json_path(base)}: {error}") from error
+    value = document.get("leaseWaitSec") if isinstance(document, dict) else None
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value < 0:
+        raise ConfigError("host.json: leaseWaitSec must be a non-negative number")
+    return float(value)
+
+
 def default_checkout_path(home: Path, project: str, checkout_id: str) -> Path:
     """Where a managed checkout lives when `host.json` names no `path`: in the valtrion home, beside the other working state (registry,
     leases, incremental build folders), outside folders macOS guards with permission prompts and outside purgeable caches."""

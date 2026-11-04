@@ -50,6 +50,10 @@ All keys are optional. `artifactsRoot` and `workRoot` must be non-empty; `workRo
 
 **`leasesDir` (temporary).** An absolute path (or one starting with `~`) that replaces `<home>/leases`. It exists for the move from the earlier tool: set it to the absolute path of the old tool's leases folder, and the old and new CLIs share one lease directory, so they never both hold the same device. The lease file format is unchanged. Remove the setting once the old tool is no longer used.
 
+**`leaseWaitSec`.** A non-negative number of seconds: how long `unity run`, the `build` and `pipeline` commands, `job start` and the Editor provider wait for a leased device or Editor slot when the caller names no wait (`--lease-wait`, a profile's `leaseWaitSec`). Without it builds, pipelines and jobs do not wait (`BLOCKED` at once) and `unity run` waits 1800 s. An explicit `--lease-wait 0` still means no wait. An SSH host applies its own `host.json`. The Editor provider's launch is capped at 240 s whatever this says.
+
+**`unityGuard`.** Optional object `{"orphanEditors": true, "minFreeMemoryMiB": 2048}`: before a Unity process starts, no Editor may run outside a lease (an Editor started by hand, or left by a crashed run) and that much memory must be free (`false` and `0` turn a check off; other keys are an error). `unity run` makes the checks without this object; the build stage, the Editor provider and a job's `--lease unity-editor` make them only on a host that has it (`{}` takes the defaults). The checks are made before the slot is held, see [cli.md](cli.md#unity-run).
+
 **`unityEditorSlots`.** A positive integer: how many Unity processes (the `unity-editor` slots) the host runs at once. Without it the host allows 2, on every platform. Every provider counts this one total. Slots above the total are not looked at: when you lower it, a holder from an older version that still sits on a higher slot is ignored until it ends, so during a mixed-version transition one more Unity can run than the new total. `PlatformAdapter.unity_editor_slots` no longer exists; a third-party provider that set it loses that limit and must use `unityEditorSlots` here.
 
 ## Work root

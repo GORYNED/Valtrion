@@ -74,6 +74,8 @@ class AcquireResult:
     holder: LeaseRecord | None = None
     reclaimed: LeaseRecord | None = None  # a stale lease this acquisition replaced
     reason: str | None = None
+    #: Refused by the caller's own `precondition`, not because the resource is taken: such a waiter keeps no place in the line.
+    gated: bool = False
 
     @property
     def status(self) -> str:
@@ -362,9 +364,15 @@ class LeaseManager:
                             owner, session, holder_pid, ttl_sec, wait_sec, poll_sec, on_wait)
 
     def acquire_slot(self, name: str, slots: int, owner: str, session: str, ttl_sec: int, purpose: str = "", pid: int | None = None,
-                     worktree: str = "", wait_sec: float = 0.0, poll_sec: float = 1.0, on_wait: WaitNotice | None = None) -> AcquireResult:
+                     worktree: str = "", wait_sec: float = 0.0, poll_sec: float = 1.0, on_wait: WaitNotice | None = None,
+                     precondition: Callable[[], str | None] | None = None) -> AcquireResult:
         """Take one of `slots` leases of a counted resource; a holder that already has a slot gets that slot again. `on_wait` is
-        called as in `acquire`."""
+        called as in `acquire`.
+
+        `precondition` returns the reason the caller must not start yet (None = go on). It is asked while the caller is first in the
+        waiting line and holds no slot, so a caller that waits for something outside the leases (an Editor started by hand, low free
+        memory) does not keep a slot idle meanwhile. It is asked once more with the slot taken (the world may have changed since the first
+        look); when it then fails, the slot is given back and the caller keeps waiting."""
         if slots < 1:
             raise ValueError("a counted resource needs at least one slot")
         holder_pid = os.getpid() if pid is None else pid
@@ -381,10 +389,19 @@ class LeaseManager:
             slot = owned_slot()
             if slot is not None:
                 return self.try_acquire(slot_resource(name, slot), owner, session, ttl_sec, purpose, holder_pid, worktree)
+            if precondition is not None:
+                why = precondition()
+                if why:
+                    return AcquireResult(False, None, None, None, why, gated=True)
             reasons = []
             for slot in range(1, slots + 1):
                 result = self.try_acquire(slot_resource(name, slot), owner, session, ttl_sec, purpose, holder_pid, worktree)
                 if result.acquired:
+                    if precondition is not None:
+                        why = precondition()
+                        if why:  # something appeared while the slot was being taken: give it back at once and wait on
+                            self.release(slot_resource(name, slot), session, holder_pid)
+                            return AcquireResult(False, None, None, result.reclaimed, why, gated=True)
                     return result
                 reasons.append(result.reason or f"{slot_resource(name, slot)} is held")
             return AcquireResult(False, None, None, None, f"all {slots} slots of {name} are leased: " + "; ".join(reasons))
@@ -473,7 +490,13 @@ class LeaseManager:
                                                                        f"{name} is next for {ahead}, who has waited longer")
                 if result.acquired or self._monotonic() >= deadline:
                     return result
-                if ticket is None or not ticket.exists():
+                if result.gated:
+                    # Waiting for something outside the resource (an Editor started by hand, low memory): the free slots are not
+                    # reserved for this waiter, so a claimant that is not held back by it can take them meanwhile.
+                    if ticket is not None:
+                        self._remove_ticket(ticket)
+                        ticket = None
+                elif ticket is None or not ticket.exists():
                     ticket = self._enqueue(name, owner, session, pid, ttl_sec, poll_sec)
                 else:
                     self._renew_ticket(ticket)

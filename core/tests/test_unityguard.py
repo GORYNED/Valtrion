@@ -235,6 +235,80 @@ class BlockedReasonTests(unittest.TestCase):
             self.assertTrue(all("skipped" in note for note in notes))
 
 
+class GateTests(unittest.TestCase):
+    EDITOR = Proc(4242, 1, "/Applications/Unity/Hub/Editor/6000.6.7f1/Unity.app/Contents/MacOS/Unity",
+                  "/Applications/Unity/Hub/Editor/6000.6.7f1/Unity.app/Contents/MacOS/Unity -batchmode")
+
+    class Probe(unityguard.Probe):
+        os_name = "macos"
+
+        def __init__(self, processes=(), memory=64000.0):
+            self.process_list, self.memory, self.reads = processes, memory, 0
+
+        def processes(self):
+            self.reads += 1
+            return self.process_list
+
+        def free_memory_mib(self):
+            return self.memory
+
+    def gate(self, probe, settings=None, clock=None, **options):
+        from valtrion import lease
+
+        folder = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        self.addCleanup(folder.cleanup)
+        settings = settings or unityguard.GuardSettings()
+        return unityguard.Gate(lease.LeaseManager(Path(folder.name)), settings, probe, monotonic=clock or (lambda: 0.0), **options)
+
+    def test_an_editor_outside_the_leases_or_too_little_memory_refuses_and_a_clear_machine_passes(self):
+        self.assertIn("pid 4242", self.gate(self.Probe([self.EDITOR]))())
+        self.assertIn("only 100 MiB", self.gate(self.Probe(memory=100.0))())
+        self.assertIsNone(self.gate(self.Probe())())
+
+    def test_a_refusal_is_remembered_for_the_poll_time_and_a_pass_never_is(self):
+        now = [0.0]
+        probe = self.Probe([self.EDITOR])
+        gate = self.gate(probe, clock=lambda: now[0], poll_sec=5.0)
+        gate()
+        gate()
+        now[0] = 4.0
+        gate()
+        self.assertEqual(1, probe.reads)
+        now[0] = 5.5
+        probe.process_list = []
+        self.assertIsNone(gate())
+        self.assertIsNone(gate())
+        self.assertEqual(3, probe.reads)  # the pass was checked again each time
+
+    def test_a_gate_with_both_checks_off_reads_nothing(self):
+        probe = self.Probe([self.EDITOR], memory=1.0)
+        gate = self.gate(probe, unityguard.GuardSettings(False, 0.0))
+        self.assertFalse(gate.active)
+        self.assertIsNone(gate())
+        self.assertEqual(0, probe.reads)
+
+    def test_what_cannot_be_read_is_noted_once_and_never_refuses(self):
+        notes = []
+        gate = self.gate(self.Probe(None, memory=None), say=notes.append)
+        self.assertIsNone(gate())
+        self.assertIsNone(gate())
+        self.assertEqual(2, len(notes))
+
+    def test_build_gate_is_off_without_a_unityguard_setting_unless_asked_and_on_with_one(self):
+        from valtrion import lease
+
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as folder:
+            home = Path(folder)
+            manager = lease.LeaseManager(home)
+            self.assertIsNone(unityguard.build_gate(manager, home))
+            self.assertIsNotNone(unityguard.build_gate(manager, home, default_on=True))
+            (home / "host.json").write_text(json.dumps({"unityGuard": {"minFreeMemoryMiB": 6144}}), encoding="utf-8")
+            gate = unityguard.build_gate(manager, home, probe=self.Probe(memory=1000.0))
+            self.assertIn("6144 MiB are needed", gate())
+            (home / "host.json").write_text(json.dumps({"unityGuard": {"orphanEditors": False, "minFreeMemoryMiB": 0}}), encoding="utf-8")
+            self.assertIsNone(unityguard.build_gate(manager, home))
+
+
 class SettingsTests(unittest.TestCase):
     def load(self, document):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as folder:
