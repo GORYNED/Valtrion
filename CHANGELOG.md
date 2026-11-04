@@ -2,6 +2,11 @@
 
 Core (the `valtrion` Python package) and the Unity package `com.goryned.valtrion.unity` are versioned independently. The Unity changelog is in `integrations/unity/com.goryned.valtrion.unity/CHANGELOG.md`; `compat.json` lists compatible pairs.
 
+## 0.12.2
+
+- **`--foreground` together with `--domain user|gui` is refused.** `--foreground` runs the job in the calling process and never starts a launchd job, so `--domain` had no effect with it, and a signing step ended `BLOCKED` ("iOS signing needs the GUI session") although `--domain gui` had been given. `run`, `pipeline`, `build` and `job start` now exit 2 with a usage error that says so; `--domain auto` (the default) with `--foreground` is still allowed for debugging. The check runs before a command is forwarded to an SSH host.
+- **The `BLOCKED` text of the iOS signing precondition names the real context.** The job runner records its launchd domain (`GDV_JOB_LAUNCHD_DOMAIN`, empty for a foreground job). A job with no launchd domain is told it ran in the SSH or terminal context and to start without `--foreground`, with `--domain gui`; a job in the `user` domain is told to use `--domain gui`; a job already in the `gui` domain is pointed at a missing GUI login or a locked login keychain instead of the same advice.
+
 ## 0.12.1
 
 - **The Unity CLI is no longer taken for an Editor on Windows.** The pre-start check counted every `unity.exe` as an Editor, so `unity.exe serve` (Unity Hub) and `unity mcp` (an agent session) made every guarded run wait for an "Editor outside any lease" that never ended. On Windows an Editor is now `...\Editor\Unity.exe`, as on macOS and Linux (`/Editor/Unity`).

@@ -148,6 +148,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         return COMMANDS[arguments_list[0]].handler(argparse.Namespace(arguments=arguments_list[1:]))
     parser = build_parser()
     arguments = parser.parse_args(arguments_list)
+    if getattr(arguments, "foreground", False) and getattr(arguments, "domain", "auto") != "auto":
+        parser.error(f"--foreground runs the job in this process, uses no launchd domain and cannot sign on macOS; "
+                     f"--domain {arguments.domain} has no effect with it. Remove --foreground (to run in the launchd domain) or --domain")
     arguments.raw_argv = arguments_list  # commands that run on another host forward their own command line
     if getattr(arguments, "handler", None) is None:
         parser.print_help(sys.stderr)

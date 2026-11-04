@@ -411,6 +411,34 @@ class IosTests(unittest.TestCase):
         self.assertIn("gui", outcome.reason)
         self.assertEqual([], self.recorder.named("unity"))
 
+    def blocked_reason(self, domain):
+        self.recorder.answers["launchctl"] = result(output="Background\n")
+        environment = {} if domain is None else {core.JOB_DOMAIN_ENV: domain}
+        with mock.patch.dict(os.environ, environment):
+            if domain is None:
+                os.environ.pop(core.JOB_DOMAIN_ENV, None)
+            return self.adapter.build(self.project, "Internal", self.out).reason
+
+    def test_the_gui_session_message_names_a_foreground_job(self):
+        for domain in (None, ""):
+            with self.subTest(domain=domain):
+                reason = self.blocked_reason(domain)
+                self.assertIn("SSH or terminal context", reason)
+                self.assertIn("--foreground", reason)
+                self.assertIn("--domain gui", reason)
+
+    def test_the_gui_session_message_names_the_user_domain(self):
+        reason = self.blocked_reason("user/501")
+        self.assertIn("user/501", reason)
+        self.assertIn("--domain gui", reason)
+        self.assertNotIn("SSH or terminal context", reason)
+
+    def test_a_job_already_in_the_gui_domain_is_pointed_at_the_login_keychain(self):
+        reason = self.blocked_reason("gui/501")
+        self.assertIn("gui/501", reason)
+        self.assertIn("keychain", reason)
+        self.assertNotIn("start it without --foreground", reason)
+
     def test_missing_or_unknown_profile_settings_are_blocked_with_the_file_named(self):
         (self.project / ios.PROFILES_FILE).unlink()
         outcome = self.adapter.build(self.project, "Internal", self.out)

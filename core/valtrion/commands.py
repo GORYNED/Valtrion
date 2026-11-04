@@ -508,7 +508,7 @@ def _configure_job(parser: argparse.ArgumentParser) -> None:
     start.add_argument("--cwd")
     start.add_argument("--domain", choices=("auto", "user", "gui"), default="auto",
                        help="macOS launchd domain: auto tries user, then gui; gui is required for signing steps")
-    start.add_argument("--foreground", action="store_true", help="run in this process (debugging)")
+    start.add_argument("--foreground", action="store_true", help="run in this process, not in a launchd domain (debugging only; cannot sign on macOS; cannot be combined with --domain user|gui)")
     start.add_argument("--local", action="store_true", help=argparse.SUPPRESS)
     start.add_argument("--selected-by", default=SELECTED_LOCAL, help=argparse.SUPPRESS)
     start.add_argument("--transport", default="local", help=argparse.SUPPRESS)
@@ -858,7 +858,8 @@ def _common_run_options(parser: argparse.ArgumentParser) -> None:
                         help="seconds a build waits for free disk space (host.json disk.minFreeGiB) before it is BLOCKED; default: disk.waitSec of host.json, 0")
     parser.add_argument("--protect", action="append", default=[], help="path cleanup must never remove (repeatable)")
     parser.add_argument("--domain", choices=("auto", "user", "gui"), default="auto", help="macOS launchd domain (see `job start`)")
-    parser.add_argument("--foreground", action="store_true")
+    parser.add_argument("--foreground", action="store_true",
+                        help="run in this process, not in a launchd domain (debugging only; cannot sign on macOS; cannot be combined with --domain user|gui)")
     parser.add_argument("--watch", action="store_true", help="follow the job to its end")
     parser.add_argument("--host", help="pin the host instead of choosing by capability")
     parser.add_argument("--remote-project")
