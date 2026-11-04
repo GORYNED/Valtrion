@@ -80,11 +80,9 @@ BUILD_TARGET_SWITCH = "-buildTarget"
 IOS_BUILD_TARGETS = frozenset({"ios", "iphone"})
 #: Result detail: what the Editor log said about the active build target (`iOS` confirmed, `unverified` no recognizable line).
 BUILD_TARGET_DETAIL = "unity.buildTarget"
-#: Lines in which the Editor names the platform it switched the project to. Only a line of this shape is evidence; a build target is
+#: The line in which the Editor names the platform it targets (`Targeting platform: iOS`, wording taken from Unity 6000.6.8f1 logs on Windows and macOS). Only a line of this shape is evidence; a build target is
 #: never guessed from other text. Absence of such a line is not a failure (a project already on iOS does not switch).
-_TARGET_SWITCH_LINE = re.compile(
-    r"^[ \t]*(?:Successfully changed project target to\s+(?P<a>[A-Za-z][A-Za-z0-9]*)|Switching to\s+(?P<b>[A-Za-z][A-Za-z0-9]*)\s+platform)",
-    re.IGNORECASE | re.MULTILINE)
+_TARGET_SWITCH_LINE = re.compile(r"^Targeting platform:[ 	]*(?P<a>[^\s]+)", re.MULTILINE)
 
 #: Product types the owner's classes are named after; anything else gets a class derived from its product type.
 _CLASS_BY_PRODUCT = {"iPad13,18": "ipad-a14", "iPad13,19": "ipad-a14"}
@@ -166,7 +164,7 @@ def build_target_args(unity_args: Sequence[str]) -> tuple[list[str], str | None]
 
 def active_build_target(log_text: str) -> str | None:
     """The platform the Editor log names as the one it switched the project to (the last such line), or None when it names none."""
-    found = [m.group("a") or m.group("b") for m in _TARGET_SWITCH_LINE.finditer(log_text)]
+    found = [m.group("a") for m in _TARGET_SWITCH_LINE.finditer(log_text)]
     return found[-1] if found else None
 
 

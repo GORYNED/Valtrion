@@ -231,7 +231,7 @@ class IosTests(unittest.TestCase):
         return run
 
     def test_the_unity_export_passes_build_target_ios_by_default_and_once(self):
-        self.recorder.answers["unity"] = self.export_with_log("Successfully changed project target to iOS.")
+        self.recorder.answers["unity"] = self.export_with_log("Targeting platform: iOS")
         self.recorder.answers["xcodebuild"] = self.make_app
         outcome = self.adapter.build(self.project, "Internal", self.out)
         self.assertEqual(constants.PASS, outcome.status, outcome.reason)
@@ -261,7 +261,7 @@ class IosTests(unittest.TestCase):
                 self.assertEqual([], self.recorder.named("unity"))
 
     def test_an_editor_log_that_names_another_active_build_target_fails_the_export(self):
-        self.recorder.answers["unity"] = self.export_with_log("Successfully changed project target to Android")
+        self.recorder.answers["unity"] = self.export_with_log("Targeting platform: Android")
         outcome = self.adapter.build(self.project, "Internal", self.out)
         self.assertEqual(constants.FAIL, outcome.status)
         self.assertIn("active build target was Android, not iOS", outcome.reason)
@@ -270,7 +270,7 @@ class IosTests(unittest.TestCase):
         self.assertEqual([], self.recorder.named("xcodebuild"), "no xcodebuild on an export that cannot be trusted")
 
     def test_a_wrong_target_in_an_incremental_build_discards_the_persistent_export(self):
-        self.recorder.answers["unity"] = self.export_with_log("Successfully changed project target to Android")
+        self.recorder.answers["unity"] = self.export_with_log("Targeting platform: Android")
         plan = self.incremental_plan()
         outcome = self.incremental_build(plan)
         self.assertEqual(constants.FAIL, outcome.status)
@@ -286,8 +286,8 @@ class IosTests(unittest.TestCase):
         self.assertEqual(constants.BLOCKED, self.adapter.build(self.project, "Internal", self.out).status)
 
     def test_the_last_target_line_of_the_log_counts_and_only_at_the_start_of_a_line(self):
-        self.assertEqual("iOS", ios.active_build_target("Switching to Android platform\n  Successfully changed project target to iOS.\n"))
-        self.assertIsNone(ios.active_build_target("my script: Switching to Android platform\n"))
+        self.assertEqual("iOS", ios.active_build_target("Targeting platform: Android\nTargeting platform: iOS\n"))
+        self.assertIsNone(ios.active_build_target("  Targeting platform: Android\nmy script: Targeting platform: Android\n"))
         self.assertEqual("unverified", ios.verify_build_target(self.out / "missing.log")[0])
 
     def test_an_editor_log_without_a_target_line_is_reported_unverified_not_failed(self):
@@ -298,9 +298,9 @@ class IosTests(unittest.TestCase):
         self.assertEqual("unverified", dict(outcome.details)[ios.BUILD_TARGET_DETAIL])
 
     def test_build_target_log_parsing(self):
-        self.assertEqual("iOS", ios.active_build_target("Switching to iOS platform\n"))
-        self.assertEqual("Android", ios.active_build_target("Switching to iOS platform\nSuccessfully changed project target to Android\n"))
-        self.assertIsNone(ios.active_build_target("Switching to scene Main\n"))
+        self.assertEqual("iOS", ios.active_build_target("Targeting platform: iOS\n"))
+        self.assertEqual("Android", ios.active_build_target("Targeting platform: iOS\nTargeting platform: Android\n"))
+        self.assertIsNone(ios.active_build_target("Switching to scene Main\nTargeting platform:\n"))
 
     def test_the_unity_export_uses_the_configured_accelerator(self):
         self.home.mkdir(parents=True, exist_ok=True)
