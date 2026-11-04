@@ -32,6 +32,8 @@ from .schema import Validator, validate_document
 DEVICE_OUT = "gdv/out"
 DEVICE_INBOX = "gdv/inbox/plan.json"
 DEFAULT_DEVICE_POLL_SEC = 3.0
+#: Added to the launch wait for the adb calls around it (readiness, logcat, `am start`, the last evidence poll).
+LAUNCH_CALL_ALLOWANCE_SEC = 240.0
 #: A build stage without its own timeout: a Unity export plus a native build is long, and an adapter ends its own build inside it.
 BUILD_STAGE_DEFAULT_SEC = 14400.0
 #: Stages that take the device lease, and the stages the device lease spans (up to the last of them it is held, then released).
@@ -76,6 +78,7 @@ class GuardedAdapter:
     def __init__(self, adapter: PlatformAdapter, op_timeout: float = 300.0) -> None:
         self._adapter = adapter
         self._timeout = op_timeout
+        self._launch_timeout = 0.0
         self.platform = adapter.platform
 
     def bind_application(self, app: str) -> None:
@@ -90,22 +93,31 @@ class GuardedAdapter:
     def bind_build_budget(self, seconds: float) -> None:
         self._adapter.bind_build_budget(seconds)
 
-    def _call(self, name: str, *args: Any) -> tuple[bool, Any, str | None, str]:
+    def bind_launch_timeout(self, seconds: float) -> None:
+        self._launch_timeout = seconds
+        self._adapter.bind_launch_timeout(seconds)
+
+    def _call(self, name: str, *args: Any, timeout: float | None = None) -> tuple[bool, Any, str | None, str]:
+        limit = self._timeout if timeout is None else timeout
         try:
-            finished, value = supervise.call_bounded(lambda: getattr(self._adapter, name)(*args), self._timeout)
+            finished, value = supervise.call_bounded(lambda: getattr(self._adapter, name)(*args), limit)
         except Exception as error:  # noqa: BLE001 - adapter code; surfaced as a failure with its type
             return False, None, f"{name} raised {type(error).__name__}: {error}", constants.FAIL
         if not finished:
-            return False, None, f"{name} did not return within {self._timeout:g} s", constants.TIMEOUT
+            return False, None, f"{name} did not return within {limit:g} s", constants.TIMEOUT
         return True, value, None, constants.PASS
 
-    def _outcome(self, name: str, *args: Any) -> StepOutcome:
-        ok, value, reason, status = self._call(name, *args)
+    def _outcome(self, name: str, *args: Any, timeout: float | None = None) -> StepOutcome:
+        ok, value, reason, status = self._call(name, *args, timeout=timeout)
         return value if ok else StepOutcome(status, reason or name)
 
     @property
     def build_uses_editor(self) -> bool:
         return bool(getattr(self._adapter, "build_uses_editor", True))
+
+    @property
+    def supports_launch_wait(self) -> bool:
+        return bool(getattr(self._adapter, "supports_launch_wait", False))
 
     @property
     def startup_allowance_sec(self) -> float:
@@ -147,7 +159,8 @@ class GuardedAdapter:
         return self._outcome("pull", *args)
 
     def launch(self, *args: Any) -> StepOutcome:
-        return self._outcome("launch", *args)
+        # A launch may wait up to its own limit for a slow start (and a few adb calls around it): the generic bound must not cut it.
+        return self._outcome("launch", *args, timeout=max(self._timeout, self._launch_timeout + LAUNCH_CALL_ALLOWANCE_SEC))
 
     def terminate(self, *args: Any) -> StepOutcome:
         return self._outcome("terminate", *args)
@@ -378,6 +391,15 @@ def push_prelaunch_files(
     return None
 
 
+def launch_timeout_for(args: Mapping[str, Any]) -> float:
+    """The launch wait of a run: the stage's `args.launchTimeoutSec`, else `launchTimeoutSec` of host.json, else the default (60 s).
+    A value above `constants.LAUNCH_TIMEOUT_MAX_SEC` or not a number is refused (`ConfigError`), never clamped."""
+    if "launchTimeoutSec" in args:
+        return config.check_launch_timeout(args["launchTimeoutSec"], "run stage args")
+    configured = config.default_launch_timeout()
+    return float(constants.LAUNCH_TIMEOUT_DEFAULT_SEC) if configured is None else configured
+
+
 def run_on_device(
         adapter: PlatformAdapter, device: DeviceInfo, plan_path: Path, plan: Mapping[str, Any], stage: Mapping[str, Any],
         directory: Path, options: PipelineOptions, cancelled: Callable[[], bool], cancel_file: Path | None = None) -> DeviceRun:
@@ -411,6 +433,13 @@ def run_on_device(
         unverified.append("thermal state not reported by the platform")
     if health.locked is None:
         unverified.append("lock state not reported by the platform")
+    waits = bool(getattr(adapter, "supports_launch_wait", False))  # only a platform that can wait for a slow start (Android)
+    launch_wait = 0.0
+    if waits:
+        try:
+            launch_wait = launch_timeout_for(args)
+        except config.ConfigError as error:
+            return stop(constants.BLOCKED, str(error))
     prepared = adapter.prepare(device, app, plan.get("dataPolicy"))
     if not prepared.ok:
         return stop(prepared.status, f"preparing the application failed: {prepared.reason}")
@@ -429,20 +458,26 @@ def run_on_device(
     elif not listing.ok:
         # No output folder yet is normal on a first run, but a failed listing could hide an earlier result: say so.
         unverified.append(f"the device output could not be listed before the launch ({listing.reason}); an earlier run's result is not excluded")
+    # The plan's budget is the time the plan itself needs; a platform that must start an Editor first adds its startup allowance.
+    # On a platform that waits for a slow start the budget counts from the start of the launch, so the wait is paid out of it and
+    # never outlives it; elsewhere it counts from the end of the launch, as before.
+    budget = float(stage.get("timeoutSec") or plan["budgetSeconds"] + float(getattr(adapter, "startup_allowance_sec", 0.0)))
+    began = options.monotonic()
+    if waits:
+        adapter.bind_launch_timeout(max(1.0, min(launch_wait, budget)))
     launched = adapter.launch(device, app, [str(a) for a in args.get("launchArgs", [])], console)
     layers["launch"] = launched.status
     if not launched.ok:
         adapter.terminate(device, app)  # best effort: a launch that failed late may have left the application or a capture running
         return stop(launched.status, f"launch failed: {launched.reason}")
 
-    # The plan's budget is the time the plan itself needs; a platform that must start an Editor first adds its startup allowance.
-    budget = float(stage.get("timeoutSec") or plan["budgetSeconds"] + float(getattr(adapter, "startup_allowance_sec", 0.0)))
+    if not waits:
+        began = options.monotonic()
     stall = float(args.get("stallSec") or supervise.DEFAULT_STALL_SEC)
     polled = directory / "device-poll"
     watchdog = supervise.Watchdog(budget, stall, heartbeat=None, log_counts=False)
-    began = options.monotonic()
     last_seq: int | None = None
-    last_progress = began
+    last_progress = options.monotonic()  # the stall window starts when the application is up, not while it was starting
     status: str | None = None
     reason: str | None = None
     device_result: dict | None = None
