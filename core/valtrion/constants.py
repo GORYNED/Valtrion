@@ -77,3 +77,8 @@ def exit_code_for_verdict(verdict: str) -> int:
         return _EXIT_CODE_BY_VERDICT[verdict]
     except KeyError:
         raise ValueError(f"unknown verdict: {verdict!r}") from None
+
+#: How long an Android launch may wait for a slow cold start (`am start -W` gives up by itself after about 15 s): the default and the
+#: hard upper limit of `launchTimeoutSec` (run stage `args`, `valtrion run --launch-timeout`, `host.json`).
+LAUNCH_TIMEOUT_DEFAULT_SEC = 60
+LAUNCH_TIMEOUT_MAX_SEC = 300

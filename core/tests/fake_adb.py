@@ -121,6 +121,19 @@ def main(argv):
     if command == "logcat":
         if "-c" in rest:
             say("")
+        if "-d" in rest:  # a dump of the log so far; each dump is the first call of one look of a slow-start wait (see `cold_start`)
+            cold = state.get("cold_start")
+            if cold is None:
+                say("")
+            cold["polls"] = cold.get("polls", 0) + 1
+            save(state)
+            if cold.get("crash_after") is not None and cold["polls"] >= cold["crash_after"]:
+                say("10-29 12:00:05.000  9  9 E AndroidRuntime: FATAL EXCEPTION: main\n"
+                    f"10-29 12:00:05.000  9  9 E AndroidRuntime: Process: {state.get('crash_package', state['package'])}, PID: 4242\n"
+                    "10-29 12:00:05.000  9  9 E AndroidRuntime: java.lang.IllegalStateException: boom")
+            if cold.get("anr_after") is not None and cold["polls"] >= cold["anr_after"]:
+                say(f"10-29 12:00:05.000  9  9 E ActivityManager: ANR in {state['package']} (Input dispatching timed out)")
+            say("")
         if state.get("no_logcat"):
             say("", 0)
         lines = state.get("logcat", [])
@@ -165,6 +178,17 @@ def shell(state, device, script):
         say("Success")
     if script.startswith("cmd package resolve-activity"):
         say(f"priority=0 preferredOrder=0\n{package}/com.unity3d.player.UnityPlayerGameActivity")
+    cold = state.get("cold_start")
+    if cold is not None and script.startswith("pidof"):  # the looks of `cold_start` are counted by `logcat -d`
+        polls = cold.get("polls", 0)
+        alive = cold.get("alive_after") is not None and polls >= cold["alive_after"] and \
+            not (cold.get("die_after") is not None and polls >= cold["die_after"])
+        say("4242" if alive else "", 0 if alive else 1)
+    if cold is not None and script.startswith("dumpsys activity activities"):
+        shown = cold.get("resumed_after") is not None and cold.get("polls", 0) >= cold["resumed_after"]
+        top = f"{state['package']}/com.unity3d.player.UnityPlayerGameActivity" if shown else "com.android.launcher3/.Launcher"
+        say("ACTIVITY MANAGER ACTIVITIES (dumpsys activity activities)\n  mFocusedApp=null\n"
+            f"  ResumedActivity: ActivityRecord{{1a2b u0 {top} t12}}\n")
     if script.startswith("pidof"):
         say("4242" if package in running else "", 0 if package in running else 1)
     if script.startswith("dumpsys meminfo") or script.startswith("dumpsys gfxinfo"):
@@ -184,6 +208,8 @@ def shell(state, device, script):
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(json.dumps(content), encoding="utf-8")
         save(state)
+        if state.get("am_timeout"):  # `am start -W` gave up after about 15 s; the application may still be starting
+            say("Stopping: " + package + "\nStarting: Intent\nStatus: timeout\nLaunchState: UNKNOWN (-1)\nWaitTime: 15447")
         say("Stopping: " + package + "\nStarting: Intent\nStatus: ok\nLaunchState: COLD")
     if script.startswith("screencap"):
         target = local(script.split()[-1])

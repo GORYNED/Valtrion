@@ -15,7 +15,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Sequence
 
-from . import buildcache, core, workroot
+from . import buildcache, constants, core, workroot
 from .adapter import DeviceInfo
 from .resolver import HostInfo
 from .schema import Validator, validate_document
@@ -267,6 +267,29 @@ def default_lease_wait(home: Path | None = None) -> float | None:
     if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value < 0:
         raise ConfigError("host.json: leaseWaitSec must be a non-negative number")
     return float(value)
+
+
+def check_launch_timeout(value: Any, where: str) -> float:
+    """A `launchTimeoutSec` value: a finite number from 1 to `constants.LAUNCH_TIMEOUT_MAX_SEC`. Larger values are refused, never clamped:
+    a launch wait has a hard upper limit, and a typo must not turn into a silent shorter or longer wait."""
+    maximum = constants.LAUNCH_TIMEOUT_MAX_SEC
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value < 1 or value > maximum:
+        raise ConfigError(f"{where}: launchTimeoutSec must be a number from 1 to {maximum} seconds (got {value!r})")
+    return float(value)
+
+
+def default_launch_timeout(home: Path | None = None) -> float | None:
+    """`launchTimeoutSec` of host.json: the launch wait of a run whose stage and command line name none. None when host.json does
+    not set it (the default is `constants.LAUNCH_TIMEOUT_DEFAULT_SEC`)."""
+    base = home or core.valtrion_home()
+    try:
+        document = core.read_json(host_json_path(base))
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError) as error:
+        raise ConfigError(f"cannot read {host_json_path(base)}: {error}") from error
+    value = document.get("launchTimeoutSec") if isinstance(document, dict) else None
+    return None if value is None else check_launch_timeout(value, "host.json")
 
 
 def default_checkout_path(home: Path, project: str, checkout_id: str) -> Path:

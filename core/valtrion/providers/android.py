@@ -43,6 +43,7 @@ PLATFORM = "android"
 DEVICE_ID_PREFIX = "android:"
 DATA_ROOT = "/sdcard/Android/data"
 REMOTE_SCRATCH = "/data/local/tmp"
+LAUNCH_NOTES = "launch.log"  # inside the diagnostics folder: what a slow start saw, poll by poll
 DIAGNOSTICS = "android"  # folder inside a run folder: logcat, dumpsys snapshots, health records
 CALL_TIMEOUT_SEC = 60.0
 INSTALL_TIMEOUT_SEC = 900.0
@@ -60,6 +61,8 @@ _PACKAGE = re.compile(r"^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z][A-Za-z0-9_]*)+$")
 _ACTIVITY = re.compile(r"^[A-Za-z0-9_.$]+$")
 _REMOTE_PATH = re.compile(r"^/?[A-Za-z0-9._=+@-]+(/[A-Za-z0-9._=+@-]+)*/?$")
 _KNOWN_STATES = ("device", "offline", "unauthorized", "authorizing", "recovery", "sideload", "bootloader", "host", "rescue")
+LAUNCH_POLL_SEC = 2.0  # between two looks at a slow start (process, resumed activity, logcat)
+LAUNCH_POLL_CALL_SEC = 20.0  # bound of each adb call of such a look, so a hung adb overshoots the launch wait by seconds, not minutes
 STATE_SETTLE_SEC = 10.0  # a device is `offline` or `authorizing` for a few seconds after the shared server restarts
 
 
@@ -140,19 +143,23 @@ class _LogSession:
 
 class AndroidAdapter(PlatformAdapter):
     platform = PLATFORM
+    supports_launch_wait = True
 
     def __init__(self, adb: Sequence[str] | None = None, unity_editors: Callable[[], Sequence[dict]] | None = None,
-                 sleep: Callable[[float], None] = time.sleep,
+                 sleep: Callable[[float], None] = time.sleep, monotonic: Callable[[], float] = time.monotonic,
                  unity_command: Callable[[dict], list[str]] = lambda editor: [editor["path"]]) -> None:
         self._adb_command = list(adb) if adb is not None else None
         self._unity_editors = unity_editors or (lambda: doctor.find_editors(core.local_os()))
         self._unity_command = unity_command
         self._sleep = sleep
+        self._monotonic = monotonic
+        self._launch_timeout: float = float(constants.LAUNCH_TIMEOUT_DEFAULT_SEC)
         self._app: tuple[str, str | None] | None = None
         self._sessions: dict[str, _LogSession] = {}
         self._diagnostics: dict[str, Path] = {}
         self._lock = threading.Lock()
         self._server_started = False
+        self._launches: dict[str, int] = {}  # serial -> token of the newest launch; an abandoned older launch must not stop its logcat
         self._closed: set[str] = set()  # serials terminated; an abandoned launch must not start a capture for them
 
     # -- adb ------------------------------------------------------------------------------------------------------------
@@ -556,7 +563,16 @@ class AndroidAdapter(PlatformAdapter):
             return None, f"the launcher activity the device reported ('{component[:80]}') is not a class name"
         return (package + component if component.startswith(".") else component), None
 
+    def bind_launch_timeout(self, seconds: float) -> None:
+        self._launch_timeout = seconds
+
     def launch(self, device: DeviceInfo, app: str, args: Sequence[str], log: Path) -> StepOutcome:
+        """Start the application. `am start -W` stops waiting by itself after about 15 s and prints `Status: timeout`; on a slow
+        target that is a start still in progress, not a failure. Then the launch keeps waiting, up to `launchTimeoutSec` counted from
+        the start of `am start` (60 s by default, at most 300 s), and decides by evidence: the process is alive, the launched activity
+        is resumed and logcat has no crash or ANR of the package. A start error in the `am start` output, a crash or ANR, and a process
+        that was running and is gone fail at once with their own reason; a start still not up at the limit fails with a reason of its
+        own that says whether the process is alive. The wait is never unbounded."""
         package, activity = split_app(app)
         if not _PACKAGE.fullmatch(package) or (activity is not None and not _ACTIVITY.fullmatch(activity)):
             return StepOutcome(constants.BLOCKED, f"'{app}' is not a package or package/activity")
@@ -564,7 +580,11 @@ class AndroidAdapter(PlatformAdapter):
         serial = self._serial(device)
         with self._lock:
             self._closed.discard(serial)
+            token = self._launches[serial] = self._launches.get(serial, 0) + 1
         self._diagnostics.pop(serial, None)  # a failure before the folder below is set must not write into an earlier attempt's
+        limit = self._launch_timeout
+        if isinstance(limit, bool) or not isinstance(limit, (int, float)) or not 1 <= limit <= constants.LAUNCH_TIMEOUT_MAX_SEC:
+            return StepOutcome(constants.BLOCKED, f"the launch wait must be 1 to {constants.LAUNCH_TIMEOUT_MAX_SEC} s, not {limit!r}")
         ready = self._ready(device, "launch")
         if not ready.ok:
             return ready
@@ -582,16 +602,138 @@ class AndroidAdapter(PlatformAdapter):
             return started
         self._adb(serial, "shell", "input keyevent KEYCODE_WAKEUP", timeout=CALL_TIMEOUT_SEC)
         plan = f"{DATA_ROOT}/{package}/files/gdv/inbox/plan.json"
+        began = self._monotonic()
         words = ["am", "start", "-S", "-W", "-n", f"{package}/{component}", "--es", "gdv-plan", plan, *[str(a) for a in args]]
         reply = self._shell(serial, " ".join(quote(word) for word in words), timeout=CALL_TIMEOUT_SEC * 2)
         outcome = self.classify(reply, serial, "am start")
         if not outcome.ok:
-            self._stop_logcat(serial)
+            self._stop_own_logcat(serial, token)
             return outcome
-        if re.search(r"^(Error|Exception)\b", reply.output, re.MULTILINE) or "Status: ok" not in reply.output:
-            self._stop_logcat(serial)
+        details = {"component": f"{package}/{component}"}
+        if re.search(r"^(Error|Exception)\b", reply.output, re.MULTILINE):
+            self._stop_own_logcat(serial, token)
             return StepOutcome(constants.FAIL, f"am start did not launch {package}/{component}: {reply.output.strip()[-300:]}")
-        return StepOutcome(constants.PASS, details={"component": f"{package}/{component}"})
+        if re.search(r"^Status:\s*ok\b", reply.output, re.MULTILINE):
+            return StepOutcome(constants.PASS, details=details)
+        if not re.search(r"^Status:\s*timeout\b", reply.output, re.MULTILINE):
+            self._stop_own_logcat(serial, token)
+            return StepOutcome(constants.FAIL, f"am start did not launch {package}/{component}: {reply.output.strip()[-300:]}")
+        waited = self._await_start(serial, package, component, reply.output, diagnostics / LAUNCH_NOTES, began, float(limit))
+        if not waited.ok:
+            self._stop_own_logcat(serial, token)
+            return waited
+        return StepOutcome(constants.PASS, details={**details, **waited.details})
+
+    def _stop_own_logcat(self, serial: str, token: int) -> None:
+        """Stop the capture of a failed launch, unless a newer launch on `serial` has begun: this one may be an abandoned call
+        (the pipeline gave up on it) and the capture is by then the newer launch's."""
+        with self._lock:
+            if self._launches.get(serial) != token:
+                return
+        self._stop_logcat(serial)
+
+    # -- a slow start ---------------------------------------------------------------------------------------------------------
+
+    def _note(self, path: Path, text: str) -> None:
+        try:
+            with open(path, "a", encoding="utf-8") as handle:
+                handle.write(f"{core.utc_now()} {text}\n")
+        except OSError:
+            pass  # the notes are evidence for the owner; losing a line must not fail the launch
+
+    def _poll_shell(self, serial: str, script: str) -> supervise.BoundedResult:
+        return self._adb(serial, "shell", script, timeout=LAUNCH_POLL_CALL_SEC)
+
+    def _crash_evidence(self, serial: str, package: str) -> tuple[str | None, StepOutcome | None]:
+        """A crash or ANR of `package` in the log of this launch (the log was cleared before it), as `(description, problem)`."""
+        dump = self._adb(serial, "logcat", "-d", "-v", "threadtime", "AndroidRuntime:E", "ActivityManager:E", "DEBUG:I", "libc:F", "*:S",
+                         timeout=LAUNCH_POLL_CALL_SEC)
+        if dump.returncode != 0:
+            failed = self.classify(dump, serial, "logcat -d")
+            return None, (failed if not failed.ok else StepOutcome(constants.FAIL, "logcat -d failed"))
+        name = re.escape(package) + r"(?![\w.])"  # not a longer package that starts with this one
+        if re.search(rf"FATAL EXCEPTION[^\n]*\n[^\n]*Process: {name}", dump.output):
+            return f"FATAL EXCEPTION in {package}", None
+        anr = re.search(rf"ANR in {name}[^\n]*", dump.output)
+        if anr:
+            return anr.group(0).strip()[:160], None
+        native = re.search(rf"Fatal signal \d+ [^\n]*\({name}\)|>>> {name} <<<", dump.output)
+        if native:
+            return f"native crash of {package}: {native.group(0)[:120]}", None
+        return None, None
+
+    def _alive(self, serial: str, package: str) -> tuple[bool, StepOutcome | None]:
+        reply = self._poll_shell(serial, f"pidof {package}")
+        if reply.returncode == 0 and reply.output.strip():
+            return True, None
+        if reply.returncode in (0, 1) and not reply.output.strip():
+            return False, None  # pidof: no such process (an old adb may not carry the exit code, so 0 with no pid is the same)
+        failed = self.classify(reply, serial, "pidof")
+        return False, (failed if not failed.ok else StepOutcome(constants.FAIL, f"pidof {package} gave an unexpected answer: {reply.output.strip()[:120]}"))
+
+    def _resumed(self, serial: str, package: str, component: str) -> tuple[bool, StepOutcome | None]:
+        reply = self._poll_shell(serial, "dumpsys activity activities")
+        if reply.returncode != 0:
+            failed = self.classify(reply, serial, "dumpsys activity activities")
+            return False, (failed if not failed.ok else StepOutcome(constants.FAIL, "dumpsys activity activities failed"))
+        names = {component}
+        if component.startswith(package + "."):
+            names.add(component[len(package):])  # the dump prints a class under the package as `.Name`
+        alternatives = "|".join(re.escape(n) for n in sorted(names))
+        pattern = rf"[Rr]esumed[A-Za-z]*[:=][^\n]*\b{re.escape(package)}/(?:{alternatives})\b"
+        return re.search(pattern, reply.output) is not None, None
+
+    def _look(self, serial: str, package: str, component: str) -> tuple[str | None, bool, bool, StepOutcome | None]:
+        """One look at a slow start: `(crash, alive, resumed, problem)`. `problem` is the first adb call that failed (not a crash)."""
+        crash, problem = self._crash_evidence(serial, package)
+        if problem is not None or crash:
+            return crash, False, False, problem
+        alive, problem = self._alive(serial, package)
+        if problem is not None or not alive:
+            return None, alive, False, problem
+        resumed, problem = self._resumed(serial, package, component)
+        return None, alive, resumed, problem
+
+    def _await_start(self, serial: str, package: str, component: str, first: str, notes: Path, began: float,
+                     limit: float) -> StepOutcome:
+        """`am start -W` printed `Status: timeout`: wait for the start up to `limit` seconds from `began`, deciding by evidence."""
+        wait_time = re.search(r"^WaitTime:\s*(\d+)", first, re.MULTILINE)
+        wait_ms = wait_time.group(1) if wait_time else "unknown"
+        self._note(notes, f"am start: Status: timeout, WaitTime {wait_ms} ms; waiting up to {limit:g} s for {package}/{component}")
+        seen_alive = False
+        alive = False
+        retried = False
+        while True:
+            crash, alive_now, resumed, problem = self._look(serial, package, component)
+            elapsed = self._monotonic() - began  # after the look: the look took time
+            if problem is not None:
+                left = limit - elapsed
+                if retried or left <= 0:
+                    self._note(notes, f"after {elapsed:.0f} s: {problem.reason}")
+                    return problem
+                retried = True  # one transient adb failure (a hung or timed-out call) is not the end of the wait
+                self._note(notes, f"after {elapsed:.0f} s: a look failed ({problem.reason}); trying once more")
+                self._sleep(min(LAUNCH_POLL_SEC, left))
+                continue
+            retried = False
+            if crash:
+                self._note(notes, f"after {elapsed:.0f} s: {crash}")
+                return StepOutcome(constants.FAIL, f"{package} crashed while starting (am start had reported a timeout, WaitTime {wait_ms} ms): {crash}")
+            alive = alive_now
+            if alive:
+                seen_alive = True
+            elif seen_alive:
+                self._note(notes, f"after {elapsed:.0f} s: process of {package} is gone")
+                return StepOutcome(constants.FAIL, f"the process of {package} is gone while it was starting (am start had reported a timeout, WaitTime {wait_ms} ms)")
+            self._note(notes, f"after {elapsed:.0f} s: process {'alive' if alive else 'not alive'}, activity {'resumed' if resumed else 'not resumed'}, no crash or ANR")
+            if resumed:
+                return StepOutcome(constants.PASS, details={"launchWaitSec": f"{elapsed:.0f}", "amStartStatus": "timeout", "amStartWaitTimeMs": wait_ms})
+            left = limit - elapsed
+            if left <= 0:
+                break
+            self._sleep(min(LAUNCH_POLL_SEC, left))
+        return StepOutcome(constants.FAIL, f"launch timed out after {limit:g} s, process {'alive' if alive else 'not alive'} "
+                           f"(the activity {package}/{component} was not resumed; am start WaitTime {wait_ms} ms)")
 
     def _start_logcat(self, serial: str, console: Path, full: Path) -> StepOutcome:
         command = self.adb_command()

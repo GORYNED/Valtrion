@@ -1002,6 +1002,9 @@ def _configure_run(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--artifact-key", help="install the published build with this key (see `valtrion builds list`) before the run")
     parser.add_argument("--build", action="store_true", help="build the project first")
     parser.add_argument("--launch-arg", action="append", default=[])
+    parser.add_argument("--launch-timeout", type=float, default=None, metavar="SEC",
+                        help="how long the launch may wait for a slow start of the application (Android: after `am start` reports a "
+                             "timeout), 1 to 300; default: launchTimeoutSec of host.json, 60")
     parser.add_argument("--prelaunch-file", action="append", default=[], metavar="LOCAL=REMOTE",
                         help="push LOCAL (relative to the plan file) to REMOTE (relative to the application's data root) before "
                              "the application starts; repeatable")
@@ -1026,6 +1029,11 @@ def _run(arguments: argparse.Namespace) -> int:
             {"artifactKey": arguments.artifact_key} if arguments.artifact_key else {}
         stages.append({"stage": "install", **({"args": install_args} if install_args else {})})
     run_stage: dict = {"stage": "run", "plan": str(plan_path), "args": {"app": arguments.app, "launchArgs": arguments.launch_arg}}
+    if arguments.launch_timeout is not None:
+        try:
+            run_stage["args"]["launchTimeoutSec"] = config.check_launch_timeout(arguments.launch_timeout, "--launch-timeout")
+        except config.ConfigError as error:
+            return _blocked("run", str(error))
     if arguments.prelaunch_file:
         pairs = [item.partition("=") for item in arguments.prelaunch_file]
         if any(not local or sep != "=" or not remote for local, sep, remote in pairs):

@@ -43,6 +43,21 @@ if mode == 'ok':
 """
 
 
+class FakeClock:
+    """The time a wait sees: it moves only when the adapter sleeps, so a 60 s wait costs no real time."""
+
+    def __init__(self):
+        self.now = 1000.0
+        self.slept = []
+
+    def monotonic(self):
+        return self.now
+
+    def sleep(self, seconds):
+        self.slept.append(seconds)
+        self.now += seconds
+
+
 class AndroidTestCase(unittest.TestCase):
     def setUp(self):
         self._folder = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
@@ -54,7 +69,9 @@ class AndroidTestCase(unittest.TestCase):
         patcher.start()
         self.addCleanup(patcher.stop)
         self.set_state(devices=[{"serial": "ZY22", "state": "device", "model": "moto_g_power_5G___2024", "props": PHONE_PROPS}])
-        self.adapter = AndroidAdapter([sys.executable, str(FAKE_ADB)], sleep=lambda _: None, unity_editors=lambda: [])
+        self.clock = FakeClock()
+        self.adapter = AndroidAdapter([sys.executable, str(FAKE_ADB)], sleep=self.clock.sleep, monotonic=self.clock.monotonic,
+                                      unity_editors=lambda: [])
         self.addCleanup(self.adapter._stop_logcat, "ZY22")  # noqa: SLF001 - never leave a fake logcat behind
 
     def set_state(self, **values):
@@ -445,6 +462,293 @@ class DeviceOperationTests(AndroidTestCase):
         raise AssertionError("condition not met in time")
 
 
+class SlowStartTests(AndroidTestCase):
+    """`am start -W` gives up after about 15 s with `Status: timeout`; the launch then waits, bounded, and decides by evidence."""
+
+    ACTIVITY = f"{PACKAGE}/com.unity3d.player.UnityPlayerGameActivity"
+
+    def setUp(self):
+        super().setUp()
+        self.console = self.base / "run" / "console.log"
+
+    def slow(self, limit, **cold):
+        """A device whose `am start` times out and whose application follows `cold` (look numbers at which things happen)."""
+        self.set_state(installed=[PACKAGE], am_timeout=True, cold_start=cold)
+        self.adapter.bind_launch_timeout(limit)
+        self.adapter.prepare(self.device(), PACKAGE, None)
+
+    def looks(self):
+        return sum(1 for c in self.calls() if " logcat -d " in f" {c} ")
+
+    def notes(self):
+        return (self.console.parent / "android" / "launch.log").read_text(encoding="utf-8")
+
+    def test_a_timeout_then_a_resumed_activity_is_a_pass_decided_by_evidence(self):
+        self.slow(60, alive_after=2, resumed_after=4)
+        outcome = self.adapter.launch(self.device(), PACKAGE, [], self.console)
+        self.assertTrue(outcome.ok, outcome.reason)
+        self.assertEqual(4, self.looks(), "it looked once per poll until the activity was resumed")
+        self.assertEqual([2.0, 2.0, 2.0], self.clock.slept)
+        self.assertEqual("timeout", outcome.details["amStartStatus"])
+        self.assertEqual("15447", outcome.details["amStartWaitTimeMs"])
+        self.assertEqual(self.ACTIVITY, outcome.details["component"])
+        notes = self.notes()
+        self.assertIn("Status: timeout, WaitTime 15447 ms", notes)
+        self.assertIn("process not alive, activity not resumed", notes)
+        self.assertIn("process alive, activity resumed", notes)
+        self.assertTrue(self.adapter.terminate(self.device(), PACKAGE).ok)
+
+    def test_a_process_that_is_alive_but_whose_activity_is_not_resumed_is_not_a_pass(self):
+        self.slow(6, alive_after=1, resumed_after=None)
+        outcome = self.adapter.launch(self.device(), PACKAGE, [], self.console)
+        self.assertEqual(constants.FAIL, outcome.status)
+        self.assertEqual({}, self.adapter._sessions)  # noqa: SLF001 - logcat is stopped again
+
+    def test_a_timeout_then_a_crash_fails_at_once_with_the_crash_as_reason(self):
+        self.slow(60, alive_after=1, crash_after=2)
+        outcome = self.adapter.launch(self.device(), PACKAGE, [], self.console)
+        self.assertEqual(constants.FAIL, outcome.status)
+        self.assertIn("crashed while starting", outcome.reason)
+        self.assertIn(f"FATAL EXCEPTION in {PACKAGE}", outcome.reason)
+        self.assertEqual(2, self.looks(), "no further wait after the crash")
+        self.assertEqual({}, self.adapter._sessions)  # noqa: SLF001
+
+    def test_a_timeout_then_an_anr_fails_at_once(self):
+        self.slow(60, alive_after=1, anr_after=2)
+        outcome = self.adapter.launch(self.device(), PACKAGE, [], self.console)
+        self.assertEqual(constants.FAIL, outcome.status)
+        self.assertIn(f"ANR in {PACKAGE}", outcome.reason)
+        self.assertEqual(2, self.looks())
+
+    def test_a_process_that_was_running_and_is_gone_fails_at_once(self):
+        self.slow(60, alive_after=1, die_after=3)
+        outcome = self.adapter.launch(self.device(), PACKAGE, [], self.console)
+        self.assertEqual(constants.FAIL, outcome.status)
+        self.assertIn("is gone while it was starting", outcome.reason)
+        self.assertNotIn("timed out", outcome.reason)
+        self.assertEqual(3, self.looks())
+
+    def test_a_start_still_not_up_at_the_limit_fails_with_its_own_reason_process_alive(self):
+        self.slow(10, alive_after=1, resumed_after=None)
+        outcome = self.adapter.launch(self.device(), PACKAGE, [], self.console)
+        self.assertEqual(constants.FAIL, outcome.status)
+        self.assertIn("launch timed out after 10 s, process alive", outcome.reason)
+        self.assertIn("WaitTime 15447 ms", outcome.reason)
+        self.assertEqual(10.0, sum(self.clock.slept), "it waited exactly the limit, no more")
+        self.assertEqual(6, self.looks(), "one look at the start and one per 2 s up to the limit")
+
+    def test_a_start_still_not_up_at_the_limit_fails_with_its_own_reason_process_not_alive(self):
+        self.slow(10, alive_after=None, resumed_after=None)
+        outcome = self.adapter.launch(self.device(), PACKAGE, [], self.console)
+        self.assertEqual(constants.FAIL, outcome.status)
+        self.assertIn("launch timed out after 10 s, process not alive", outcome.reason)
+        self.assertEqual(10.0, sum(self.clock.slept))
+
+    def test_a_real_launch_error_is_immediate_and_unmasked_even_with_a_timeout_status(self):
+        self.set_state(installed=[PACKAGE], launch_error=True, am_timeout=True, cold_start={"alive_after": 1, "resumed_after": 1})
+        self.adapter.bind_launch_timeout(60)
+        outcome = self.adapter.launch(self.device(), PACKAGE + "/.Missing", [], self.console)
+        self.assertEqual(constants.FAIL, outcome.status)
+        self.assertIn("Activity class does not exist", outcome.reason)
+        self.assertEqual(0, self.looks())
+        self.assertEqual([], self.clock.slept)
+
+    def test_an_unknown_status_is_still_a_failure_without_waiting(self):
+        self.set_state(installed=[PACKAGE])
+        fake = {"count": 0}
+        original = self.adapter._shell  # noqa: SLF001
+
+        def shell(serial, script, timeout=60.0):
+            if "'am'" in script:
+                fake["count"] += 1
+                return supervise.BoundedResult(constants.PASS, None, 0, "Starting: Intent\nStatus: canceled\n")
+            return original(serial, script, timeout)
+
+        with mock.patch.object(self.adapter, "_shell", shell):
+            outcome = self.adapter.launch(self.device(), PACKAGE, [], self.console)
+        self.assertEqual(constants.FAIL, outcome.status)
+        self.assertIn("Status: canceled", outcome.reason)
+        self.assertEqual([], self.clock.slept)
+
+    def test_status_ok_starts_no_wait_and_no_extra_calls(self):
+        self.set_state(installed=[PACKAGE])
+        self.assertTrue(self.adapter.launch(self.device(), PACKAGE, [], self.console).ok)
+        self.assertEqual(0, self.looks())
+        self.assertEqual([], self.clock.slept)
+
+    def test_the_default_wait_is_60_seconds_and_the_hard_limit_300(self):
+        self.assertEqual(60, constants.LAUNCH_TIMEOUT_DEFAULT_SEC)
+        self.assertEqual(300, constants.LAUNCH_TIMEOUT_MAX_SEC)
+        self.assertEqual(60.0, self.adapter._launch_timeout)  # noqa: SLF001
+        self.set_state(installed=[PACKAGE], am_timeout=True, cold_start={"alive_after": 1})
+        outcome = self.adapter.launch(self.device(), PACKAGE, [], self.console)
+        self.assertIn("timed out after 60 s", outcome.reason)
+
+    def test_a_limit_above_300_or_below_1_is_refused_before_anything_is_started(self):
+        self.set_state(installed=[PACKAGE], am_timeout=True)
+        for limit in (301, 0, 0.5, -5, float("nan"), True):
+            with self.subTest(limit=limit):
+                self.adapter.bind_launch_timeout(limit)
+                outcome = self.adapter.launch(self.device(), PACKAGE, [], self.console)
+                self.assertEqual(constants.BLOCKED, outcome.status)
+                self.assertIn("launch wait must be 1 to 300 s", outcome.reason)
+        self.assertFalse(any("'am' 'start'" in c for c in self.calls()))
+        self.assertEqual({}, self.adapter._sessions)  # noqa: SLF001
+
+    def test_a_pidof_that_exits_0_with_no_pid_is_not_a_pass(self):
+        self.slow(6, alive_after=None)
+        original = self.adapter._poll_shell  # noqa: SLF001
+
+        def pidof_zero(serial, script):
+            if script.startswith("pidof"):
+                return supervise.BoundedResult(constants.PASS, None, 0, "")
+            return original(serial, script)
+
+        with mock.patch.object(self.adapter, "_poll_shell", pidof_zero):
+            outcome = self.adapter.launch(self.device(), PACKAGE, [], self.console)
+        self.assertEqual(constants.FAIL, outcome.status)
+        self.assertIn("launch timed out after 6 s, process not alive", outcome.reason)
+
+    def test_a_crash_of_a_longer_package_name_is_not_this_packages_crash(self):
+        self.slow(6, alive_after=1, resumed_after=2)
+        self.set_state(crash_package=PACKAGE + ".validation", cold_start={"alive_after": 1, "resumed_after": 2, "crash_after": 1})
+        self.assertTrue(self.adapter.launch(self.device(), PACKAGE, [], self.console).ok)
+
+    def test_the_wait_is_cut_by_the_time_the_looks_themselves_take(self):
+        self.slow(10, alive_after=1)
+        original = self.adapter._poll_shell  # noqa: SLF001
+
+        def slow_look(serial, script):
+            self.clock.now += 6.0  # each adb call of a look takes 6 s on a loaded host
+            return original(serial, script)
+
+        with mock.patch.object(self.adapter, "_poll_shell", slow_look):
+            outcome = self.adapter.launch(self.device(), PACKAGE, [], self.console)
+        self.assertIn("timed out after 10 s", outcome.reason)
+        self.assertLessEqual(self.looks(), 2, "the second look would start after the limit")
+
+    def test_one_hung_adb_call_in_a_look_is_retried_and_the_wait_goes_on(self):
+        self.slow(60, alive_after=1, resumed_after=2)
+        original = self.adapter._poll_shell  # noqa: SLF001
+        failures = []
+
+        def hang_once(serial, script):
+            if script.startswith("pidof") and not failures:
+                failures.append(script)
+                return supervise.BoundedResult(constants.TIMEOUT, "adb did not finish within 20 s", None, "")
+            return original(serial, script)
+
+        with mock.patch.object(self.adapter, "_poll_shell", hang_once):
+            outcome = self.adapter.launch(self.device(), PACKAGE, [], self.console)
+        self.assertTrue(outcome.ok, outcome.reason)
+        self.assertEqual(1, len(failures))
+        self.assertIn("trying once more", self.notes())
+
+    def test_two_failed_looks_in_a_row_end_the_launch_with_the_calls_own_reason(self):
+        self.slow(60, alive_after=1)
+
+        def always_hangs(serial, script):
+            return supervise.BoundedResult(constants.TIMEOUT, "adb did not finish within 20 s", None, "")
+
+        with mock.patch.object(self.adapter, "_poll_shell", always_hangs):
+            outcome = self.adapter.launch(self.device(), PACKAGE, [], self.console)
+        self.assertEqual(constants.TIMEOUT, outcome.status)
+        self.assertIn("pidof", outcome.reason)
+        self.assertEqual(2, self.looks(), "one look and one retry, no more")
+
+    def test_a_logcat_that_cannot_be_read_twice_is_a_failure_with_its_own_reason(self):
+        self.slow(60, alive_after=1)
+        original = self.adapter._adb  # noqa: SLF001
+
+        def broken_dump(serial, *args, **kwargs):
+            if args[:2] == ("logcat", "-d"):
+                return supervise.BoundedResult(constants.PASS, None, 1, "logcat: unable to open log device")
+            return original(serial, *args, **kwargs)
+
+        with mock.patch.object(self.adapter, "_adb", broken_dump):
+            outcome = self.adapter.launch(self.device(), PACKAGE, [], self.console)
+        self.assertEqual(constants.FAIL, outcome.status)
+        self.assertIn("logcat -d failed", outcome.reason)
+
+    def test_the_detail_and_the_note_use_the_time_after_the_look(self):
+        self.slow(60, alive_after=1, resumed_after=1)
+        original = self.adapter._poll_shell  # noqa: SLF001
+
+        def slow_look(serial, script):
+            self.clock.now += 7.0
+            return original(serial, script)
+
+        with mock.patch.object(self.adapter, "_poll_shell", slow_look):
+            outcome = self.adapter.launch(self.device(), PACKAGE, [], self.console)
+        self.assertTrue(outcome.ok, outcome.reason)
+        self.assertEqual("14", outcome.details["launchWaitSec"], "two adb calls of 7 s each")
+        self.assertIn("after 14 s: process alive, activity resumed", self.notes())
+
+    def test_an_abandoned_launch_does_not_stop_the_capture_of_a_newer_launch(self):
+        self.slow(6, alive_after=None)
+        newer = []
+        original = self.adapter._poll_shell  # noqa: SLF001
+
+        def start_newer_launch(serial, script):
+            if not newer:
+                newer.append(True)
+                with self.adapter._lock:  # noqa: SLF001 - a later run began on the same device
+                    self.adapter._launches[serial] += 1  # noqa: SLF001
+                    self.adapter._sessions["marker"] = object()  # noqa: SLF001
+            return original(serial, script)
+
+        stopped = []
+        with mock.patch.object(self.adapter, "_poll_shell", start_newer_launch), \
+                mock.patch.object(self.adapter, "_stop_logcat", lambda *a, **k: stopped.append(a)):
+            outcome = self.adapter.launch(self.device(), PACKAGE, [], self.console)
+        self.assertEqual(constants.FAIL, outcome.status)
+        self.assertEqual([("ZY22",)], stopped, "only the stop before this launch's own capture; none at its failure")
+        self.adapter._sessions.pop("marker", None)  # noqa: SLF001
+
+    def test_a_dead_adb_during_the_wait_is_reported_as_what_it_is(self):
+        self.slow(60, alive_after=1)
+        self.set_state(devices=[{"serial": "ZY22", "state": "device", "model": "m", "props": PHONE_PROPS}])
+        original = self.adapter._poll_shell  # noqa: SLF001
+
+        def offline(serial, script):
+            if script.startswith("pidof"):
+                return supervise.BoundedResult(constants.PASS, None, 1, "error: device offline")
+            return original(serial, script)
+
+        with mock.patch.object(self.adapter, "_poll_shell", offline):
+            outcome = self.adapter.launch(self.device(), PACKAGE, [], self.console)
+        self.assertEqual(constants.NEEDS_PERMISSION, outcome.status)
+        self.assertIn("offline", outcome.reason)
+
+
+class LaunchTimeoutSettingTests(unittest.TestCase):
+    def test_the_value_is_a_finite_number_from_1_to_300(self):
+        from valtrion import config
+        for good in (1, 60, 300, 59.5):
+            self.assertEqual(float(good), config.check_launch_timeout(good, "x"))
+        for bad in (0, 0.9, 301, 3600, -1, float("nan"), float("inf"), True, "60", None, [60]):
+            with self.subTest(bad=bad):
+                with self.assertRaises(config.ConfigError) as caught:
+                    config.check_launch_timeout(bad, "run stage args")
+                self.assertIn("launchTimeoutSec must be a number from 1 to 300", str(caught.exception))
+
+    def test_stage_args_win_over_host_json_which_wins_over_the_default(self):
+        from valtrion import config, pipeline
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as folder:
+            with mock.patch.dict(os.environ, {core.HOME_ENV: folder}):
+                self.assertEqual(60.0, pipeline.launch_timeout_for({}))
+                (Path(folder) / "host.json").write_text('{"launchTimeoutSec": 120}', encoding="utf-8")
+                self.assertEqual(120.0, pipeline.launch_timeout_for({}))
+                self.assertEqual(45.0, pipeline.launch_timeout_for({"launchTimeoutSec": 45}))
+                with self.assertRaises(config.ConfigError):
+                    pipeline.launch_timeout_for({"launchTimeoutSec": 301})
+                (Path(folder) / "host.json").write_text('{"launchTimeoutSec": 900}', encoding="utf-8")
+                with self.assertRaises(config.ConfigError) as caught:
+                    pipeline.launch_timeout_for({})
+                self.assertIn("host.json", str(caught.exception))
+                self.assertEqual(30.0, pipeline.launch_timeout_for({"launchTimeoutSec": 30}), "a stage value never reads the bad file")
+
+
 class BuildTests(AndroidTestCase):
     def setUp(self):
         super().setUp()
@@ -705,6 +1009,50 @@ class PipelineTests(AndroidTestCase):
         self.assertEqual("FAIL", store.read_job()["status"])
         self.assertTrue(any("force-stop" in c for c in self.calls()))
         self.assertEqual({}, self.adapter._sessions)  # noqa: SLF001
+
+    def bound_launch_waits(self):
+        seen = []
+        original = self.adapter.bind_launch_timeout
+
+        def spy(seconds):
+            seen.append(seconds)
+            original(seconds)
+
+        self.adapter.bind_launch_timeout = spy
+        return seen
+
+    def test_a_slow_cold_start_passes_the_run_after_the_timeout_status(self):
+        self.set_state(am_timeout=True, cold_start={"alive_after": 2, "resumed_after": 3})
+        seen = self.bound_launch_waits()
+        store, _ = self.run_pipeline()
+        self.assertEqual("PASS", store.read_job()["status"], store.read_job().get("reason"))
+        self.assertEqual([30.0], seen, "the default wait of 60 s, cut to the 30 s stage budget")
+
+    def test_the_launch_wait_of_the_stage_reaches_the_adapter_and_a_longer_one_than_300_is_refused(self):
+        self.set_state(am_timeout=True, cold_start={"alive_after": 1, "resumed_after": 1})
+        seen = self.bound_launch_waits()
+        store, _ = self.run_pipeline({"launchTimeoutSec": 25})
+        self.assertEqual("PASS", store.read_job()["status"], store.read_job().get("reason"))
+        self.assertEqual([25.0], seen)
+        seen.clear()
+        store, _ = self.run_pipeline({"launchTimeoutSec": 301})
+        self.assertEqual("BLOCKED", store.read_job()["status"])
+        self.assertIn("launchTimeoutSec must be a number from 1 to 300", store.read_job()["reason"])
+        self.assertEqual([], seen, "nothing was launched")
+
+    def test_the_launch_wait_never_outlives_the_budget_of_the_run(self):
+        self.set_state(launch_error=True)
+        seen = self.bound_launch_waits()
+        store, _ = self.run_pipeline({"launchTimeoutSec": 200})  # the stage budget (timeoutSec) is 30 s
+        self.assertEqual("FAIL", store.read_job()["status"])
+        self.assertEqual([30.0], seen)
+
+    def test_a_start_that_never_comes_up_fails_the_run_with_the_distinct_reason(self):
+        self.set_state(am_timeout=True, cold_start={"alive_after": 1, "resumed_after": None})
+        store, _ = self.run_pipeline({"launchTimeoutSec": 8})
+        job = store.read_job()
+        self.assertEqual("FAIL", job["status"])
+        self.assertIn("launch timed out after 8 s, process alive", job["reason"])
 
     def test_a_clean_install_plan_resets_data_before_the_plan_is_pushed(self):
         self.write_plan({**PLAN, "dataPolicy": "clean-install"})

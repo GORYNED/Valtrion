@@ -111,6 +111,13 @@ class PlatformAdapter(abc.ABC):
     def bind_build_budget(self, seconds: float) -> None:
         """Tell the adapter the stage timeout; a build ends itself inside it instead of being abandoned by the pipeline."""
 
+    #: True for an adapter that waits for a slow start in `launch` and reads `bind_launch_timeout`.
+    supports_launch_wait = False
+
+    def bind_launch_timeout(self, seconds: float) -> None:
+        """Tell the adapter how long `launch` may wait for a slow start (already validated: 1 to `constants.LAUNCH_TIMEOUT_MAX_SEC`).
+        Platforms whose launch call returns only when the application is up ignore it."""
+
     def bind_device(self, device: "DeviceInfo") -> None:
         """Tell the adapter which device the pipeline selected and leased, before `build`. A build that signs for a device (iOS)
         must sign for this one, not for the first attached device."""
