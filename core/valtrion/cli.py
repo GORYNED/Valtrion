@@ -116,6 +116,7 @@ _register_builtin()
 
 # Implemented commands register themselves on import and replace their stubs; they import this module, so these imports stay last.
 from . import report as _report  # noqa: E402,F401
+from . import resultwrite as _resultwrite  # noqa: E402,F401
 from . import select as _select  # noqa: E402,F401
 
 # The host-core commands replace the reserved stubs of the same names (the last registration wins).

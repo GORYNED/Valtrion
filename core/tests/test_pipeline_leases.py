@@ -618,6 +618,12 @@ class ScopedLeaseTests(unittest.TestCase):
             build = self.result_of(store)["build"]
             self.assertEqual(["A"], self.world.builds)
             self.assertEqual("PASS", store.read_job()["status"])
+            # the build record is the result of the `player:android` check of `valtrion select`
+            self.assertEqual("player:android", self.result_of(store)["plan"]["id"])
+            code, out = run("build", "--repo", "Sample", "--platform", "android", "--profile", "Validation", "--project-dir", str(project),
+                            "--local", "--foreground", "--check-key", "player:droid")
+            self.assertEqual(0, code, out)
+            self.assertEqual("player:droid", self.result_of(jobs.JobStore(Path(json.loads(out)["dir"])))["plan"]["id"])
             code, out = run("run", str(self.base / "plans" / "open.plan.json"), "--repo", "Sample", "--sha", "ab" * 20, "--app", "com.example.app",
                             "--platform", "android", "--artifact-key", build["key"], "--project-dir", str(project), "--local", "--foreground")
             self.assertEqual(0, code, out)

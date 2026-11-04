@@ -1,0 +1,21 @@
+{
+  "schema": "gdv.result/1",
+  "runId": "editmode-Media.Tests-0123456789ab-win-build-1-1a2b3c4d5e",
+  "status": "PASS",
+  "reason": null,
+  "candidate": { "repo": "ExampleApp", "sha": "0123456789abcdef0123456789abcdef01234567", "profile": "none", "unity": "n/a", "dirty": false },
+  "target": { "platform": "editor", "deviceClass": "none", "osMajor": 0, "evidence": "editor" },
+  "host": { "id": "win-build-1", "transport": "local", "selectedBy": "local" },
+  "plan": { "id": "editmode:Media.Tests", "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" },
+  "startedUtc": "2026-10-29T15:30:00.000Z",
+  "finishedUtc": "2026-10-29T15:41:10.250Z",
+  "layers": {},
+  "steps": [],
+  "metrics": [
+    { "name": "passed", "unit": "count", "samples": [120], "stats": { "n": 1, "median": 120, "p90": 120, "max": 120, "stdev": 0 } }
+  ],
+  "artifacts": [
+    { "kind": "xml", "path": "TestResults.xml", "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc" }
+  ],
+  "unverified": []
+}
