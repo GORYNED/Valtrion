@@ -39,6 +39,8 @@ The app writes the heartbeat. The host watches its `seq`: if it stops advancing 
 
 An `external.ui` step puts a `request` in the heartbeat (state `waiting-host`) and waits for `inbox/reply-<id>.json`. The step is refused inside an open probe window of a performance plan.
 
+A pipeline `run` stage can host the request itself: with `externalUi` (`command`, an argv list; optional `timeoutSec`, default 120) the host answers each new request once, as it sees it in the heartbeat, by running the command in the project folder and writing the reply. The command is configuration the project controls, like a profile's `signScript` ([trust-model.md](trust-model.md)). Placeholders replaced inside one argument (no shell, no splitting): `{device}` (the platform's own id of the selected device, for example the UDID), `{app}`, `{action}`, `{request}` and `{arg:NAME}` (a scalar of the request's `args`; a missing or structured one is a `BLOCKED` reply). The environment has `GDV_UI_DEVICE`, `GDV_UI_APP`, `GDV_UI_ACTION`, `GDV_UI_REQUEST` and `GDV_UI_ARGS` (JSON), so a device id or a signing team never has to be written into the pipeline. Exit code 0 is a `PASS` reply, another code `FAIL`, a command over its timeout `TIMEOUT`; the last output line may be `{"status": "...", "message": "..."}` to give the message or a more precise failure status (`BLOCKED`, `NEEDS_PERMISSION`), never to turn a failing exit into `PASS`. The reply is also kept as `external-ui/reply-<id>.json` in the run folder and listed in the result. While the command runs the heartbeat is not counted as stalled. A stage without `externalUi` leaves the request to a host of the caller's own.
+
 ## The result line
 
 When the run ends the app prints one line to its log, exactly once:

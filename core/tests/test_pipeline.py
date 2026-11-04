@@ -3,6 +3,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -736,6 +737,53 @@ class PipelineTests(unittest.TestCase):
         weak = DeviceInfo("ios:TABLET", "ios", "tablet", "physical", capabilities=("touch",))
         _, why = pipeline.select_device([weak], {"class": "tablet"}, plan, known=[tablet])
         self.assertNotIn("offline", why, "an attached device is never reported offline")
+
+    def ui_adapter(self, replies):
+        """An application that asks the host `touch.tap` (request `ui-1`) and ends when it finds the reply in its inbox."""
+        class Asking(FakeAdapter):
+            def push(self, device, local, remote):
+                if remote.startswith("gdv/inbox/reply-"):
+                    replies[remote] = json.loads(Path(local).read_text(encoding="utf-8"))
+                return super().push(device, local, remote)
+
+            def pull(self, device, remote, local):
+                outcome = super().pull(device, remote, local)
+                run = local / "run-1"
+                if FakeAdapter.launched and run.is_dir() and not (run / "result.json").exists():
+                    core.atomic_write_json(run / "heartbeat.json", {"seq": FakeAdapter.pulls, "state": "waiting-host", "request": {
+                        "id": "ui-1", "action": "touch.tap", "args": {"target": "footer.3"}}})
+                return outcome
+        providers.register("android", Asking)
+
+    def ui_stages(self, command):
+        stages = self.stages()
+        stages[2]["externalUi"] = {"command": command, "timeoutSec": 20}
+        return stages
+
+    def test_an_external_ui_request_is_answered_by_the_stage_command_and_the_reply_reaches_the_inbox(self):
+        replies = {}
+        self.ui_adapter(replies)
+        code = "import os,json;print(json.dumps({'message': 'tapped '+os.environ['GDV_UI_ARGS']+' on '+os.environ['GDV_UI_DEVICE']}))"
+        stages = self.ui_stages([sys.executable, "-c", code])
+        _, store = self.run_pipeline(self.pipeline_document(stages))
+        self.assertEqual({"gdv/inbox/reply-ui-1.json"}, set(replies), "one request is answered once")
+        self.assertEqual("PASS", replies["gdv/inbox/reply-ui-1.json"]["status"])
+        self.assertIn("ZY22", replies["gdv/inbox/reply-ui-1.json"]["message"], "the platform's own id, not the prefixed one")
+        self.assertLess(FakeAdapter.calls.index("launch"), FakeAdapter.calls.index("push:gdv/inbox/reply-ui-1.json"))
+        paths = [a["path"] for a in self.result_of(store)["artifacts"]]
+        self.assertTrue(any(p.endswith("external-ui/reply-ui-1.json") for p in paths), paths)
+
+    def test_a_failing_stage_command_is_a_fail_reply_not_a_stuck_run(self):
+        replies = {}
+        self.ui_adapter(replies)
+        _, store = self.run_pipeline(self.pipeline_document(self.ui_stages([sys.executable, "-c", "import sys;sys.exit(4)"])))
+        self.assertEqual("FAIL", replies["gdv/inbox/reply-ui-1.json"]["status"])
+
+    def test_a_stage_without_a_host_command_leaves_the_request_alone(self):
+        replies = {}
+        self.ui_adapter(replies)
+        self.run_pipeline(self.pipeline_document(self.stages()))
+        self.assertEqual({}, replies, "without externalUi the host writes no reply; an outside host may still answer")
 
 
 if __name__ == "__main__":

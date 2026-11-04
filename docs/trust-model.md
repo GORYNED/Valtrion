@@ -13,6 +13,7 @@ Valtrion starts the following, and each is chosen by the project, not by Valtrio
 | **Sign scripts** | `signScript` in the profile, `GDV_MACOS_SIGN_SCRIPT`, or the first `tools/build/sign-macos*.py` found in the project folder or above | The Python that runs `valtrion`, on the Mac, with the login keychain when the job is in the `gui` domain |
 | **Editor test runner** | `editor.runner` in the profile, or the first `tools/validation/run-unity-tests.py` found in the project folder or above | The Python that runs `valtrion` |
 | **Unity batch mode** | The Editor matching the project's `ProjectVersion.txt` | The project's own editor scripts and tests run when it opens the project |
+| **`externalUi.command`** | A `run` stage of a pipeline | The user running the pipeline, in the project folder, once per `external.ui` request of the plan |
 | **Plans' launch arguments** | `--launch-arg`, `extraArgs`, `unityArgs` | Passed to the app or to Unity as given |
 | **The app and its plan steps** | The built player runs the `gdv.plan/1` you supply | The app, on the device |
 

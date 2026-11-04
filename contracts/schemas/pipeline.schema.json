@@ -43,6 +43,16 @@
         "coldLaunch": { "type": "boolean" },
         "timeoutSec": { "$ref": "common.schema.json#/$defs/int32", "minimum": 1 },
         "args": { "type": "object" },
+        "externalUi": {
+          "type": "object",
+          "description": "Answers the plan's external.ui requests of this run stage: the host runs command (an argv list, no shell) once per request and writes inbox/reply-<id>.json. Placeholders {device} {app} {action} {request} {arg:NAME}; the project folder is the working directory. See docs/protocol.md.",
+          "required": ["command"],
+          "additionalProperties": false,
+          "properties": {
+            "command": { "type": "array", "items": { "type": "string", "minLength": 1 }, "minItems": 1 },
+            "timeoutSec": { "$ref": "common.schema.json#/$defs/int32", "minimum": 1 }
+          }
+        },
         "prelaunchFiles": {
           "type": "array",
           "description": "Files pushed into the application's data root before it starts (read before the first scene): local is absolute or relative to the pipeline file, remote is relative to the data root.",

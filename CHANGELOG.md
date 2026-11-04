@@ -2,6 +2,10 @@
 
 Core (the `valtrion` Python package) and the Unity package `com.goryned.valtrion.unity` are versioned independently. The Unity changelog is in `integrations/unity/com.goryned.valtrion.unity/CHANGELOG.md`; `compat.json` lists compatible pairs.
 
+## Unreleased
+
+- **A pipeline `run` stage can answer `external.ui` requests (`externalUi`).** `{"command": [argv...], "timeoutSec": N}` in the stage: for each new request of the app's heartbeat (state `waiting-host`) the host runs the command once (project folder as the working directory, no shell, placeholders `{device}`, `{app}`, `{action}`, `{request}`, `{arg:NAME}`, the same values as `GDV_UI_*` in the environment), maps the exit code to a reply (`PASS`, `FAIL`, `TIMEOUT`; the last output line may carry a JSON `status` and `message`) and pushes `inbox/reply-<id>.json`. Until now the core had no host for `external.ui`, so a plan with such a step could only be run by a caller that answered the requests itself. The heartbeat is not counted as stalled while the command runs. Stages without `externalUi` behave as before. Schema `gdv.pipeline/1` gains the optional stage key; fixtures added. See [protocol.md](docs/protocol.md).
+
 ## 0.12.1
 
 - **The Unity CLI is no longer taken for an Editor on Windows.** The pre-start check counted every `unity.exe` as an Editor, so `unity.exe serve` (Unity Hub) and `unity mcp` (an agent session) made every guarded run wait for an "Editor outside any lease" that never ended. On Windows an Editor is now `...\Editor\Unity.exe`, as on macOS and Linux (`/Editor/Unity`).

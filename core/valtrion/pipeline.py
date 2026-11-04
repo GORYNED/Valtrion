@@ -22,7 +22,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
-from . import artifacts, buildcache, checkout, compare, config, constants, core, diskspace, gitstate, incremental, lease, providers, supervise, unityguard
+from . import artifacts, buildcache, checkout, compare, config, constants, core, diskspace, externalui, gitstate, incremental, lease, providers, supervise, unityguard
 from .adapter import DeviceHealth, DeviceInfo, PlatformAdapter, StepOutcome
 from .jobs import JobContext
 from .jobs import reap_cancelled_jobs as jobs_reap
@@ -446,12 +446,21 @@ def run_on_device(
     status: str | None = None
     reason: str | None = None
     device_result: dict | None = None
+    ui_host = stage.get("externalUi")
+    answered: set[str] = set()
     while status is None:
         if cancelled():
             status, reason = constants.BLOCKED, "cancelled by request"
             break
         pulled = adapter.pull(device, DEVICE_OUT, polled)
         _, heartbeat, result = _latest_device_run(polled, previous) if pulled.ok else (None, None, None)
+        if ui_host and result is None and heartbeat is not None:
+            handled, failed = _answer_external_ui(adapter, device, app, ui_host, heartbeat, answered, directory, options.project_dir)
+            if failed is not None:
+                status, reason = failed
+                break
+            if handled:
+                last_progress = options.monotonic()  # the host command ran for a while: the app waited for it, it did not stall
         if heartbeat is not None and isinstance(heartbeat.get("seq"), int) and (last_seq is None or heartbeat["seq"] > last_seq):
             last_seq, last_progress = heartbeat["seq"], options.monotonic()
         if result is not None and result.get("status") in constants.STATUSES:
@@ -492,6 +501,33 @@ def run_on_device(
         unverified.append(f"thermal state after the run: {after.thermal_state} (not controlled)")
     layers["scenario"] = status
     return DeviceRun(status, reason, device_result, layers, directory, started, core.utc_now(), unverified)
+
+
+def _answer_external_ui(
+        adapter: PlatformAdapter, device: DeviceInfo, app: str, spec: Mapping[str, Any], heartbeat: Mapping[str, Any],
+        answered: set[str], directory: Path, project_dir: Path | None) -> tuple[bool, tuple[str, str] | None]:
+    """Answer a new `external.ui` request of the heartbeat (state `waiting-host`) with the stage's `externalUi` command and push the
+    reply into the app's inbox. Returns `(handled, failure)`; `failure` is `(status, reason)` when the reply could not be delivered
+    (the app would wait for it until its step times out). A request is answered once, whatever the command did: a failed command is a
+    `FAIL` reply, and the plan decides what that means."""
+    request = heartbeat.get("request")
+    if heartbeat.get("state") != "waiting-host" or not isinstance(request, dict):
+        return False, None
+    request_id = externalui.safe_request_id(request.get("id"))
+    if request_id is None or request_id in answered:
+        return False, None
+    answered.add(request_id)
+    native = device.id.split(":", 1)[1] if ":" in device.id else device.id
+    reply = externalui.answer(spec, request, native, app, project_dir)
+    folder = directory / "external-ui"
+    folder.mkdir(parents=True, exist_ok=True)
+    local = folder / f"reply-{request_id}.json"
+    core.atomic_write_json(local, {"status": reply.status, "message": reply.message})
+    pushed = adapter.push(device, local, f"gdv/inbox/reply-{request_id}.json")
+    if not pushed.ok:
+        return True, (pushed.status, f"the reply to the external.ui request {request_id} ({reply.status}: {reply.message}) could not be "
+                                     f"pushed to the application: {pushed.reason}")
+    return True, None
 
 
 def assemble_result(
