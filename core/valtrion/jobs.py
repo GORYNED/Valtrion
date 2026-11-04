@@ -703,6 +703,8 @@ def run_job(directory: Path, home: Path | None = None, leases: lease.LeaseManage
     """Entry of the detached runner. Always leaves job.json in a final state and releases every lease it took."""
     preload_runtime()
     runner = _Runner(directory, home, leases)
+    agent = runner.spec.get("launchd")
+    os.environ[core.JOB_DOMAIN_ENV] = (agent.get("domain") or "launchd") if isinstance(agent, dict) else ""  # read by the iOS signing check
     _install_cancel_signals(runner.store.cancel)
     core.atomic_write_json(directory / "runner.json", {"pid": os.getpid(), "token": core.process_start_token(os.getpid())})
     runner.events.emit("job.started", f"pid {os.getpid()} on {runner.spec['host']['id']}",

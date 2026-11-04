@@ -128,5 +128,28 @@ class AdapterTests(unittest.TestCase):
         self.assertFalse(capabilities.can("launch"))
 
 
+class ForegroundDomainTests(unittest.TestCase):
+    def test_foreground_with_an_explicit_domain_is_a_usage_error_before_anything_starts(self):
+        sha = "a" * 40
+        for argv in (("run", "plan.json", "--repo", "r", "--sha", sha, "--app", "a", "--foreground", "--domain", "gui"),
+                     ("run", "plan.json", "--repo", "r", "--sha", sha, "--app", "a", "--domain", "user", "--foreground"),
+                     ("pipeline", "p.json", "--foreground", "--domain", "gui"),
+                     ("build", "--repo", "r", "--platform", "ios", "--foreground", "--domain", "gui"),
+                     ("job", "start", "--timeout-sec", "5", "--foreground", "--domain", "gui", "--", "true")):
+            with self.subTest(argv):
+                err = io.StringIO()
+                with contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
+                    with self.assertRaises(SystemExit) as raised:
+                        cli.main(list(argv))
+                self.assertEqual(2, raised.exception.code)
+                self.assertIn("--foreground runs the job in this process", err.getvalue())
+                self.assertIn("is not for signing", err.getvalue())
+
+    def test_foreground_with_the_default_domain_is_not_refused_by_the_parser(self):
+        arguments = cli.build_parser().parse_args(["job", "start", "--timeout-sec", "5", "--foreground", "--", "true"])
+        self.assertTrue(arguments.foreground)
+        self.assertEqual("auto", arguments.domain)
+
+
 if __name__ == "__main__":
     unittest.main()

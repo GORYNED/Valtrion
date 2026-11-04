@@ -223,6 +223,22 @@ def classify_xcodebuild_failure(output: str) -> tuple[str, str]:
     return "nativeBuild", constants.FAIL
 
 
+def _not_in_gui_session(manager: str) -> str:
+    """Why the build is not in the GUI session, from the launchd domain the job runner recorded (`core.JOB_DOMAIN_ENV`)."""
+    domain = os.environ.get(core.JOB_DOMAIN_ENV)
+    if domain is not None and domain.startswith("gui/"):
+        return (f"iOS signing needs the login keychain, but this job already runs in the {domain} launchd domain and launchd reports the "
+                f"session as {manager or 'unknown'}, not Aqua: no user is logged in to the Mac desktop, or its login keychain is locked; "
+                "log in at the Mac and unlock the login keychain (owner action), restarting the job with the same --domain gui will not help")
+    if domain == "launchd":  # an agent whose domain the runner could not read yet: do not guess the advice
+        return (f"iOS signing needs the GUI session, but this launchd job runs outside it (launchd reports {manager or 'unknown'}, not Aqua); "
+                "start it with --domain gui, and check that a user is logged in at the Mac and the login keychain is unlocked")
+    where = (f"the {domain} launchd domain" if domain else
+             "the SSH or terminal context (--foreground or no launchd domain)")
+    return (f"iOS signing needs the GUI session, but this job ran in {where}; start it without --foreground, with --domain gui "
+            "(`valtrion run --domain gui`); plain SSH codesign fails with errSecInternalComponent")
+
+
 class IosAdapter(PlatformAdapter):
     platform = PLATFORM
     #: Signing needs the login keychain of the GUI session (`valtrion run` starts the job in the `gui` launchd domain).
@@ -366,8 +382,7 @@ class IosAdapter(PlatformAdapter):
             return done(constants.BLOCKED, str(error))
         manager = self._run(["launchctl", "managername"], 15)
         if manager.ok and manager.output.strip() != "Aqua":
-            return done(constants.BLOCKED, "iOS signing needs the GUI session; start the job in the gui launchd domain "
-                                           "(`valtrion run --domain gui`), plain SSH codesign fails with errSecInternalComponent")
+            return done(constants.BLOCKED, _not_in_gui_session(manager.output.strip()))
         unity = self._unity_binary(project, settings.unity_path)
         if unity is None:
             return done(constants.BLOCKED, f"Unity {unity_version_of(project) or '(version unreadable)'} is not installed in "
