@@ -279,6 +279,37 @@ namespace Valtrion.Unity.Tests
             // Auto-referenced so a project's Assembly-CSharp can hold steps (under #if DEVELOPMENT_BUILD || UNITY_EDITOR); the define constraint keeps Release players free of it.
             StringAssert.Contains("\"autoReferenced\": true", runtimeAsmdef);
             StringAssert.Contains(gate, runtimeAsmdef);
+
+            // The plan test helper is gated the same way and is never auto-referenced (a project test assembly names it).
+            var testing = Directory.GetFiles(Path.Combine(package.resolvedPath, "Testing"), "*.asmdef", SearchOption.AllDirectories);
+            Assert.IsNotEmpty(testing, "Testing/ holds the plan test helper assembly");
+            foreach (var asmdef in testing)
+            {
+                var text = File.ReadAllText(asmdef);
+                StringAssert.Contains(gate, text, asmdef);
+                StringAssert.Contains("\"autoReferenced\": false", text, asmdef);
+            }
+        }
+
+        static string[] FilterPlayerAssemblies(UnityEditor.BuildOptions options, bool playModeTestRunnerEnabled, string[] assemblies)
+        {
+            var filter = Type.GetType("Valtrion.Unity.Editor.PlanTestBuildAssemblyFilter, Valtrion.Unity.Editor", true);
+            Assert.IsTrue(typeof(UnityEditor.Build.IFilterBuildAssemblies).IsAssignableFrom(filter));
+            var method = filter.GetMethod("Filter", System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic);
+            return (string[])method.Invoke(null, new object[] { options, playModeTestRunnerEnabled, assemblies });
+        }
+
+        [Test]
+        public void AnOrdinaryPlayerBuildLeavesOutOnlyThePlanTestHelper()
+        {
+            var assemblies = new[] { "Library/PlayerScriptAssemblies/Valtrion.Unity.dll", "Library/PlayerScriptAssemblies/Valtrion.Unity.PlayModeTests.dll",
+                "Library/PlayerScriptAssemblies/Valtrion.Unity.PlayModeTests.Extra.dll", "Library/PlayerScriptAssemblies/Assembly-CSharp.dll" };
+
+            CollectionAssert.AreEqual(new[] { assemblies[0], assemblies[2], assemblies[3] },
+                FilterPlayerAssemblies(UnityEditor.BuildOptions.Development, false, assemblies));
+            CollectionAssert.AreEqual(assemblies,
+                FilterPlayerAssemblies(UnityEditor.BuildOptions.Development | UnityEditor.BuildOptions.IncludeTestAssemblies, false, assemblies));
+            CollectionAssert.AreEqual(assemblies, FilterPlayerAssemblies(UnityEditor.BuildOptions.Development, true, assemblies));
         }
     }
 }

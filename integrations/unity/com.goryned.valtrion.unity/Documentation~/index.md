@@ -43,7 +43,7 @@ version numbers are not required. The repository tests use Unity Test Framework 
 | --- | --- |
 | `Runtime/` | `Valtrion.Unity`: `Contracts/` (documents), `Json/` (value tree, parser, writer), `Harness/` (inbox, runner, steps, result writer, ledger) and `Probes/` |
 | `Runtime/link.xml` | preserves the `Valtrion.Unity` assembly from IL2CPP stripping |
-| `Editor/` | `Valtrion.Unity.Editor` (empty until plan authoring tools arrive) |
+| `Editor/` | `Valtrion.Unity.Editor`: `PlanTestBuildAssemblyFilter`, which keeps the plan test helper out of player builds that do not include test assemblies |
 | `Testing/` | `Valtrion.Unity.PlayModeTests` (namespace `Valtrion.Unity.Testing`): `PlanTest.Run`, `NUnitXmlResultWriter`; an ordinary package assembly, no `testables` needed |
 
 The package contains no tests of its own. Valtrion's tests live in the repository verification project
@@ -204,7 +204,10 @@ writes `nunit-results.xml` into the run folder of the last plan test. A project 
 
 **No `testables` entry is needed (package 0.11.0 and later).** `Valtrion.Unity.PlayModeTests` is an ordinary package assembly,
 compiled whenever the project has `com.unity.test-framework`; the package's own tests are not part of the package, so a consumer's
-test runs contain only the consumer's tests. A consumer manifest needs only:
+test runs contain only the consumer's tests. In player builds the helper follows the Test Framework's rule for
+`UnityEngine.TestRunner` and NUnit: `PlanTestBuildAssemblyFilter` (Editor) removes `Valtrion.Unity.PlayModeTests.dll` unless the
+build includes test assemblies or `PlayerSettings.playModeTestRunnerEnabled` is on, so an ordinary development player (device runs
+with `-gdv-plan`) does not contain it and a PlayMode test player does. A consumer manifest needs only:
 
 ```json
 {
