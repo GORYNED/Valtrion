@@ -70,6 +70,17 @@ class JobTestCase(unittest.TestCase):
 
 
 class RunnerTests(JobTestCase):
+    def test_the_runner_publishes_the_launchd_domain_of_the_job(self):
+        with mock.patch.dict(os.environ, {}):
+            self.run_foreground([PYTHON, "-c", "pass"])
+            self.assertEqual("", os.environ[core.JOB_DOMAIN_ENV])  # a foreground job has no launchd domain
+            layout, spec = jobs.create_job(self.request([PYTHON, "-c", "pass"]), self.root, self.home)
+            spec["launchd"] = {"domain": "gui/501", "label": "com.valtrion.x"}
+            core.atomic_write_json(layout.directory / "spec.json", spec)
+            with mock.patch.object(jobs, "_remove_launchd_agent"):  # no launchctl here
+                jobs.run_job(layout.directory, self.home)
+            self.assertEqual("gui/501", os.environ[core.JOB_DOMAIN_ENV])
+
     def test_pass_writes_valid_state_and_events_under_the_artifact_layout(self):
         info, store = self.run_foreground([PYTHON, "-c", "print('hello')"])
         job = store.read_job()
