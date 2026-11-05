@@ -133,7 +133,7 @@ namespace Valtrion.Unity.Harness
                 // An explicit plan that names no file is an error to report, never a reason to run some other plan.
                 var found = File.Exists(explicitPlan)
                     ? Read(origin, explicitPlan, runId)
-                    : new PlanSource { Origin = origin, Path = explicitPlan, RunId = runId, Text = string.Empty, Error = $"plan '{explicitPlan}' given by {name} does not exist" };
+                    : new PlanSource { Origin = origin, Path = explicitPlan, RunId = runId, Text = string.Empty, Error = MissingPlanError(explicitPlan, name) };
                 found.OutRoot = outRoot;
                 return found;
             }
@@ -143,7 +143,7 @@ namespace Valtrion.Unity.Harness
             {
                 var found = File.Exists(fromIntent)
                     ? Read("intent", fromIntent, runId)
-                    : new PlanSource { Origin = "intent", Path = fromIntent, RunId = runId, Text = string.Empty, Error = $"plan '{fromIntent}' given by the intent extra {PlanExtra} does not exist" };
+                    : new PlanSource { Origin = "intent", Path = fromIntent, RunId = runId, Text = string.Empty, Error = MissingPlanError(fromIntent, "the intent extra " + PlanExtra) };
                 found.OutRoot = outRoot;
                 return found;
             }
@@ -207,13 +207,47 @@ namespace Valtrion.Unity.Harness
             return null;
         }
 
-        static bool AlreadyConsumed(string path)
+        static bool AlreadyConsumed(string path) => !File.Exists(path) && LatestConsumedCopy(path) != null;
+
+        /// <summary>The newest <c>&lt;name&gt;.done-&lt;utc&gt;</c> beside a plan path (the copy an earlier run left when it consumed the plan), or null.</summary>
+        static string LatestConsumedCopy(string path)
         {
-            if (File.Exists(path))
-                return false;
-            var directory = System.IO.Path.GetDirectoryName(path);
-            return !string.IsNullOrEmpty(directory) && Directory.Exists(directory)
-                && Directory.GetFiles(directory, System.IO.Path.GetFileName(path) + ".done-*").Length > 0;
+            try
+            {
+                // A bare file name (`-gdv-plan smoke.plan.json`) is resolved like File.Exists resolves it: against the working directory.
+                var full = System.IO.Path.GetFullPath(path);
+                var directory = System.IO.Path.GetDirectoryName(full);
+                if (string.IsNullOrEmpty(directory))
+                    directory = ".";
+                if (!Directory.Exists(directory))
+                    return null;
+                // Filtered by name, not by a search pattern: a file name may itself hold the wildcard characters * and ? (POSIX).
+                var prefix = System.IO.Path.GetFileName(full) + ".done-";
+                string latest = null;
+                foreach (var candidate in Directory.GetFiles(directory))
+                {
+                    var name = System.IO.Path.GetFileName(candidate);
+                    if (name.StartsWith(prefix, StringComparison.Ordinal) && (latest == null || string.CompareOrdinal(candidate, latest) > 0))
+                        latest = candidate;
+                }
+                return latest;
+            }
+            catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException || ex is ArgumentException || ex is NotSupportedException)
+            {
+                return null;
+            }
+        }
+
+        /// <summary>Why an explicit plan path names no file. A plan the harness already consumed (renamed to <c>.done-&lt;utc&gt;</c> by an earlier
+        /// launch, for example a Mono player started with the same path) is named as such, so it is not mistaken for a path the player cannot read.
+        /// The consumed hint can appear only for the launch argument <c>-gdv-plan</c>: a consumed <c>GDV_PLAN</c> or intent extra is ignored earlier
+        /// (<see cref="AlreadyConsumed"/>), because both outlive their plan by design.</summary>
+        internal static string MissingPlanError(string path, string givenBy)
+        {
+            var consumed = LatestConsumedCopy(path);
+            return consumed == null
+                ? $"plan '{path}' given by {givenBy} does not exist"
+                : $"plan '{path}' given by {givenBy} does not exist: an earlier run already consumed it (renamed to '{System.IO.Path.GetFileName(consumed)}'); give every launch a fresh copy of the plan";
         }
 
         static PlanSource Read(string origin, string path, string runId)

@@ -233,6 +233,19 @@ class ShippedTableTests(ProjectCase):
             self.assertFalse(any(project.package_matches("0.11.0", str(r["package"])) and project.version_in_range(core_version, str(r["core"]))
                                  for r in ranges), core_version)
 
+    def test_package_0_11_2_has_its_own_exact_row_like_0_11_1(self):
+        _, ranges = project.load_compat_document()
+        self.assertEqual([{"package": "0.11.2", "core": ">=0.8.0,<0.15"}], [r for r in ranges if r["package"] == "0.11.2"])
+        for version in ("0.11.1", "0.11.3", "0.11.20"):
+            self.assertFalse(project.package_matches(version, "0.11.2"), version)
+        self.lock({"version": "0.11.2", "source": "registry"})
+        for core_version in ("0.8.0", "0.13.1", "0.14.0", "0.14.9", __import__("valtrion").__version__):
+            self.assertEqual("ok", project.check_project(self.unity, core_version)["status"], core_version)
+        for core_version in ("0.7.4", "0.15.0"):
+            self.assertNotEqual("ok", project.check_project(self.unity, core_version)["status"], core_version)
+        self.lock({"version": "0.11.3", "source": "registry"})
+        self.assertEqual("BLOCKED", project.check_project(self.unity, "0.14.0")["status"], "a later 0.11 package needs its own row")
+
     def test_the_package_id_comes_from_the_table(self):
         other = self.base / "other.json"
         other.write_text(json.dumps({**COMPAT, "package": "com.example.other"}), encoding="utf-8")

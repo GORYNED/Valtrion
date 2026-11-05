@@ -197,6 +197,103 @@ namespace Valtrion.Unity.Tests
 
             Assert.IsNull(source.Plan);
             StringAssert.Contains("does not exist", source.Error);
+            StringAssert.DoesNotContain("consumed", source.Error);
+        }
+
+        [Test]
+        public void ArgumentPlanConsumedByAnEarlierLaunchIsNamedAsConsumed()
+        {
+            // #80: a Mono player run renamed the plan, and an IL2CPP player started later with the same -gdv-plan path reported only "does not exist".
+            var path = Write(Path.Combine(_root, "validation", "smoke.plan.json"), PlanText("from.argument"));
+            _environment.CommandLineArgs = new[] { "app.exe", PlanInbox.PlanArgument, path };
+            var inbox = new PlanInbox(_environment, new ILegacyPlanConverter[0]);
+            Assert.IsTrue(inbox.MarkConsumed(inbox.Find()));
+
+            var relaunch = inbox.Find();
+
+            Assert.AreEqual("argument", relaunch.Origin);
+            Assert.IsNull(relaunch.Plan, "an explicit plan that was consumed is still an error, never a silent no-op");
+            StringAssert.Contains("does not exist", relaunch.Error);
+            StringAssert.Contains("already consumed", relaunch.Error);
+            StringAssert.Contains("smoke.plan.json.done-20261029T153000Z", relaunch.Error);
+        }
+
+        [Test]
+        public void ConsumedHintAlsoForABareRelativeFileName()
+        {
+            var directory = Path.Combine(_root, "cwd");
+            Write(Path.Combine(directory, "smoke.plan.json.done-20261029T153000Z"), PlanText("old"));
+            var previous = Directory.GetCurrentDirectory();
+            try
+            {
+                Directory.SetCurrentDirectory(directory);
+                _environment.CommandLineArgs = new[] { "app.exe", PlanInbox.PlanArgument, "smoke.plan.json" };
+
+                var source = new PlanInbox(_environment, new ILegacyPlanConverter[0]).Find();
+
+                StringAssert.Contains("already consumed", source.Error);
+                StringAssert.Contains("smoke.plan.json.done-20261029T153000Z", source.Error);
+            }
+            finally
+            {
+                Directory.SetCurrentDirectory(previous);
+            }
+        }
+
+        [Test]
+        public void ConsumedCopiesOfOtherPlansGiveNoHint()
+        {
+            var directory = Path.Combine(_root, "validation");
+            Write(Path.Combine(directory, "other.plan.json.done-20261029T153000Z"), PlanText("other"));
+            Write(Path.Combine(directory, "xsmoke.plan.json.done-20261029T153000Z"), PlanText("other"));
+            _environment.CommandLineArgs = new[] { "app.exe", PlanInbox.PlanArgument, Path.Combine(directory, "smoke.plan.json") };
+
+            var source = new PlanInbox(_environment, new ILegacyPlanConverter[0]).Find();
+
+            StringAssert.Contains("does not exist", source.Error);
+            StringAssert.DoesNotContain("consumed", source.Error);
+        }
+
+        [Test]
+        public void WildcardCharactersInThePlanNameAreNotASearchPattern()
+        {
+            if (UnityEngine.Application.platform == UnityEngine.RuntimePlatform.WindowsEditor)
+                Assert.Ignore("'*' and '?' are not valid in Windows file names");
+            var directory = Path.Combine(_root, "validation");
+            // Matched as a pattern, "s*.json.done-*" would also find this unrelated plan's consumed copy.
+            Write(Path.Combine(directory, "smoke.json.done-20261029T153000Z"), PlanText("other"));
+            _environment.CommandLineArgs = new[] { "app.exe", PlanInbox.PlanArgument, Path.Combine(directory, "s*.json") };
+
+            var missing = new PlanInbox(_environment, new ILegacyPlanConverter[0]).Find();
+            StringAssert.DoesNotContain("consumed", missing.Error);
+
+            Write(Path.Combine(directory, "s*.json.done-20261029T153000Z"), PlanText("old"));
+            var consumed = new PlanInbox(_environment, new ILegacyPlanConverter[0]).Find();
+            StringAssert.Contains("s*.json.done-20261029T153000Z", consumed.Error);
+        }
+
+        [TestCase("plan with spaces.json")]
+        [TestCase("План-Ωβ.json")]
+        public void ArgumentPlanIsReadFromPathsWithSpacesAndNonAsciiCharacters(string fileName)
+        {
+            var path = Write(Path.Combine(_root, "folder with spaces", fileName), PlanText("from.argument"));
+            foreach (var form in new[] { path, path.Replace('\\', '/') })
+            {
+                _environment.CommandLineArgs = new[] { "app.exe", PlanInbox.PlanArgument, form };
+
+                var source = new PlanInbox(_environment, new ILegacyPlanConverter[0]).Find();
+
+                Assert.IsNull(source.Error, form);
+                Assert.AreEqual("from.argument", source.Plan.Id, form);
+            }
+        }
+
+        [Test]
+        public void TheHarnessAssemblyIsAlwaysLinked()
+        {
+            // #80: a link.xml inside a package is not read by UnityLinker, so this attribute is what keeps the unreferenced harness in IL2CPP players.
+            var assembly = typeof(ValidationHarness).Assembly;
+            Assert.IsTrue(Attribute.IsDefined(assembly, typeof(UnityEngine.Scripting.AlwaysLinkAssemblyAttribute)), assembly.FullName);
         }
 
         [Test]
