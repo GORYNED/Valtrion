@@ -18,7 +18,7 @@ import tempfile
 from pathlib import Path
 from typing import Any, Callable, Sequence
 
-from . import artifacts, buildcache, compare as comparing, config, constants, core, diskspace, doctor, hostsync, jobs, lease, outputs, project, providers, remote, scratch, submit, supervise, wheel, workroot
+from . import artifacts, buildcache, compare as comparing, config, constants, core, diskspace, doctor, hostsync, jobs, lease, outputs, project, providers, remote, repeatguard, scratch, submit, supervise, wheel, workroot
 from . import __version__
 from .adapter import DeviceInfo
 from .cli import Command, register
@@ -755,6 +755,34 @@ def _preflight(pipeline: dict, base: Path, payload: dict, project_dir: Path | No
     return None
 
 
+def _cache_status(pipeline: dict, base: Path, sha: str | None, project_dir: Path | None, settings: config.HostSettings,
+                  payload: dict | None = None) -> int:
+    """`pipeline --cache-status`: print the result cache key and state of every run stage (JSON) and start nothing."""
+    from . import gitstate, pipeline as pipelines, resume
+    platform = _request_for(pipeline, base, project_dir).platform
+    selection = (payload or {}).get("selection")
+    if selection:
+        try:
+            resuming = resume.plan_resume(selection, (payload or {}).get("resumeFrom"), pipeline, sha, base, platform).prior is not None
+        except resume.ResumeError:
+            resuming = True  # the job would be refused, and a resume never reuses results either
+        if resuming:
+            rows = [{"stage": resume.stage_name(index, stage), "plan": stage["plan"], "state": "off",
+                     "reason": "results are not reused in a job that carries stages from an earlier run (off while resuming)"}
+                    for index, stage in enumerate(pipeline["stages"]) if stage["stage"] == "run" and stage.get("plan")]
+            _out({"cache": str(pipelines.resultcache.cache_root(settings.work_root)), "reuseByDefault": settings.result_cache.reuse,
+                  "stages": rows})
+            return constants.EXIT_PASS
+    dirty = True
+    if project_dir is not None and sha:
+        state = gitstate.read_state(project_dir, comparing.run_git, [settings.artifacts_root, settings.work_root])
+        dirty = state.dirty or state.sha != sha
+    rows = pipelines.cache_status(pipeline, base, sha, dirty, platform, settings.work_root, project_dir)
+    _out({"cache": str(pipelines.resultcache.cache_root(settings.work_root)), "reuseByDefault": settings.result_cache.reuse,
+          "stages": rows})
+    return constants.EXIT_PASS
+
+
 def _start_pipeline(arguments: argparse.Namespace, pipeline: dict, payload: dict, base: Path, project_dir: Path | None, label: str) -> int:
     if arguments.local:
         entry, selected = config.local_host(), arguments.selected_by
@@ -786,9 +814,27 @@ def _start_pipeline(arguments: argparse.Namespace, pipeline: dict, payload: dict
                  "the run folder is `unversioned` and the result will carry no commit")
     if sha and set(sha) == {"0"}:
         sha = None  # no commit known: the run folder is `unversioned`, not `00000000`
+    settings = config.load_host_settings()
+    if getattr(arguments, "cache_status", False):
+        return _cache_status(pipeline, base, sha, project_dir, settings, payload)
     problem = _preflight(pipeline, base, payload, project_dir)
+    if not problem and payload.get("selection"):
+        from . import resume
+        try:  # the job checks this again when it starts; refusing here costs no job
+            resume.plan_resume(payload["selection"], payload.get("resumeFrom"), pipeline, sha, base,
+                               _request_for(pipeline, base, project_dir).platform)
+        except resume.ResumeError as error:
+            problem = str(error)
     if problem:
         return _blocked(arguments.command, problem)  # before the job exists: nothing was leased and nothing waits in a queue
+    guard_key = None
+    if settings.repeat_guard_sec > 0:
+        limits = {"timeoutSec": arguments.timeout_sec, "stallSec": arguments.stall_sec, "leaseWait": arguments.lease_wait,
+                  "diskWait": getattr(arguments, "disk_wait", None), "domain": arguments.domain, "foreground": arguments.foreground}
+        guard_key = repeatguard.fingerprint(pipeline, payload, base, project_dir, comparing.run_git, limits)
+        previous = None if getattr(arguments, "allow_repeat", False) else repeatguard.check(guard_key, settings.repeat_guard_sec)
+        if previous is not None:
+            return _blocked(arguments.command, previous.message(settings.repeat_guard_sec))
     try:
         # Run stages' `cleanup`: outputs relative to the project folder, removed when the job ends; a refused path stops the job here.
         declared = outputs.stage_paths(pipeline["stages"])
@@ -806,8 +852,10 @@ def _start_pipeline(arguments: argparse.Namespace, pipeline: dict, payload: dict
     domain = arguments.domain
     if domain == "auto" and _request_for(pipeline, base, project_dir).platform in SIGNING_PLATFORMS:
         domain = "gui"  # signing needs the login keychain, which only the GUI session has
-    info = jobs.start_job(request, settings_root, domain=domain, foreground=arguments.foreground,
-                          work_roots=config.load_host_settings().roots)
+    info =jobs.start_job(request, settings_root, domain=domain, foreground=arguments.foreground, work_roots=settings.roots)
+    if guard_key is not None:
+        repeatguard.record(guard_key, info["jobId"])
+        repeatguard.prune(settings.repeat_guard_sec)
     _out(info)
     if arguments.watch and not arguments.foreground:
         arguments.job_id = info["jobId"]
@@ -887,6 +935,8 @@ def _common_run_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--foreground", action="store_true",
                         help="run in this process, not in a launchd domain (debugging only; not for signing: over SSH it cannot reach the login keychain; cannot be combined with --domain user|gui)")
     parser.add_argument("--watch", action="store_true", help="follow the job to its end")
+    parser.add_argument("--allow-repeat", action="store_true",
+                        help="start even when an identical start is within host.json repeatGuard.windowSec")
     parser.add_argument("--host", help="pin the host instead of choosing by capability")
     parser.add_argument("--remote-project")
     parser.add_argument("--checkout", metavar="ID", help="build in a managed checkout of the project (host.json projects.<candidate.repo>): "
@@ -901,7 +951,55 @@ def _configure_pipeline(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("pipeline", type=Path, help="a gdv.pipeline/1 file (read on this machine; sent to the host when it runs on an SSH host)")
     parser.add_argument("--sha", help="full commit under test; overrides candidate.sha and must be the commit that is checked out "
                                       "(otherwise the commit of the checkout is used and recorded)")
+    selection = parser.add_mutually_exclusive_group()
+    selection.add_argument("--stages", action="append", metavar="LIST",
+                           help="run only these stages (N or N:kind, comma-separated, repeatable); the others are carried over from an "
+                                "earlier run of the same commit (--resume-from, default: the newest one)")
+    selection.add_argument("--from-stage", metavar="ID", help="run this stage (N or N:kind) and every later one; carry the earlier ones over")
+    selection.add_argument("--only-failed", action="store_true", help="run the stages of the earlier run that did not pass; carry the rest over")
+    parser.add_argument("--resume-from", metavar="JOB_ID", help="the earlier run that stages are carried over from")
+    parser.add_argument("--keep-going", action="store_true",
+                        help="run the later stages after a failed run stage; the job then ends FAIL with every stage's outcome")
+    cache = parser.add_mutually_exclusive_group()
+    cache.add_argument("--reuse-results", action="store_true",
+                       help="answer a run stage from a cached PASS of the same commit, plan, device class, profile, stage and Valtrion version")
+    cache.add_argument("--no-cache", action="store_true", help="neither look up nor store results in the result cache")
+    parser.add_argument("--cache-status", action="store_true",
+                        help="print the result cache key and state of every run stage and exit; nothing is started")
     _common_run_options(parser)
+
+
+def _selection_payload(arguments: argparse.Namespace, document: dict, payload: dict) -> str | None:
+    """Put the stage selection, resume, keep-going and result cache options into the job payload; a problem with them, or None."""
+    from . import resume
+    stages = getattr(arguments, "stages", None)
+    selection: dict | None = None
+    if stages:
+        selection = {"stages": resume.split_list(stages)}
+    elif getattr(arguments, "from_stage", None):
+        selection = {"fromStage": arguments.from_stage}
+    elif getattr(arguments, "only_failed", False):
+        selection = {"onlyFailed": True}
+    resume_from = getattr(arguments, "resume_from", None)
+    if resume_from and selection is None:
+        return "--resume-from needs --stages, --from-stage or --only-failed"
+    if resume_from and not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,199}", resume_from):
+        return f"--resume-from {resume_from!r} is not a job id"
+    try:
+        resume.check_selection(selection, document["stages"])
+    except resume.ResumeError as error:
+        return str(error)
+    if selection is not None:
+        payload["selection"] = selection
+    if resume_from:
+        payload["resumeFrom"] = resume_from
+    if getattr(arguments, "keep_going", False):
+        payload["keepGoing"] = True
+    if getattr(arguments, "reuse_results", False):
+        payload["resultCache"] = "reuse"
+    elif getattr(arguments, "no_cache", False):
+        payload["resultCache"] = "off"
+    return None
 
 
 def _pipeline(arguments: argparse.Namespace) -> int:
@@ -923,6 +1021,9 @@ def _pipeline(arguments: argparse.Namespace) -> int:
         payload["shaPinned"] = True
     elif getattr(arguments, "generated", False):
         payload["inline"] = document  # `valtrion build`: the file is a temporary copy, the job reads the pipeline itself
+    problem = _selection_payload(arguments, document, payload)
+    if problem:
+        return _blocked("pipeline", problem)
     try:
         return _start_pipeline(arguments, document, payload, arguments.pipeline.resolve().parent, project_dir, document["id"])
     except (jobs.JobError, config.ConfigError, ValueError) as error:

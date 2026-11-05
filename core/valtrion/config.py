@@ -15,7 +15,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Sequence
 
-from . import buildcache, constants, core, workroot
+from . import buildcache, constants, core, resultcache, workroot
 from .adapter import DeviceInfo
 from .resolver import HostInfo
 from .schema import Validator, validate_document
@@ -141,6 +141,10 @@ class HostSettings:
     unity_accelerator: "UnityAccelerator | None" = None
     #: `buildCache`: retention of the published builds (`maxEntries`, `keepDays`, `dirtyKeepDays`); the built-in limits by default.
     build_cache: buildcache.Retention = field(default_factory=buildcache.Retention)
+    #: `resultCache`: whether pipelines reuse cached passing results without `--reuse-results` (off), and their retention.
+    result_cache: resultcache.Settings = field(default_factory=resultcache.Settings)
+    #: `repeatGuard.windowSec`: an identical pipeline start within this many seconds is refused (0, the default, turns it off).
+    repeat_guard_sec: float = 0.0
     #: `scratch.maxAgeHours`: the default lifetime of a scratch copy and the idle time before the sweep removes an expired one.
     scratch_max_age_hours: float = DEFAULT_SCRATCH_MAX_AGE_HOURS
 
@@ -231,7 +235,43 @@ def _load_host_settings(home: Path | None = None) -> HostSettings:
                         float(pressure_days), projects, float(wait_sec), tools_root=home / "tools",
                         unity_accelerator=_load_unity_accelerator(document.get("unityAccelerator")),
                         build_cache=_load_build_cache(document.get("buildCache")),
+                        result_cache=_load_result_cache(document.get("resultCache")),
+                        repeat_guard_sec=_load_repeat_guard(document.get("repeatGuard")),
                         scratch_max_age_hours=_load_scratch(document.get("scratch")))
+
+
+def _load_result_cache(value: Any) -> resultcache.Settings:
+    if value is None:
+        return resultcache.Settings()
+    if not isinstance(value, dict):
+        raise ConfigError("host.json: resultCache must be an object")
+    unknown = sorted(set(value) - {"reuse", "keepDays", "maxEntries"})
+    if unknown:
+        raise ConfigError(f"host.json: resultCache has unknown keys: {', '.join(unknown)}")
+    reuse = value.get("reuse", False)
+    if not isinstance(reuse, bool):
+        raise ConfigError("host.json: resultCache.reuse must be true or false")
+    days = value.get("keepDays", resultcache.DEFAULT_KEEP_DAYS)
+    if isinstance(days, bool) or not isinstance(days, (int, float)) or not math.isfinite(days) or days < 0:
+        raise ConfigError("host.json: resultCache.keepDays must be a non-negative number")
+    entries = value.get("maxEntries", resultcache.DEFAULT_MAX_ENTRIES)
+    if isinstance(entries, bool) or not isinstance(entries, int) or entries < 0:
+        raise ConfigError("host.json: resultCache.maxEntries must be a non-negative integer")
+    return resultcache.Settings(reuse, float(days), entries)
+
+
+def _load_repeat_guard(value: Any) -> float:
+    if value is None:
+        return 0.0
+    if not isinstance(value, dict):
+        raise ConfigError("host.json: repeatGuard must be an object")
+    unknown = sorted(set(value) - {"windowSec"})
+    if unknown:
+        raise ConfigError(f"host.json: repeatGuard has unknown keys: {', '.join(unknown)}")
+    window = value.get("windowSec", 0)
+    if isinstance(window, bool) or not isinstance(window, (int, float)) or not math.isfinite(window) or window < 0:
+        raise ConfigError("host.json: repeatGuard.windowSec must be a non-negative number")
+    return float(window)
 
 
 def _load_scratch(value: Any) -> float:

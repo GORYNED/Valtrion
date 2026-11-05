@@ -493,6 +493,12 @@ namespace Valtrion.Unity.Contracts
         /// <summary>What became of the outputs the run stages declared for removal; null when they declared none.</summary>
         public OutputCleanup Cleanup { get; set; }
 
+        /// <summary>What became of every stage of the pipeline job; null for a result that is not a pipeline job's.</summary>
+        public ResultPipelineRun PipelineRun { get; set; }
+
+        /// <summary>The run a result answered from the result cache came from; null for a result this job produced.</summary>
+        public ResultReusedFrom ReusedFrom { get; set; }
+
         public List<ResultArtifact> Artifacts { get; set; } = new List<ResultArtifact>();
 
         /// <summary>What remains unverified; required, and an empty list claims that nothing does.</summary>
@@ -524,6 +530,8 @@ namespace Valtrion.Unity.Contracts
                 Checkout = reader.OptObject("checkout") is ContractReader checkout ? ResultCheckout.Read(checkout) : null,
                 Build = reader.OptObject("build") is ContractReader build ? ResultBuild.Read(build) : null,
                 Cleanup = reader.OptObject("cleanup") is ContractReader cleanup ? OutputCleanup.Read(cleanup) : null,
+                PipelineRun = reader.OptObject("pipelineRun") is ContractReader run ? ResultPipelineRun.Read(run) : null,
+                ReusedFrom = reader.OptObject("reusedFrom") is ContractReader reused ? ResultReusedFrom.Read(reused) : null,
                 Artifacts = reader.Items("artifacts", ResultArtifact.Read),
                 Unverified = reader.Strings("unverified"),
             };
@@ -561,6 +569,8 @@ namespace Valtrion.Unity.Contracts
             if (Checkout != null) node.Set("checkout", Checkout.Write());
             if (Build != null) node.Set("build", Build.Write());
             if (Cleanup != null) node.Set("cleanup", Cleanup.Write());
+            if (PipelineRun != null) node.Set("pipelineRun", PipelineRun.Write());
+            if (ReusedFrom != null) node.Set("reusedFrom", ReusedFrom.Write());
             // Both lists are always written: an empty list is a claim ("nothing was left unverified"), omission is not.
             node.Set("artifacts", JsonBuild.Array(Artifacts, artifact => artifact.Write()));
             node.Set("unverified", JsonBuild.Strings(Unverified));

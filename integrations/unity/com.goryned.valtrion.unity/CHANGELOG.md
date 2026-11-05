@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- `ResultDocument.PipelineRun` (`ResultPipelineRun` with `PipelineId`, `ResumedFrom`, `KeepGoing` and `Stages` of `ResultStageRecord`) and `ResultDocument.ReusedFrom` (`ResultReusedFrom`): the optional `pipelineRun` and `reusedFrom` keys of `gdv.result/1` that Core writes for stage selection and the result cache (Core #82). The strict reader accepts them and writes them back; a result without them reads as before.
+
 ## 0.11.1 (2026-11-04)
 
 - **The contract readers accept every key Core 0.13.x writes.** Before, these documents were rejected with `unexpected property`:

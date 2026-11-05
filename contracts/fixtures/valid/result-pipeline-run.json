@@ -1,0 +1,39 @@
+{
+  "schema": "gdv.result/1",
+  "runId": "20261105T0910Z-p1-7c46db7-3-reused",
+  "status": "PASS",
+  "reason": null,
+  "candidate": { "repo": "ExampleApp", "sha": "0123456789abcdef0123456789abcdef01234567", "profile": "Internal", "unity": "6000.6.7f1", "dirty": false },
+  "target": { "platform": "android", "deviceId": "android:ZY22", "deviceClass": "phone-mid", "model": "moto g", "os": "Android 15", "osMajor": 15, "evidence": "physical" },
+  "host": { "id": "win-build", "transport": "local", "selectedBy": "local" },
+  "plan": { "id": "example.smoke.open", "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" },
+  "startedUtc": "2026-11-04T15:30:00Z",
+  "finishedUtc": "2026-11-04T15:31:12.250Z",
+  "layers": { "install": "PASS", "launch": "PASS", "scenario": "PASS" },
+  "steps": [],
+  "metrics": [],
+  "reusedFrom": {
+    "runId": "20261104T1530Z-p1-7c46db7-3-1", "jobId": "20261104T1530Z-p1-7c46db7",
+    "key": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd", "storedUtc": "2026-11-04T15:31:13Z"
+  },
+  "pipelineRun": {
+    "pipelineId": "example-release",
+    "resumedFrom": "20261104T1530Z-p1-7c46db7",
+    "keepGoing": true,
+    "stages": [
+      { "index": 1, "stage": "build", "disposition": "carried", "status": "PASS", "fromRun": "20261104T1530Z-p1-7c46db7",
+        "stageSha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee" },
+      { "index": 2, "stage": "install", "disposition": "carried", "status": "PASS", "fromRun": "20261104T1530Z-p1-7c46db7",
+        "deviceId": "android:ZY22", "stageSha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee" },
+      { "index": 3, "stage": "run", "disposition": "reused", "status": "PASS", "plan": "example.smoke.open",
+        "planSha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "runId": "20261105T0910Z-p1-7c46db7-3-reused",
+        "fromRun": "20261104T1530Z-p1-7c46db7-3-1", "stageSha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee" },
+      { "index": 4, "stage": "run", "disposition": "ran", "status": "PASS", "plan": "example.smoke.sensor", "deviceId": "android:ZY22",
+        "planSha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff", "runId": "20261105T0910Z-p1-7c46db7-4-1",
+        "stageSha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee" },
+      { "index": 5, "stage": "collect", "disposition": "not-run", "reason": "not reached" }
+    ]
+  },
+  "artifacts": [],
+  "unverified": ["reused from run 20261104T1530Z-p1-7c46db7-3-1 (job 20261104T1530Z-p1-7c46db7): this job did not run the plan"]
+}

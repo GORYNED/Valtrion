@@ -30,7 +30,8 @@ more, and then removed: its content first and the marker last. A removal that fa
 its marker and can be released again. A symlink or junction inside the folder is removed as a link; what it points to is never
 touched.
 
-Everything else in the work root that is not one of Valtrion's folders (`jobs`, `mirrors`, `launchd`, `scratch`, `tools`, `lfs-cache`) is
+Everything else in the work root that is not one of Valtrion's folders (`jobs`, `mirrors`, `launchd`, `scratch`, `tools`, `lfs-cache`,
+`result-cache`) is
 *unowned*: `doctor`, `workroot show` and `workroot sweep` list it (name, size, age, a lease or process that refers to it) and never
 remove it. `valtrion workroot adopt PATH --yes` (the owner's confirmation) moves such a folder into `scratch/` with a marker, so the
 normal expiry applies; a git repository with uncommitted changes, stashes or commits on no remote is refused unless
@@ -61,7 +62,8 @@ MARKER_KIND = "valtrion.scratch/1"
 CHECKOUT = "checkout"
 TOMBSTONE_PREFIX = ".removing-"
 #: The entries of the work root that are Valtrion's own; anything else there is unowned.
-RESERVED = ("jobs", "mirrors", "launchd", "scratch", "tools", "lfs-cache")  # lfs-cache: `lfs.CACHE_FOLDER`, the shared LFS objects
+#: lfs-cache: `lfs.CACHE_FOLDER`, the shared LFS objects; result-cache: `resultcache.FOLDER`, passing run stage results by key.
+RESERVED = ("jobs", "mirrors", "launchd", "scratch", "tools", "lfs-cache", "result-cache")
 NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,39}")
 SCRATCH_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,39}-[0-9a-f]{8}")
 #: How long the search for Unity projects (folders with `ProjectSettings/`, for their `unity-project:` lease) in one folder may take;
@@ -893,7 +895,7 @@ def _bytes(path: Path, deadline: float) -> tuple[int, bool]:
 
 def unowned(roots: workroot.WorkRoots, manager: lease.LeaseManager | None = None, processes: ProcessList | None = None,
             clock: Callable[[], float] = time.time, sizes: bool = True, size_budget_sec: float = SIZE_BUDGET_SEC) -> list[dict]:
-    """The entries of the work root that are not Valtrion's (anything beside `jobs`, `mirrors`, `launchd`, `scratch`, `tools`, `lfs-cache`, and
+    """The entries of the work root that are not Valtrion's (anything beside `jobs`, `mirrors`, `launchd`, `scratch`, `tools`, `lfs-cache`, `result-cache`, and
     any entry of `scratch/` without a valid marker): name, path, size, age, and the leases and processes that refer to it. Reported
     only: nothing here removes them. `processes` is `None` in an entry when the process list cannot be read; `bytesComplete` is
     false when the size budget ran out (then `bytes` is a lower bound)."""

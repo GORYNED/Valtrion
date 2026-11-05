@@ -40,6 +40,7 @@ PLATFORM = "macos"
 COMPANY = "Valtrion-Validation"
 VALIDATION_SUFFIX = ".gdv"
 BUILD_METHOD_ENV = "GDV_MACOS_BUILD_METHOD"
+SIGN_SCRIPT_ENV = "GDV_MACOS_SIGN_SCRIPT"
 SIGN_SCRIPT_FOLDER = Path("tools") / "build"  # without `signScript`, the first `sign-macos*.py` of this folder in the project or above it
 PROFILES_FILE = Path("validation") / "device" / "profiles.json"
 BUILD_TIMEOUT_SEC = 3600.0
@@ -129,7 +130,7 @@ def find_build_method(project: Path, environ: Mapping[str, str], profile: str = 
 
 
 def find_sign_script(project: Path, environ: Mapping[str, str], profile: str = "Validation") -> Path | None:
-    configured = environ.get("GDV_MACOS_SIGN_SCRIPT") or load_profile(project, profile).get("signScript")
+    configured = environ.get(SIGN_SCRIPT_ENV) or load_profile(project, profile).get("signScript")
     if configured:
         path = Path(configured) if Path(configured).is_absolute() else project / configured
         return path if path.is_file() else None
@@ -249,6 +250,24 @@ class MacOSAdapter(PlatformAdapter):
         return DeviceHealth(True, locked, thermal, battery, free, tuple(notes))
 
     # -- build ---------------------------------------------------------------------------------------------------------------
+
+    def toolchain(self) -> dict[str, str]:
+        """What changes the build besides the project's profile (in the build cache key already): the `GDV_MACOS_BUILD_METHOD` and
+        `GDV_MACOS_SIGN_SCRIPT` overrides, and the content of an absolute sign script named by the latter."""
+        found: dict[str, str] = {}
+        method = self._environ.get(BUILD_METHOD_ENV)
+        if method:
+            found["buildMethod"] = method
+        script = self._environ.get(SIGN_SCRIPT_ENV)
+        if script:
+            found["signScript"] = script
+            path = Path(script)
+            if path.is_absolute() and path.is_file():
+                try:
+                    found["signScriptSha256"] = core.sha256_file(path)
+                except OSError:
+                    pass
+        return found
 
     def build(self, project: Path, profile: str, out: Path) -> StepOutcome:
         if not self._darwin:

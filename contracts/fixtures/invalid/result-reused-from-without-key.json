@@ -1,0 +1,18 @@
+{
+  "schema": "gdv.result/1",
+  "runId": "20261105T0910Z-p1-7c46db7-3-reused",
+  "status": "PASS",
+  "reason": null,
+  "candidate": { "repo": "ExampleApp", "sha": "0123456789abcdef0123456789abcdef01234567", "profile": "Internal", "unity": "6000.6.7f1", "dirty": false },
+  "target": { "platform": "android", "deviceClass": "phone-mid", "osMajor": 15, "evidence": "physical" },
+  "host": { "id": "win-build", "transport": "local", "selectedBy": "local" },
+  "plan": { "id": "example.smoke.open", "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" },
+  "startedUtc": "2026-11-04T15:30:00Z",
+  "finishedUtc": "2026-11-04T15:31:12Z",
+  "layers": {},
+  "steps": [],
+  "metrics": [],
+  "reusedFrom": { "runId": "20261104T1530Z-p1-7c46db7-3-1" },
+  "artifacts": [],
+  "unverified": []
+}
