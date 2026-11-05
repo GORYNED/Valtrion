@@ -144,6 +144,10 @@ def _result_row(check: Check, platform: str | None, result: dict) -> Row:
         if status == constants.PASS:
             status = NOT_VERIFIED
         detail = (detail + "; " if detail else "") + "produced from a dirty tree"
+    reused = result.get("reusedFrom")
+    if isinstance(reused, dict) and reused.get("runId"):
+        # A result answered from the result cache: the run that produced the evidence is named, not this job.
+        detail = (detail + "; " if detail else "") + f"reused from run {reused['runId']}"
     row_platform = platform if platform is not None else result["target"]["platform"]
     return Row(check.key, check.type, row_platform, status, evidence, result["host"]["id"], detail, result["runId"], list(result["unverified"]))
 

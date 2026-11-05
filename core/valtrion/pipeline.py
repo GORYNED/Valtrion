@@ -22,7 +22,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
-from . import artifacts, buildcache, checkout, compare, config, constants, core, diskspace, externalui, gitstate, incremental, lease, providers, supervise, unityguard
+from . import __version__, artifacts, buildcache, checkout, compare, config, constants, core, diskspace, externalui, gitstate, incremental, lease, providers, resultcache, resume, supervise, unityguard
 from .adapter import DeviceHealth, DeviceInfo, PlatformAdapter, StepOutcome
 from .jobs import JobContext
 from .jobs import reap_cancelled_jobs as jobs_reap
@@ -64,6 +64,12 @@ class PipelineOptions:
     checkout_root: Path | None = None  # the root of that git checkout (the project folder may be a subfolder of it)
     checkout_remote: str | None = None  # what a missing managed checkout is cloned from
     unity_path: str = "."  # the Unity project below the checkout root
+    #: `--stages` / `--from-stage` / `--only-failed`: {"stages": [...]}, {"fromStage": ID} or {"onlyFailed": True}; None runs every stage.
+    selection: Mapping[str, Any] | None = None
+    resume_from: str | None = None  # `--resume-from JOB`: the earlier run the stages that are not selected are carried from
+    keep_going: bool = False  # `--keep-going`: a failed run stage does not stop the later stages; the job then ends FAIL
+    #: `--reuse-results` ("reuse"), `--no-cache` ("off"), or None: store passing run results, look up only with host.json resultCache.reuse.
+    result_cache: str | None = None
     sleep: Callable[[float], None] = time.sleep
     monotonic: Callable[[], float] = time.monotonic
     adapter_factory: Callable[[str], PlatformAdapter | None] = providers.get
@@ -722,24 +728,60 @@ def execute(pipeline: Mapping[str, Any], pipeline_path: Path | None, ctx: JobCon
     if adapter is None:
         return PipelineOutcome(constants.BLOCKED, f"no adapter for platform {platform} is installed on host {host['id']}"
                                + (f" ({providers.load_errors().get(platform)})" if providers.load_errors().get(platform) else ""))
+    try:
+        # `--stages`/`--from-stage`/`--only-failed`: what runs, and what is carried over from which earlier run (see `resume`).
+        resumed = resume.plan_resume(options.selection, options.resume_from, pipeline, candidate_sha, base, platform, ctx.home)
+    except resume.ResumeError as error:
+        return PipelineOutcome(constants.BLOCKED, str(error))
+    selected = resumed.selected if resumed is not None else frozenset(range(len(pipeline["stages"])))
+    if resumed is not None and resumed.device_id:
+        pipeline = {**pipeline, "device": {**pipeline["device"], "id": resumed.device_id}}  # the run uses the earlier install
+    if resumed is not None:
+        head_note.extend(resumed.notes)
+    try:
+        host_settings = config.load_host_settings(ctx.home)
+        cache_settings, cache_root = host_settings.result_cache, resultcache.cache_root(host_settings.work_root)
+    except config.ConfigError as error:
+        cache_settings, cache_root = None, None
+        if options.result_cache != "off":
+            head_note.append(f"the result cache is not used: {error}")
+    lookup_results = cache_settings is not None and (options.result_cache == "reuse" or (options.result_cache is None and cache_settings.reuse))
+    store_results = cache_settings is not None and options.result_cache != "off"
 
     device: DeviceInfo | None = None
     device_leased = False
-    artifact: Path | None = None
+    artifact: Path | None = resumed.build_entry.path if resumed is not None and resumed.build_entry is not None else None
     build_outcome: StepOutcome | None = None
-    build_info: dict[str, Any] | None = None  # the published build (or the reused one), recorded in every result of the job
+    #: The published build (or the reused one), recorded in every result of the job; a carried build stage keeps the earlier run's.
+    build_info: dict[str, Any] | None = resumed.build if resumed is not None and resumed.prior is not None else None
     reaped_dead_jobs = False  # the leftovers of cancelled jobs are removed before this job's first build only
     build_pending_release = False  # a build whose output is still in the work folder (not published): released after the install
-    used_entry: buildcache.Entry | None = None  # touched again before the install, so a long wait for the device does not let gc take it
+    used_entry: buildcache.Entry | None = resumed.build_entry if resumed is not None else None
     extra_layers: dict[str, str] = {}
     stage_results: list[dict] = []
     series_plans: dict[str, dict] = {}  # runId of a run stage's result -> the plan document it ran
     overall = PipelineOutcome(constants.PASS, None)
     stages = pipeline["stages"]
-    #: Stages that need the device: its lease is held from the first `install`/`run` to the last `install`/`run`/`collect`.
-    last_device_index = max((i for i, s in enumerate(stages) if s["stage"] in DEVICE_STAGES), default=-1)
+    #: Stages that need the device: its lease is held from the first `install`/`run` to the last `install`/`run`/`collect` that runs.
+    last_device_index = max((i for i, s in enumerate(stages) if s["stage"] in DEVICE_STAGES and i in selected), default=-1)
     lease_wait = float(ctx.spec.get("leaseWaitSec", 0))
-    runs_a_plan = any(s["stage"] == "run" for s in stages)
+    runs_a_plan = any(s["stage"] == "run" for i, s in enumerate(stages) if i in selected)
+    #: What became of each stage (`pipelineRun.stages` of the result): index -> record. A stage without one did not run.
+    records: dict[int, dict] = {}
+    current: list[int | None] = [None]  # the stage that is running: a way out through `fail` records its outcome
+    reused_hits: dict[int, resultcache.Hit] = {}  # run stages answered from the result cache
+
+    def record(index: int, disposition: str, status: str | None = None, reason: str | None = None, **extra: Any) -> dict:
+        stage = stages[index]
+        entry: dict[str, Any] = {"index": index + 1, "stage": stage["stage"], "disposition": disposition,
+                                 "stageSha256": resume.stage_sha(stage, base)}
+        if status is not None:
+            entry["status"] = status
+        if reason:
+            entry["reason"] = reason
+        entry.update({name: value for name, value in extra.items() if value is not None})
+        records[index] = entry
+        return entry
 
     def early(status: str, reason: str, on: DeviceInfo | None = None) -> dict:
         return _early_result(ctx, pipeline, plans, load_plan, first_plan, on or device, host, unity, dirty, extra_layers, status, reason,
@@ -777,14 +819,23 @@ def execute(pipeline: Mapping[str, Any], pipeline_path: Path | None, ctx: JobCon
                 if series["status"] == constants.PASS and series["runId"] in series_plans:
                     _attach_comparison(series, series_plans[series["runId"]], folders)
         core.atomic_write_json(directory / "summary.json", [_summary_entry(r) for r in stage_results])
-        chosen = finalize_result(_with_other_series(_worst_result(stage_results), stage_results), directory, ctx.store.result)
+        job_result = _with_other_series(_worst_result(stage_results), stage_results)
+        job_result, aggregated = _with_stage_record(job_result, pipeline["id"], [records.get(i) or {
+            "index": i + 1, "stage": s["stage"], "disposition": "not-run", "stageSha256": resume.stage_sha(s, base)}
+            for i, s in enumerate(stages)], resumed, options.keep_going, overall)
+        chosen = finalize_result(job_result, directory, ctx.store.result)
         overall.results = stage_results
-        if overall.status == constants.PASS:
+        if aggregated:
+            # `--keep-going`, or a stage carried over without a pass: the job status is the aggregate of every stage.
+            overall.status, overall.reason = chosen["status"], chosen["reason"]
+        elif overall.status == constants.PASS:
             overall.status, overall.reason = _job_status(chosen, stage_results)
         return overall
 
     def fail(status: str, reason: str) -> PipelineOutcome:
         overall.status, overall.reason = status, reason
+        if current[0] is not None and current[0] not in records:
+            record(current[0], "ran", status, reason)
         return conclude()
 
     def select(name: str) -> PipelineOutcome | None:
@@ -1009,18 +1060,106 @@ def execute(pipeline: Mapping[str, Any], pipeline_path: Path | None, ctx: JobCon
             return None, key, toolchain
         return buildcache.lookup(buildcache.builds_root(ctx.home), key), key, toolchain
 
+    def result_key(stage: Mapping[str, Any], plan_sha: str, device_class: str) -> resultcache.Key:
+        return resultcache.Key(pipeline["candidate"]["repo"], platform, str(candidate_sha), plan_sha, device_class,
+                               pipeline["candidate"]["profile"], resultcache.stage_fingerprint(stage, base), __version__)
+
+    discovered_class: list[str | None] = []  # the class discovery found for a lookup, once
+
+    def cache_device_class() -> str | None:
+        """The device class a lookup is keyed by: the pipeline's `device.class`, else the class of the device discovery would select
+        (nothing is leased or bound); None when no device can be named."""
+        if device is not None:
+            return device.device_class
+        if pipeline["device"].get("class"):
+            return str(pipeline["device"]["class"])
+        if not discovered_class:
+            try:
+                found, _ = select_device(adapter.discover(), pipeline["device"], load_plan(first_plan)[1] if first_plan else {})
+            except Exception:  # noqa: BLE001 - adapter code; without a class nothing is looked up
+                found = None
+            discovered_class.append(found.device_class if found is not None else None)
+        return discovered_class[0]
+
+    def look_up(index: int) -> resultcache.Hit | None:
+        """The cached passing result of run stage `index`, when lookups are on and the tree is clean; the miss is logged."""
+        if not lookup_results or cache_root is None or not resultcache.cacheable_commit(candidate_sha, dirty):
+            return None
+        stage = stages[index]
+        try:
+            _, _, plan_sha = load_plan(stage["plan"])
+        except (OSError, ValueError, KeyError):
+            return None
+        device_class = cache_device_class()
+        if device_class is None:
+            events.emit("log", "result cache: no lookup, the device class is unknown (name device.class in the pipeline)",
+                        step=resume.stage_name(index, stage))
+            return None
+        hit, why = resultcache.lookup(cache_root, result_key(stage, plan_sha, device_class))
+        if hit is None:
+            events.emit("log", f"result cache: {why}", step=resume.stage_name(index, stage))
+        return hit
+
+    def keep_result(index: int, merged: Mapping[str, Any]) -> None:
+        """Store a passing run stage result for later reuse (never one that was itself reused)."""
+        if not store_results or cache_root is None or device is None or merged["status"] != constants.PASS:
+            return
+        if not resultcache.cacheable_commit(candidate_sha, dirty):
+            return
+        try:
+            stored = resultcache.store(cache_root, result_key(stages[index], merged["plan"]["sha256"], device.device_class), merged,
+                                       ctx.job_id)
+            if stored is not None:
+                events.emit("log", f"result cache: stored the result of run {merged['runId']}", step=resume.stage_name(index, stages[index]),
+                            data={"key": stored.stem})
+                assert cache_settings is not None
+                resultcache.gc(cache_root, cache_settings.keep_days, cache_settings.max_entries, protect=(stored.stem,))
+        except (OSError, ValueError) as error:
+            events.emit("log", f"result cache: the result could not be stored: {type(error).__name__}: {error}")
+
+    prechecked: set[int] = set()  # run stages already looked up before the first stage (a miss is not looked up twice)
+    if lookup_results and resultcache.cacheable_commit(candidate_sha, dirty) and cache_device_class() is not None:
+        # Look every selected run stage up first: when all of them are answered, the build, install and collect stages are not needed.
+        for index, stage in enumerate(stages):
+            if index in selected and stage["stage"] == "run" and stage.get("plan"):
+                prechecked.add(index)
+                hit = look_up(index)
+                if hit is not None:
+                    reused_hits[index] = hit
+    selected_runs = [i for i, s in enumerate(stages) if i in selected and s["stage"] == "run"]
+    every_run_reused = bool(selected_runs) and all(i in reused_hits for i in selected_runs)
+
+    def settle() -> None:
+        """The stage that was running ended without a failure (a failure ends through `fail` or records itself): it passed."""
+        if current[0] is not None and current[0] not in records:
+            record(current[0], "ran", constants.PASS)
+        current[0] = None
+
     for index, stage in enumerate(stages):
+        settle()
         if ctx.cancelled():
             overall.cancelled = True
             return fail(constants.BLOCKED, "cancelled by request")
         name = f"{index + 1}:{stage['stage']}"
+        kind = stage["stage"]
+        if index not in selected:
+            assert resumed is not None
+            carried = resumed.carried_record(index, stage, base)
+            records[index] = carried
+            events.emit("log", f"stage {name} carried over from run {carried['fromRun']} ({carried.get('status') or 'did not run there'})",
+                        step=name)
+            continue
+        if every_run_reused and kind != "run":
+            record(index, "not-run", reason="every run stage was answered from the result cache")
+            events.emit("log", f"stage {name} skipped: every run stage was answered from the result cache", step=name)
+            continue
+        current[0] = index
         events.emit("step.started", name, step=name)
         ctx.flush()
-        kind = stage["stage"]
         if device_leased and (index > last_device_index or kind == "build"):
             release_device()  # the device is given back right after the last device stage, and never held into a build
         if kind == "build":
-            if any(later["stage"] in DEVICE_CLAIM_STAGES for later in stages[index + 1:]):
+            if any(later["stage"] in DEVICE_CLAIM_STAGES for i, later in enumerate(stages) if i > index and i in selected):
                 blocked = preselect_device(name)
                 if blocked is not None:
                     return blocked
@@ -1156,6 +1295,18 @@ def execute(pipeline: Mapping[str, Any], pipeline_path: Path | None, ctx: JobCon
                     continue
             build_pending_release = True  # not published (no key, or it failed): the output is released after the install
             continue
+        if kind == "run" and stage.get("plan"):
+            hit = reused_hits[index] if index in reused_hits else None if index in prechecked else look_up(index)
+            if hit is not None:
+                # Answered from the result cache: the plan does not run, the device is not needed, and the result says where it came from.
+                plan = load_plan(stage["plan"])[1]
+                merged = _reused_result(hit, ctx.job_id, index, plan, directory)
+                events.emit("step.finished", f"reused from run {hit.result['runId']} (job {hit.job_id})", step=name, status=merged["status"])
+                stage_results.append(merged)
+                series_plans[merged["runId"]] = plan
+                record(index, "reused", merged["status"], plan=plan["id"], planSha256=merged["plan"]["sha256"], runId=merged["runId"],
+                       fromRun=hit.result["runId"])
+                continue
         if kind in ("install", "run"):
             blocked = claim_device(name)
             if blocked is not None:
@@ -1195,7 +1346,9 @@ def execute(pipeline: Mapping[str, Any], pipeline_path: Path | None, ctx: JobCon
             events.emit("step.finished", installed.reason, step=name, status=installed.status)
             if not installed.ok:
                 stage_results.append(early(installed.status, f"install failed: {installed.reason}"))
+                record(index, "ran", installed.status, f"install failed: {installed.reason}", deviceId=device.id if device else None)
                 return fail(installed.status, f"install failed: {installed.reason}")
+            record(index, "ran", constants.PASS, deviceId=device.id if device else None)
             continue
         if kind == "run":
             assert device is not None
@@ -1226,13 +1379,32 @@ def execute(pipeline: Mapping[str, Any], pipeline_path: Path | None, ctx: JobCon
             events.emit("step.finished", merged["reason"], step=name, status=merged["status"])
             stage_results.append(merged)
             series_plans[merged["runId"]] = plan
-            if merged["status"] != constants.PASS:
+            record(index, "ran", merged["status"], merged["reason"], plan=plan["id"], planSha256=plan_sha, runId=merged["runId"],
+                   deviceId=device.id)
+            keep_result(index, merged)
+            if merged["status"] != constants.PASS and not options.keep_going:
                 break
             continue
         if kind == "collect":
             events.emit("step.finished", "device output is collected by each run stage", step=name, status=constants.PASS)
             continue
+    settle()
     return conclude()
+
+
+def _reused_result(hit: resultcache.Hit, job_id: str, index: int, plan: Mapping[str, Any], directory: Path) -> dict:
+    """The result of a run stage answered from the result cache: the stored result under this job's run id, with `reusedFrom` naming
+    the run it came from and a note that this job did not run the plan. Its times, target, host and build are the original run's."""
+    run_id = core.safe_identifier(f"{job_id}-{index + 1}-reused")
+    run_directory = directory / "runs" / f"{index + 1:02d}-{core.safe_segment(plan['id'], 'plan', 40)}-reused"
+    run_directory.mkdir(parents=True, exist_ok=True)
+    original = hit.result
+    document = {name: value for name, value in original.items() if name not in ("comparison", "cleanup", "pipelineRun", "reusedFrom")}
+    document.update({"runId": run_id, "artifacts": [], "reusedFrom": {
+        "runId": original["runId"], "jobId": hit.job_id, "key": hit.key, "storedUtc": hit.stored_utc}})
+    document["unverified"] = [*original["unverified"], f"reused from run {original['runId']} (job {hit.job_id}): this job did not run the "
+                              "plan; the result cache matched the commit, plan, device class, profile, stage and Valtrion version"]
+    return finalize_result(document, run_directory, run_directory / "result.json", include_top=True)
 
 
 def _bounded(call: Callable[[], StepOutcome], stage: Mapping[str, Any], adapter_name: str, default_sec: float = 3600.0) -> StepOutcome:
@@ -1270,6 +1442,44 @@ def _with_other_series(chosen: dict, results: Sequence[dict]) -> dict:
         return chosen
     notes = [f"series {r['plan']['id']}: {r['comparison']['verdict']}" for r in others]
     return {**chosen, "comparison": {**comparison, "details": [*comparison["details"], *notes]}}
+
+
+def _with_stage_record(document: dict, pipeline_id: str, records: Sequence[dict], resumed: "resume.ResumePlan | None",
+                       keep_going: bool, overall: PipelineOutcome) -> tuple[dict, bool]:
+    """The job result with `pipelineRun` (what became of every stage), and whether its status was replaced by the aggregate of the
+    stages: with `--keep-going` any stage that did not pass makes the job FAIL; without it a carried stage that did not pass (or never
+    ran) decides a job whose own stages passed."""
+    run: dict[str, Any] = {"pipelineId": pipeline_id, "stages": [dict(r) for r in records]}
+    if resumed is not None and resumed.prior is not None:
+        run["resumedFrom"] = resumed.prior.job_id
+    if keep_going:
+        run["keepGoing"] = True
+    document = {**document, "pipelineRun": run}
+    if overall.cancelled:
+        return document, False
+    problems: list[tuple[str, str]] = []
+    for item in records:
+        status = item.get("status")
+        if item["disposition"] == "not-run" or status == constants.PASS:
+            continue
+        name = f"{item['index']}:{item['stage']}"
+        detail = f": {' '.join(str(item['reason']).split())[:300]}" if item.get("reason") else ""
+        if item["disposition"] == "carried":
+            problems.append((status or constants.BLOCKED, f"{name} carried over from run {item.get('fromRun')} "
+                             + (f"is {status}{detail}" if status else "never ran there")))
+        elif keep_going:
+            problems.append((str(status), f"{name} {status}{detail}"))
+    if not problems:
+        return document, False
+    if keep_going:
+        reason = (f"{len(problems)} of {len(records)} stages did not pass (--keep-going ran the stages after a failure): "
+                  + "; ".join(text for _, text in problems))
+        return {**document, "status": constants.FAIL, "reason": reason}, True
+    if document["status"] != constants.PASS:
+        return document, False
+    status, text = problems[0]
+    more = f" (and {len(problems) - 1} more carried stage(s) that did not pass)" if len(problems) > 1 else ""
+    return {**document, "status": status, "reason": f"the selected stages passed, but stage {text}{more}"}, True
 
 
 def _summary_entry(result: Mapping[str, Any]) -> dict:
@@ -1419,5 +1629,40 @@ def run_pipeline_job(ctx: JobContext) -> PipelineOutcome:
         device_poll_sec=float(payload.get("devicePollSec", DEFAULT_DEVICE_POLL_SEC)),
         op_timeout_sec=float(payload.get("opTimeoutSec", 300.0)), sha_pinned=bool(payload.get("shaPinned", False)),
         checkout_id=payload.get("checkoutId"), checkout_root=Path(payload["checkoutRoot"]) if payload.get("checkoutRoot") else None,
-        checkout_remote=payload.get("checkoutRemote"), unity_path=payload.get("unityPath") or ".")
+        checkout_remote=payload.get("checkoutRemote"), unity_path=payload.get("unityPath") or ".",
+        selection=payload.get("selection") or None, resume_from=payload.get("resumeFrom") or None,
+        keep_going=bool(payload.get("keepGoing", False)), result_cache=payload.get("resultCache"))
     return execute(pipeline, path, ctx, options)
+
+
+def cache_status(pipeline: Mapping[str, Any], base: Path, sha: str | None, dirty: bool, platform: str | None,
+                 work_root: Path) -> list[dict]:
+    """`valtrion pipeline --cache-status`: for each run stage, its result cache key and whether a trusted passing result is stored
+    under it. The device class is the pipeline's `device.class` (discovery is not run for a status)."""
+    root = resultcache.cache_root(work_root)
+    rows: list[dict] = []
+    for index, stage in enumerate(pipeline["stages"]):
+        if stage["stage"] != "run" or not stage.get("plan"):
+            continue
+        row: dict[str, Any] = {"stage": resume.stage_name(index, stage), "plan": stage["plan"]}
+        plan_hash = resume.plan_sha(stage, base)
+        device_class = pipeline.get("device", {}).get("class")
+        if not resultcache.cacheable_commit(sha, dirty):
+            row.update(state="uncacheable", reason="the tree is dirty or its commit is unknown: nothing is stored or reused")
+        elif plan_hash is None:
+            row.update(state="uncacheable", reason="the plan cannot be read")
+        elif not platform:
+            row.update(state="unknown", reason="the platform is unknown")
+        elif not device_class:
+            row.update(state="unknown", reason="the pipeline names no device.class; the job looks up with the class of the device it selects")
+        else:
+            key = resultcache.Key(pipeline["candidate"]["repo"], platform, str(sha), plan_hash, str(device_class),
+                                  pipeline["candidate"]["profile"], resultcache.stage_fingerprint(stage, base), __version__)
+            hit, why = resultcache.lookup(root, key, touch=False)
+            row.update(key=key.digest, components=key.components())
+            if hit is not None:
+                row.update(state="hit", fromRun=hit.result["runId"], fromJob=hit.job_id, storedUtc=hit.stored_utc)
+            else:
+                row.update(state="miss", reason=why)
+        rows.append(row)
+    return rows

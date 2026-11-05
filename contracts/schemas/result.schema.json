@@ -148,6 +148,50 @@
         "builtByJob": { "type": "string", "minLength": 1 }
       }
     },
+    "pipelineRun": {
+      "description": "Added by a pipeline job to its job-level result: what became of every stage of the pipeline. `ran` in this job, `carried` over from an earlier run (`fromRun`, with the status it had there) because it was not selected (`--stages`, `--from-stage`, `--only-failed`), `reused` from the result cache (`fromRun` is the run whose result was reused), or `not-run` (not reached, or not needed).",
+      "type": "object",
+      "required": ["pipelineId", "stages"],
+      "additionalProperties": false,
+      "properties": {
+        "pipelineId": { "$ref": "common.schema.json#/$defs/identifier" },
+        "resumedFrom": { "$ref": "common.schema.json#/$defs/identifier", "description": "The earlier run (job id) the stages that were not selected were carried from." },
+        "keepGoing": { "type": "boolean", "description": "True when the job ran on after a failed run stage (`--keep-going`)." },
+        "stages": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["index", "stage", "disposition"],
+            "additionalProperties": false,
+            "properties": {
+              "index": { "$ref": "common.schema.json#/$defs/int32", "minimum": 1 },
+              "stage": { "enum": ["build", "install", "run", "collect"] },
+              "disposition": { "enum": ["ran", "carried", "reused", "not-run"] },
+              "status": { "$ref": "common.schema.json#/$defs/status" },
+              "reason": { "type": "string", "minLength": 1 },
+              "plan": { "$ref": "common.schema.json#/$defs/identifier" },
+              "planSha256": { "$ref": "common.schema.json#/$defs/sha256" },
+              "stageSha256": { "$ref": "common.schema.json#/$defs/sha256", "description": "Hash of the stage definition (and pre-launch files): a carried stage must not have changed." },
+              "runId": { "$ref": "common.schema.json#/$defs/identifier" },
+              "deviceId": { "$ref": "common.schema.json#/$defs/identifier" },
+              "fromRun": { "$ref": "common.schema.json#/$defs/identifier" }
+            }
+          }
+        }
+      }
+    },
+    "reusedFrom": {
+      "description": "Present when this run stage result was not produced by this job but reused from the result cache (`valtrion pipeline --reuse-results`): the run and job that produced it and the cache key.",
+      "type": "object",
+      "required": ["runId", "key"],
+      "additionalProperties": false,
+      "properties": {
+        "runId": { "$ref": "common.schema.json#/$defs/identifier" },
+        "jobId": { "$ref": "common.schema.json#/$defs/identifier" },
+        "key": { "$ref": "common.schema.json#/$defs/sha256" },
+        "storedUtc": { "$ref": "common.schema.json#/$defs/utc" }
+      }
+    },
     "cleanup": {
       "$ref": "common.schema.json#/$defs/outputCleanup",
       "description": "Added when the job ends, for a pipeline whose run stages declared cleanup paths: what was removed, kept and refused."
