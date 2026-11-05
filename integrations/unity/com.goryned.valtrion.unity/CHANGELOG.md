@@ -1,19 +1,16 @@
 # Changelog
 
-## Unreleased
-
-- `ResultDocument.PipelineRun` (`ResultPipelineRun` with `PipelineId`, `ResumedFrom`, `KeepGoing` and `Stages` of `ResultStageRecord`) and `ResultDocument.ReusedFrom` (`ResultReusedFrom`): the optional `pipelineRun` and `reusedFrom` keys of `gdv.result/1` that Core writes for stage selection and the result cache (Core #82). The strict reader accepts them and writes them back; a result without them reads as before.
-
 ## 0.11.1 (2026-11-04)
 
-- **The contract readers accept every key Core 0.13.x writes.** Before, these documents were rejected with `unexpected property`:
+- **The contract readers accept every key Core 0.13.x and 0.14.0 write.** Before, these documents were rejected with `unexpected property`:
   - `PipelineStage.ExternalUi` (`PipelineExternalUi`: `externalUi` of a run stage, from Core 0.13.0): `Command` (the argv list, at least one non-empty item, required) and `TimeoutSec` (at least 1, optional);
   - `ResultDocument.Checkout` (`ResultCheckout`: `checkout` of `gdv.result/1`, written when the job's build stage settled the project commit): `Folder`, `Sha`, `Switched`, `Fetched` (required), `Id`, `Created`, `PreviousSha` (optional);
   - `HostEntry.Python` and `HostEntry.ValtrionCommand` (`python`, `valtrionCommand` of a `gdv.hosts/1` host, recorded by `valtrion hosts add` and `valtrion hosts sync`).
 - `JobDocument.Cleanup` and `ResultDocument.Cleanup` (`OutputCleanup` with `Base`, `Removed`, `Kept` and `Refused` of `CleanupPathReason`) and `PipelineStage.Cleanup`: the optional `cleanup` keys of `gdv.job/1`, `gdv.result/1` and the `gdv.pipeline/1` stage (Core: declared job outputs, #75) are read and written. Documents without them behave as before.
+- `ResultDocument.PipelineRun` (`ResultPipelineRun` with `PipelineId`, `ResumedFrom`, `KeepGoing` and `Stages` of `ResultStageRecord`) and `ResultDocument.ReusedFrom` (`ResultReusedFrom`): the optional `pipelineRun` and `reusedFrom` keys of `gdv.result/1` that Core writes for stage selection and the result cache (Core 0.14.0, #82). The strict reader accepts them and writes them back; a result without them reads as before.
 - All additions are optional keys and the objects stay closed: an unknown key, a missing required key or a wrong type is still rejected, and documents without the new keys read and write as before.
 - New golden fixtures `valid/result-checkout.json`, `valid/hosts-sync-paths.json`, `invalid/result-checkout-missing-fetched.json` and `invalid/hosts-empty-valtrion-command.json`; every valid fixture, `valid/pipeline-external-ui.json` included, now round-trips in `ContractFixtureTests`.
-- The Runtime harness is unchanged. Compatible Core versions are listed in `compat.json` (package 0.11.x: Core 0.8.0 up to, not including, 0.14).
+- The Runtime harness is unchanged. Compatible Core versions are listed in `compat.json`: package 0.11.1 works with Core 0.8.0 up to, not including, 0.15 (Core 0.14.0 included); 0.11.0 lacks these readers and stays limited to Core below 0.14.
 
 ## 0.11.0 (2026-11-04)
 
