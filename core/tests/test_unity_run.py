@@ -535,6 +535,17 @@ class EditorLookupTests(UnityRunTestCase):
         self.assertEqual("STATUS BLOCKED", lines[-1])
 
 
+class DefaultPurposeTests(unittest.TestCase):
+    def test_a_session_working_copy_names_the_run(self):
+        project = Path("D:/Projects/Repo/.claude/worktrees/task-7/Game")
+        self.assertEqual("Unity tests (EditMode) · task-7",
+                         unityrun.default_purpose(["-runTests", "-testPlatform", "EditMode"], project))
+
+    def test_outside_a_working_copy_it_is_just_what_the_run_does(self):
+        with mock.patch.object(unityrun.Path, "cwd", return_value=Path("D:/Projects/Repo")):
+            self.assertEqual("Unity batch method", unityrun.default_purpose(["-executeMethod", "Build.Run"], Path("D:/Projects/Repo/Game")))
+
+
 class ProgressFileTests(UnityRunTestCase):
     def test_unity_is_told_where_to_report_its_progress(self):
         dump = self.base / "dump"

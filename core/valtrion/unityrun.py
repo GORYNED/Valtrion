@@ -226,6 +226,14 @@ class _Handlers:
                 pass
 
 
+def default_purpose(args: Sequence[str], project: Path) -> str:
+    """What the leases say a run is for when the caller gives no `--purpose`: what the run does and, for an agent's session, the name of
+    its working copy (`Unity tests (EditMode) · task-ab12cd`), which stands for the session on the dashboard."""
+    title, _ = progresswindow.describe_run(args, None)
+    label = core.worktree_label(project) or core.worktree_label(Path.cwd())
+    return f"{title} · {label}" if label else title
+
+
 def run(
         unity_args: Sequence[str], project_dir: Path | None = None, unity: str | None = None,
         lease_wait_sec: float = DEFAULT_LEASE_WAIT_SEC, timeout_sec: float = 0.0, stall_sec: float = DEFAULT_STALL_SEC,
@@ -286,7 +294,7 @@ def run(
     owner = os.environ.get("GDV_OWNER") or f"{_user()}@{core.local_host_id()}"
     pid = os.getpid()
     session = f"unity-run-{pid}"
-    what = purpose or "valtrion unity run"
+    what = purpose or default_purpose(args, project)
     deadline = time.monotonic() + max(0.0, lease_wait_sec)
     work = Path(tempfile.mkdtemp(prefix="valtrion-unity-"))
     progress_file = testprogress.path_for(session, home)

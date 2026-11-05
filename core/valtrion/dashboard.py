@@ -152,6 +152,8 @@ def job_list(home: Path, now: datetime, limit: int = RECENT_JOBS) -> list[dict]:
             "stallSec": (job.get("watchdog") or {}).get("stallSec"), "timeoutSec": (job.get("watchdog") or {}).get("timeoutSec"),
             "lastProgressSec": _age_sec((job.get("watchdog") or {}).get("lastProgressUtc"), now)}
         item.update(_progress(directory))
+        spec = _read(directory / "spec.json") or {}
+        item["worktree"] = core.worktree_label((spec.get("payload") or {}).get("projectDir") if isinstance(spec.get("payload"), dict) else None)
         if item["active"]:
             item["device"] = device_progress(directory, item["currentStep"], now)
         result.append(item)
@@ -337,10 +339,10 @@ class Collector:
         return {
             "schema": SCHEMA, "host": {"id": core.local_host_id(), "os": core.local_os()}, "utc": core.format_utc(now),
             "leases": held, "jobs": job_list(self.home, now), "unity": editors, "machine": stats, "devices": devices(self.home, held),
-            "slots": slots(self.home, held)}
+            "slots": slots(self.home, held, now)}
 
 
-def slots(home: Path, held: list[dict]) -> dict:
+def slots(home: Path, held: list[dict], now: datetime | None = None) -> dict:
     """The Editor slots of this host, all of them, each free or held (with what runs in it): the same total that `unity run` counts."""
     try:
         capacity = lease.unity_editor_capacity(home)
@@ -355,11 +357,15 @@ def slots(home: Path, held: list[dict]) -> dict:
         if entry is None:
             editor_slots.append({"slot": number, "state": "free"})
             continue
+        project = projects.get(entry.get("session"))
         slot = {
             "slot": number, "state": "held", "purpose": entry.get("purpose"), "owner": entry.get("owner"), "pid": entry.get("pid"),
-            "heldSec": entry.get("heldSec"), "renewedSec": entry.get("renewedSec"), "project": projects.get(entry.get("session"))}
+            "heldSec": entry.get("heldSec"), "renewedSec": entry.get("renewedSec"), "project": project,
+            "worktree": core.worktree_label(project)}
         counted = testprogress.read(testprogress.path_for(entry["session"], home)) if entry.get("session") else None
         if counted is not None:  # the Unity package reports "N of M tests" for this run
+            counted["updatedSec"] = _age_sec(counted["utc"], now or core.now())  # the Editor process wrote the file (a background thread)
+            counted["mainSec"] = _age_sec(counted["mainUtc"], now or core.now())  # the Editor's main thread last ran (a long test blocks it)
             slot["progress"] = counted
         editor_slots.append(slot)
     return {"capacity": capacity, "unityEditor": editor_slots}

@@ -1,7 +1,7 @@
 # Valtrion Unity
 
 Unity is Valtrion's first and currently only ready application integration. Valtrion manages repeatable checks and their
-execution evidence; Core also supervises ordinary processes without Unity. This package (0.11.2) ships the **contracts** (C# readers and writers for the Valtrion JSON documents) and the
+execution evidence; Core also supervises ordinary processes without Unity. This package (0.12.0) ships the **contracts** (C# readers and writers for the Valtrion JSON documents) and the
 development-only Runtime **harness** (plan inbox, runner, steps, probes, result writer). The host CLI, the JSON Schemas and the
 golden fixtures live in the repository root (`core/` and `contracts/`); see the repository `docs/` for the CLI.
 
@@ -33,7 +33,7 @@ same reviewed checkout as Core. Add a local path to `Packages/manifest.json` for
 
 For a shared project, use `https://github.com/GORYNED/Valtrion.git?path=integrations/unity/com.goryned.valtrion.unity#<full-reviewed-commit-sha>`
 with the full SHA substituted; do not commit an absolute local path. Public HTTPS Git installation needs no GitHub account or token; private forks require existing access. This package is
-MIT licensed; the notice is included in `LICENSE.md`. Core 0.14.1 and this package 0.11.2 are paired by `compat.json`; identical
+MIT licensed; the notice is included in `LICENSE.md`. Core 0.15.0 and this package 0.12.0 are paired by `compat.json`; identical
 version numbers are not required. The repository tests use Unity Test Framework 1.8.0; the repository's test Editor is specified in
 `integrations/unity/UnityProject/ProjectSettings/ProjectVersion.txt`.
 

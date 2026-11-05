@@ -53,6 +53,15 @@ h3{font:500 12px/1 var(--body);text-transform:uppercase;letter-spacing:.07em;col
 .bar{height:6px;border-radius:99px;background:#0c1a2c;overflow:hidden;margin-top:10px}
 .bar>i{display:block;height:100%;background:linear-gradient(90deg,var(--blue),var(--teal));border-radius:99px;transition:width .6s}
 .bar.busy>i{width:40%;animation:slide 1.6s ease-in-out infinite}
+.bar.live>i{position:relative;overflow:hidden}
+.bar.live>i::after{content:"";position:absolute;inset:0;background:linear-gradient(90deg,transparent,#ffffff77,transparent);transform:translateX(-100%);animation:shine 1.3s linear infinite}
+@keyframes shine{to{transform:translateX(100%)}}
+.bar.silent>i{background:var(--amber)}
+.signal{display:flex;align-items:center;color:var(--muted);font-size:12px;margin-top:6px}.signal .warn{color:var(--amber)}
+.dotlive{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--teal);margin-right:7px;animation:pulse 1.3s ease-in-out infinite}
+.dotlive.quiet{background:var(--muted);animation:none}.dotlive.silent{background:var(--amber);animation:none}
+@keyframes pulse{50%{opacity:.25}}
+.session{display:inline-block;margin-top:5px;padding:1px 9px;border-radius:99px;background:#0c1a2c;border:1px solid var(--line);color:var(--blue);font-size:12px;overflow-wrap:anywhere}
 @keyframes slide{0%{margin-left:-40%}100%{margin-left:100%}}
 .meta{display:flex;justify-content:space-between;color:var(--muted);font-size:12px;margin-top:6px;gap:12px}
 .stack{display:flex;height:22px;border-radius:8px;overflow:hidden;background:#0c1a2c;margin:12px 0 10px}
@@ -99,8 +108,25 @@ function table(heads, rows) {
   return t;
 }
 function busyBar() { const b = el('div', 'bar busy'); b.append(el('i')); return b; }
-function doneBar(fraction) { const b = el('div', 'bar'), i = el('i'); i.style.width = Math.max(1, Math.min(100, Math.round(100 * fraction))) + '%'; b.append(i); return b; }
+// How alive a run looks: a signal (the Editor's progress file or the app's heartbeat) newer than 15 s is "live", older than 60 s is "silent".
+function aliveness(ageSec) { return ageSec == null ? 'quiet' : ageSec <= 15 ? 'live' : ageSec <= 60 ? 'quiet' : 'silent'; }
+function doneBar(fraction, ageSec) {
+  const b = el('div', 'bar ' + aliveness(ageSec)), i = el('i'); i.style.width = Math.max(1, Math.min(100, Math.round(100 * fraction))) + '%'; b.append(i); return b;
+}
 function testsText(p) { return `${p.done} of ${p.total} tests` + (p.failed ? ` · ${p.failed} failed` : ''); }
+function etaText(p) {
+  const a = Date.parse(p.startedUtc), z = Date.parse(p.utc);
+  if (!(p.done >= 3) || isNaN(a) || isNaN(z) || z <= a) return '';
+  return '~' + dur((p.total - p.done) * (z - a) / 1000 / p.done) + ' left';
+}
+function signal(ageSec, what, busySec) {
+  const s = el('div', 'signal'), state = aliveness(ageSec);
+  // The Editor writes from a background thread, so a long synchronous test keeps the signal alive: say that the main thread is busy with it.
+  const busy = state === 'live' && busySec != null && busySec > 20 ? ` · busy with one test for ${dur(busySec)}` : '';
+  s.append(el('span', 'dotlive ' + state), el('span', state === 'silent' ? 'warn' : '', ageSec == null ? '' : state === 'silent' ? `no signal from ${what} for ${dur(ageSec)}` : state === 'live' ? `live · updated ${Math.round(ageSec)}s ago${busy}` : `last signal ${dur(ageSec)} ago`));
+  return s;
+}
+function sessionChip(name) { return name ? el('div', 'session', name) : null; }
 function emptyBar() { return el('div', 'bar'); }
 
 function slotCard(title, state, head) {
@@ -111,14 +137,17 @@ function slotCard(title, state, head) {
 function editorSlot(s, total) {
   if (s.state !== 'held') { const c = slotCard('Free', 'free', `Unity Editor · slot ${s.slot} of ${total}`); c.append(emptyBar()); return c; }
   const c = slotCard(s.purpose || 'unity run', 'active', `Unity Editor · slot ${s.slot} of ${total}`);
-  const p = s.progress && s.progress.total > 0 ? s.progress : null;
+  const p = s.progress && s.progress.total > 0 ? s.progress : null, chip = sessionChip(s.worktree);
+  if (chip) c.append(chip);
   c.append(el('div', 'sub', [baseName(s.project), s.owner, s.pid ? `pid ${s.pid}` : ''].filter(Boolean).join(' · ')));
   if (p && p.current) c.append(el('div', 'sub', short(p.current, 90)));
-  c.append(p ? doneBar(p.done / p.total) : busyBar());
+  c.append(p ? doneBar(p.done / p.total, p.updatedSec) : busyBar());
   const m = el('div', 'meta');
-  if (p) m.append(el('span', '', testsText(p)), el('span', '', `${Math.round(100 * p.done / p.total)}% · ${dur(s.heldSec)}`));
+  if (p) m.append(el('span', '', testsText(p)), el('span', '', [`${Math.round(100 * p.done / p.total)}%`, etaText(p), dur(s.heldSec)].filter(Boolean).join(' · ')));
   else m.append(el('span', '', `running ${dur(s.heldSec)}`), el('span', '', `alive signal ${dur(s.renewedSec)} ago`));
-  c.append(m); return c;
+  c.append(m);
+  if (p) c.append(signal(p.updatedSec, 'Unity', p.mainSec));
+  return c;
 }
 function deviceSlot(d) {
   const c = slotCard(d.model || d.id, !d.online ? 'off' : (d.busy ? 'active' : 'free'), `${d.platform || 'device'} · 1 slot`);
@@ -128,11 +157,13 @@ function deviceSlot(d) {
 }
 function jobCard(j) {
   const c = el('div', 'card active');
-  c.append(el('div', 'title', `${j.project || j.kind || 'job'} · ${j.kind || ''}`), el('div', 'sub', j.id));
+  c.append(el('div', 'title', `${j.project || j.kind || 'job'} · ${j.kind || ''}`));
+  const chip = sessionChip(j.worktree); if (chip) c.append(chip);
+  c.append(el('div', 'sub', j.id));
   const steps = el('div', 'steps'); (j.steps || []).forEach((s) => steps.append(el('span', 'pill ' + s.status, `${s.step}  ${s.status === 'running' ? '…' : s.status}`))); c.append(steps);
   const d = j.device;
   c.append(el('div', 'sub', j.phase ? `phase: ${j.phase}` : (j.message || '')));
-  if (d && d.step > 0 && d.total) c.append(el('div', 'sub', `on the device: step ${d.step} of ${d.total}${d.stepType ? ' · ' + d.stepType : ''}`), doneBar(d.step / d.total));
+  if (d && d.step > 0 && d.total) c.append(el('div', 'sub', `on the device: step ${d.step} of ${d.total}${d.stepType ? ' · ' + d.stepType : ''}`), doneBar(d.step / d.total, d.ageSec), signal(d.ageSec, 'the app'));
   else if (d && d.step > 0) c.append(el('div', 'sub', `on the device: step ${d.step}${d.stepType ? ' · ' + d.stepType : ''}`), busyBar());
   else c.append(busyBar());
   const stall = j.stallSec ? Math.min(100, Math.round(100 * (j.lastProgressSec || 0) / j.stallSec)) : 0;

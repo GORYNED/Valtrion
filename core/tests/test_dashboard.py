@@ -121,11 +121,11 @@ class DeviceTests(HomeCase):
         (self.home / "registry.json").write_text(json.dumps({"devices": [
             {"id": "ios:AAA", "platform": "ios", "model": "iPad (10th generation)", "os": "iPadOS 27.2", "evidence": "physical", "online": True},
             {"id": "ios:BBB", "platform": "ios", "class": "iphone", "evidence": "emulator", "online": False}, {"no": "id"}]}), encoding="utf-8")
-        lease.LeaseManager(self.home).acquire("device:ios:AAA", "me@mac", "pipeline-1", 300, "sensoredge.record-playback", os.getpid())
+        lease.LeaseManager(self.home).acquire("device:ios:AAA", "me@mac", "pipeline-1", 300, "app.record-playback", os.getpid())
         result = dashboard.devices(self.home, dashboard.leases(self.home, core.now()))
         self.assertEqual(["ios:AAA", "ios:BBB"], [device["id"] for device in result])
         self.assertTrue(result[0]["busy"])
-        self.assertEqual("sensoredge.record-playback", result[0]["purpose"])
+        self.assertEqual("app.record-playback", result[0]["purpose"])
         self.assertFalse(result[1]["busy"])
         self.assertFalse(result[1]["online"])
 
@@ -197,6 +197,53 @@ class TestProgressTests(HomeCase):
         held = dashboard.slots(self.home, dashboard.leases(self.home, core.now()))["unityEditor"]
         self.assertEqual(120, held[0]["progress"]["done"])
         self.assertNotIn("progress", held[1])
+
+
+class WorktreeNameTests(unittest.TestCase):
+    HOME = Path("C:/Users/dev")
+
+    def label(self, path) -> str:
+        return core.worktree_label(path, self.HOME)
+
+    def test_the_session_folder_in_the_users_worktrees_names_the_session(self) -> None:
+        self.assertEqual("task-ab12cd", self.label(r"C:\Users\dev\.claude\worktrees\Game-SDK\task-ab12cd\tools\Sample"))
+        self.assertEqual("session-x", self.label("C:/Users/dev/.claude/worktrees/Repo/session-x"))
+
+    def test_a_worktree_inside_a_repository_names_the_session_too(self) -> None:
+        self.assertEqual("agent-1", self.label(r"D:\Projects\Repo\.claude\worktrees\agent-1\core"))
+
+    def test_other_paths_have_no_session_name(self) -> None:
+        for path in (None, "", r"D:\Projects\Repo\core", r"C:\Users\dev\.claude\worktrees", r"C:\Users\dev\.claude\worktrees\OnlyRepo"):
+            self.assertEqual("", self.label(path), path)
+
+    def test_a_posix_path_works_too(self) -> None:
+        self.assertEqual("task-1", core.worktree_label("/Users/me/.claude/worktrees/Game/task-1/x", Path("/Users/me")))
+
+
+class AlivenessTests(HomeCase):
+    def test_the_slot_says_how_long_ago_the_editor_last_reported(self) -> None:
+        from valtrion import testprogress
+
+        manager = lease.LeaseManager(self.home)
+        manager.acquire("unity-editor:slot1", "me@host", "unity-run-8", 300, "EditMode", os.getpid())
+        path = testprogress.path_for("unity-run-8", self.home)
+        path.parent.mkdir(exist_ok=True)
+        path.write_text(json.dumps({"schema": "gdv.testprogress/1", "state": "running", "total": 10, "done": 3, "passed": 3, "failed": 0, "skipped": 0,
+                                    "current": "A.B", "startedUtc": "2026-11-05T10:00:00.000Z", "utc": "2026-11-05T10:00:30.000Z",
+                                    "mainUtc": "2026-11-05T10:00:10.000Z"}), encoding="utf-8")
+        later = core.parse_utc("2026-11-05T10:00:50.000Z")
+        progress = dashboard.slots(self.home, dashboard.leases(self.home, later), later)["unityEditor"][0]["progress"]
+        self.assertEqual(20.0, progress["updatedSec"], "the process wrote the file 20 s ago")
+        self.assertEqual(40.0, progress["mainSec"], "its main thread has been busy for 40 s")
+        self.assertEqual("2026-11-05T10:00:00.000Z", progress["startedUtc"])
+
+    def test_the_slot_carries_the_name_of_the_working_copy(self) -> None:
+        manager = lease.LeaseManager(self.home)
+        manager.acquire("unity-editor:slot1", "me@host", "unity-run-9", 300, "EditMode", os.getpid())
+        manager.acquire("unity-project:abc", "me@host", "unity-run-9", 300, "EditMode", os.getpid(),
+                        worktree=str(Path.home() / ".claude" / "worktrees" / "Game-SDK" / "task-ab12cd" / "tools" / "Sample"))
+        slot = dashboard.slots(self.home, dashboard.leases(self.home, core.now()))["unityEditor"][0]
+        self.assertEqual("task-ab12cd", slot["worktree"])
 
 
 class DeviceProgressTests(HomeCase):

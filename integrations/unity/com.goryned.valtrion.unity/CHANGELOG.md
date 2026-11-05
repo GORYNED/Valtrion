@@ -1,8 +1,9 @@
 # Changelog
 
-## Unreleased
+## 0.12.0 (2026-11-05)
 
-- **Test progress for the host (Editor).** A new Editor assembly `Valtrion.Unity.Editor.Progress` (compiled only when the Test Framework package is present, `UNITY_TESTS_FRAMEWORK`) registers Test Runner callbacks when the environment variable `GDV_PROGRESS_FILE` is set, which `valtrion unity run` does. It keeps that file up to date (`gdv.testprogress/1`: `total`, `done`, `passed`, `failed`, `skipped`, `current`, `state`) so the host can show "120 of 361 tests" instead of a moving bar. Without the variable it does nothing; it only writes that file and never changes a test or its result. Contracts and the runtime harness are unchanged.
+- **Test progress for the host (Editor).** A new Editor assembly `Valtrion.Unity.Editor.Progress` (compiled only when the Test Framework package is present, `UNITY_TESTS_FRAMEWORK`) registers Test Runner callbacks when the environment variable `GDV_PROGRESS_FILE` is set, which `valtrion unity run` does. It keeps that file up to date (`gdv.testprogress/1`: `total`, `done`, `passed`, `failed`, `skipped`, `current`, `state`) so the host can show "120 of 361 tests" instead of a moving bar. While a run goes the file is rewritten every 2 s from a background thread (`utc`: the Editor process is alive), and `mainUtc` says when the main thread last ran, so the host can tell a long test (the main thread is busy with it) from an Editor that has stopped writing. Without the variable it does nothing; it only writes that file and never changes a test or its result. Contracts and the runtime harness are unchanged.
+- Compatible Core versions are listed in `compat.json`: package 0.12.0 works with Core 0.8.0 up to, not including, 0.16 (the progress report needs Core 0.15.0 or newer to be shown; with an older Core it is simply not read). Packages 0.11.1 and 0.11.2 now also work with Core 0.15.
 
 ## 0.11.2 (2026-11-05)
 

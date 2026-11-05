@@ -37,7 +37,9 @@ def read(path: Path) -> dict[str, Any] | None:
         total, done = int(document["total"]), int(document["done"])
         result = {
             "state": str(document.get("state") or ""), "total": total, "done": done, "passed": int(document.get("passed", 0)),
-            "failed": int(document.get("failed", 0)), "skipped": int(document.get("skipped", 0)), "current": str(document.get("current") or "")}
+            "failed": int(document.get("failed", 0)), "skipped": int(document.get("skipped", 0)), "current": str(document.get("current") or ""),
+            "utc": str(document.get("utc") or ""), "startedUtc": str(document.get("startedUtc") or ""),
+            "mainUtc": str(document.get("mainUtc") or "")}
     except (KeyError, TypeError, ValueError):
         return None
     if total < 0 or done < 0:
