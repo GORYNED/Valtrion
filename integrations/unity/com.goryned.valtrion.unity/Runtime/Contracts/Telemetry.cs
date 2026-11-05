@@ -134,6 +134,9 @@ namespace Valtrion.Unity.Contracts
         /// <summary>What a running pipeline job is doing (waiting-disk, waiting-build, building, waiting-device, on-device); null otherwise.</summary>
         public string Phase { get; set; }
 
+        /// <summary>What became of the outputs the job declared for removal, once it has ended; null otherwise.</summary>
+        public OutputCleanup Cleanup { get; set; }
+
         public JobWatchdog Watchdog { get; set; }
 
         public long EventsOffset { get; set; }
@@ -158,6 +161,7 @@ namespace Valtrion.Unity.Contracts
                 Command = reader.Strings("command"),
                 ResultPath = reader.OptStr("resultPath", 1),
                 Phase = reader.OptChoice("phase", Enums.JobPhases),
+                Cleanup = reader.OptObject("cleanup") is ContractReader cleanup ? OutputCleanup.Read(cleanup) : null,
                 Watchdog =JobWatchdog.Read(reader.Object("watchdog")),
                 EventsOffset = reader.Int("eventsOffset", 0),
             };
@@ -170,7 +174,7 @@ namespace Valtrion.Unity.Contracts
             .Set("state", JsonValue.From(State)).Set("status", JsonValue.From(Status)).Set("reason", JsonValue.From(Reason))
             .Set("createdUtc", JsonValue.From(CreatedUtc)).Set("updatedUtc", JsonValue.From(UpdatedUtc)).Set("host", JsonValue.From(Host))
             .SetIf("pid", Pid).Set("command", JsonBuild.Strings(Command)).SetIf("resultPath", ResultPath)
-            .SetIf("phase", Phase).Set("watchdog", Watchdog.Write()).Set("eventsOffset", JsonValue.From(EventsOffset));
+            .SetIf("phase", Phase).SetIf("cleanup", Cleanup?.Write()).Set("watchdog", Watchdog.Write()).Set("eventsOffset", JsonValue.From(EventsOffset));
 
         public string ToJsonString() => ToJson().Write(true);
     }

@@ -106,6 +106,8 @@ A command job started with a work root (and no `env` of its own, which would rep
 
 When a job ends, passed or failed, `<workRoot>/jobs/<jobId>` is removed and the mirrors are pruned of its worktree; results and diagnostics are already in the run folder. The directories stay when the run is retained, overlaps a `--protect` path, has cleanup turned off, or is a pipeline that has not saved `result.json`.
 
+Outputs a job writes outside the work root, in a folder that stays (a project copy given with `--cwd`, `--project-dir` or `--remote-project`), are not under `<workRoot>/jobs/<jobId>`, so neither this cleanup nor `gc` nor `workroot sweep` removes them. Declare them when the job starts instead: `job start --cleanup PATH` (relative to `--cwd`) or `cleanup` in a pipeline `run` stage (relative to the project folder). They are removed when the job ends under the same kind of guards (inside the folder, no link escape, never a tracked file or a working copy, not while a lease or another active job uses them), and `cleanup` in `job.json` and `result.json` lists what was removed, kept and refused; see [cli.md](cli.md) ("Declared outputs").
+
 `valtrion gc` and `valtrion workroot sweep [--max-age-hours N] [--dry-run]` also remove job directories and launchd files of runners that died (a job counts as active only while its runner is verifiably alive or was created two minutes ago) and, when no job is active, staged CLI copies unused for that long. Repositories, baselines, retained runs and the mirrors are never removed. `valtrion workroot show [--json]` prints the work root and any protected-folder warning; `valtrion workroot release --job-id ID` removes one job's directories.
 
 ## Background jobs

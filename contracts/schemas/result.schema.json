@@ -148,6 +148,10 @@
         "builtByJob": { "type": "string", "minLength": 1 }
       }
     },
+    "cleanup": {
+      "$ref": "common.schema.json#/$defs/outputCleanup",
+      "description": "Added when the job ends, for a pipeline whose run stages declared cleanup paths: what was removed, kept and refused."
+    },
     "artifacts": {
       "type": "array",
       "items": {

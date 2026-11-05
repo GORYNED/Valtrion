@@ -32,6 +32,27 @@
         "stdev": { "type": "number", "minimum": 0 }
       }
     },
+    "outputCleanup": {
+      "description": "What became of the output paths a job declared for removal when it ended (job start --cleanup, run stage cleanup). Paths are as declared, relative to base; every declared path is in exactly one list.",
+      "type": "object",
+      "required": ["base", "removed", "kept", "refused"],
+      "additionalProperties": false,
+      "properties": {
+        "base": { "type": "string", "minLength": 1, "description": "The job's working directory the paths are relative to." },
+        "removed": { "$ref": "#/$defs/stringList" },
+        "kept": { "type": "array", "description": "Not removed: absent, in use, retained, protected, cleanup off, or the removal failed.", "items": { "$ref": "#/$defs/pathReason" } },
+        "refused": { "type": "array", "description": "Never removed: absolute, outside the working directory (also through a link), tracked by git, or a working copy.", "items": { "$ref": "#/$defs/pathReason" } }
+      }
+    },
+    "pathReason": {
+      "type": "object",
+      "required": ["path", "reason"],
+      "additionalProperties": false,
+      "properties": {
+        "path": { "type": "string", "minLength": 1 },
+        "reason": { "type": "string", "minLength": 1 }
+      }
+    },
     "comparabilityKey": {
       "type": "object",
       "required": ["planSha256", "deviceClass", "osMajor", "buildProfile", "unityVersion"],

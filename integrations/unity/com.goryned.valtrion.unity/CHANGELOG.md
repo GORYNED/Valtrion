@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- `JobDocument.Cleanup` and `ResultDocument.Cleanup` (`OutputCleanup` with `Base`, `Removed`, `Kept` and `Refused` of `CleanupPathReason`) and `PipelineStage.Cleanup`: the optional `cleanup` keys of `gdv.job/1`, `gdv.result/1` and the `gdv.pipeline/1` stage (Core: declared job outputs, #75) are read and written. Documents without them behave as before.
+
 ## 0.11.0 (2026-11-04)
 
 - **`PlanTest` and `NUnitXmlResultWriter` no longer need `testables` (#74).** The assembly `Valtrion.Unity.PlayModeTests` is now an ordinary package assembly instead of a test assembly. It moves from `Tests/PlayMode/` to `Testing/`; its name, namespace (`Valtrion.Unity.Testing`), public API and the GUIDs of its files are unchanged. It references NUnit and `UnityEngine.TestRunner` directly and is compiled whenever the project has `com.unity.test-framework` (any version; the same `versionDefines` rule the Test Framework uses for its own assemblies). Without the Test Framework it is left out and nothing fails to compile. It is still constrained by `DEVELOPMENT_BUILD || UNITY_EDITOR` and is not auto-referenced: a project test assembly references it by name as before. Players follow the Test Framework's own rule: the new Editor build filter `PlanTestBuildAssemblyFilter` (`IFilterBuildAssemblies`, in `Valtrion.Unity.Editor`) removes exactly `Valtrion.Unity.PlayModeTests.dll` from a player build unless the build includes test assemblies (`BuildOptions.IncludeTestAssemblies`) or `PlayerSettings.playModeTestRunnerEnabled` is on, the same condition under which the Test Framework strips `UnityEngine.TestRunner` and NUnit. An ordinary development player (the device mode with `-gdv-plan`) therefore does not contain the helper; a PlayMode test player does; a release player contains no type of it. `StepRegistry.Discover()` also skips the helper assembly (it holds no steps).
