@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import os
 import stat
+import unicodedata
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Callable, Iterable, Sequence
@@ -89,21 +90,57 @@ def _inside(path: Path, base: Path) -> bool:
     return path != base
 
 
-def _tracked(base: Path, relative: str, git: GitRunner) -> str | None:
-    """Why git forbids removing `relative` (it or files below it are tracked, or that cannot be checked), or None."""
-    # Ignoring case on purpose: on Windows and macOS `out` and `Out` are one path, and a refusal too many is harmless elsewhere.
-    code, output = git(base, ["-c", "core.quotepath=off", "ls-files", "-z", "--", f":(literal,icase){relative}"])
-    if code == 0:
-        files = [item for item in output.split("\0") if item.strip()]
-        if files:
-            return f"it is tracked by git ({len(files)} tracked file{'s' if len(files) != 1 else ''}, e.g. {files[0]})"
+def name_key(text: str) -> str:
+    """How a file system that ignores letter case and Unicode normalization (APFS, NTFS) compares a name: NFC, case-folded. Used for
+    every comparison of a declared path with the index, so `Café` in NFD and in NFC, or `out` and `Out`, are one path. A refusal too
+    many on a file system that tells them apart is harmless."""
+    return unicodedata.normalize("NFC", text).casefold()
+
+
+def index_match(index_paths: Iterable[str], relative: str) -> str | None:
+    """Why the repository-relative `relative` must not be removed given the repository's index (`git ls-files -z` entries), or None:
+    it is a tracked entry, a folder with tracked entries below it, or lies inside a tracked entry (a submodule's gitlink, a file).
+    Pure: compares `name_key` forms, never the pathspec matching of git (which compares bytes)."""
+    key = name_key(relative.strip("/"))
+    hits: list[str] = []
+    for entry in index_paths:
+        if not entry:
+            continue
+        other = name_key(entry.rstrip("/"))
+        if other == key or other.startswith(key + "/"):
+            hits.append(entry)
+        elif key.startswith(other + "/"):
+            return f"it lies inside the tracked entry {entry} (a submodule or a tracked file)"
+    if hits:
+        return f"it is tracked by git ({len(hits)} tracked file{'s' if len(hits) != 1 else ''}, e.g. {hits[0]})"
+    return None
+
+
+def _has_git_entry(folder: Path) -> bool:
+    entry = folder / ".git"
+    return entry.exists() or is_link(entry)
+
+
+def _tracked(base: Path, target: Path, git: GitRunner) -> str | None:
+    """Why git forbids removing `target` (inside the resolved `base`), or None. Default deny:
+
+    - a `.git` entry in any folder from `target` up to, not including, `base` means the path lies in (or is) another working copy
+      (a submodule, a clone, a nested repository): refused, whatever that repository tracks;
+    - otherwise the repository whose root is `base` or the nearest folder above it with a `.git` entry is asked for its whole index,
+      and any failure of git (a broken `.git` file, no git, a refused safe.directory) refuses the path;
+    - with no `.git` entry at `base` or above there is no repository and nothing is tracked."""
+    for folder in (target, *target.parents):
+        if folder == base or not _inside(folder, base):
+            break
+        if _has_git_entry(folder):
+            return "it is a working copy" if folder == target else f"it lies inside another working copy ({folder})"
+    root = next((folder for folder in (base, *base.parents) if _has_git_entry(folder)), None)
+    if root is None:
         return None
-    if "not a git repository" in output.lower():
-        return None
-    for folder in (base, *base.parents):
-        if (folder / ".git").exists():
-            return f"git could not say whether it is tracked ({output.strip()[:200] or f'exit {code}'})"
-    return None  # no repository around the folder and no git to ask: nothing can be tracked
+    code, output = git(root, ["ls-files", "-z", "--cached"])
+    if code != 0:
+        return f"git could not list the tracked files of {root} ({output.strip()[:200] or f'exit {code}'})"
+    return index_match(output.split("\0"), target.relative_to(root).as_posix())
 
 
 def is_link(path: Path | str) -> bool:
@@ -169,7 +206,7 @@ def locate(base: Path, relative: str) -> tuple[Path | None, str]:
     if leaf_link and not _inside(candidate.resolve(), resolved_base):
         return None, f"it is a link that points outside the working directory ({candidate.resolve()})"
     actual = target.relative_to(resolved_base).as_posix()
-    if actual.casefold() != relative.casefold():
+    if name_key(actual) != name_key(relative):
         return None, f"it names a different path on disk ({actual})"
     return target, ""
 
@@ -181,8 +218,7 @@ def refusal(base: Path, relative: str, git: GitRunner = compare.run_git, walk: b
     target, reason = locate(base, relative)
     if target is None:
         return reason
-    actual = target.relative_to(base.resolve()).as_posix()
-    reason = _tracked(base.resolve(), actual, git)
+    reason = _tracked(base.resolve(), target, git)
     if reason is None and walk and target.exists() and not is_link(target):
         reason = _working_copy_inside(target)
     return reason
@@ -259,6 +295,11 @@ def remove_declared(base: Path, paths: Sequence[str], in_use: InUse = lambda pat
         reason = located or (refusal(base, relative, git) if target is not None else None)
         if target is None or reason:
             record.refused.append({"path": relative, "reason": reason or located})
+            continue
+        resolved_base = base.resolve()
+        swapped = next((folder for folder in target.parents if _inside(folder, resolved_base) and is_link(folder)), None)
+        if swapped is not None:  # a folder on the way became a link since the check: narrow, but never followed
+            record.refused.append({"path": relative, "reason": f"the folder {swapped} on its way became a link or junction"})
             continue
         try:
             _remove(target)

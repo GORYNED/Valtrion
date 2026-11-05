@@ -8,6 +8,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import unicodedata
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -105,6 +106,30 @@ class DeclarationTests(OutputTestCase):
         self.assertIn("run stages only", str(raised.exception))
 
 
+class IndexMatchTests(unittest.TestCase):
+    """The comparison with the index is pure Python, so it runs on every host with synthetic names."""
+
+    NFC = unicodedata.normalize("NFC", "Café")
+    NFD = unicodedata.normalize("NFD", "Café")
+
+    def test_unicode_normalization_and_case_do_not_hide_a_tracked_path(self):
+        self.assertNotEqual(self.NFC, self.NFD)
+        for index in (self.NFC, self.NFD):
+            for declared in (self.NFC, self.NFD, self.NFC.upper()):
+                with self.subTest(index=ascii(index), declared=ascii(declared)):
+                    self.assertIn("tracked by git", outputs.index_match([f"{index}/a.txt"], f"{declared}/a.txt"))
+                    self.assertIn("tracked by git", outputs.index_match([f"{index}/a.txt"], declared))
+
+    def test_a_path_inside_a_tracked_entry_is_refused(self):
+        self.assertIn("inside the tracked entry sub", outputs.index_match(["sub", "README.md"], "sub/Assets"))
+        self.assertIn("inside the tracked entry", outputs.index_match(["Tools/run.sh"], "tools/run.sh/x"))
+
+    def test_untracked_paths_and_name_prefixes_pass(self):
+        self.assertIsNone(outputs.index_match(["Assets/a.txt", "Out.txt"], "out"))
+        self.assertIsNone(outputs.index_match(["Assets/a.txt"], "Asset"))
+        self.assertIsNone(outputs.index_match([], "anything"))
+
+
 @unittest.skipUnless(_git_available(), "git is not installed")
 class TrackedTests(OutputTestCase):
     def setUp(self):
@@ -173,6 +198,52 @@ class TrackedTests(OutputTestCase):
         self.assert_aliases_never_remove_tracked_files(
             "jn/Textures", lambda: _link_folder(self.base / "jn", self.base / "Assets"))
 
+    def assert_refused_everywhere(self, declared, survivor, reason):
+        with self.assertRaises(outputs.OutputError) as raised:
+            outputs.declare(self.base, [declared])
+        self.assertIn(reason, str(raised.exception))
+        record = outputs.remove_declared(self.base, [declared]).to_document()
+        self.assertEqual([], record["removed"], record)
+        self.assertIn(reason, record["refused"][0]["reason"])
+        self.assertTrue(survivor.is_file(), survivor)
+
+    def test_a_tracked_folder_in_another_unicode_form_is_refused_with_real_git(self):
+        nfd, nfc = unicodedata.normalize("NFD", "Café"), unicodedata.normalize("NFC", "Café")
+        try:
+            (self.base / nfd).mkdir()
+            (self.base / nfd / "a.txt").write_text("x", encoding="utf-8")
+        except OSError:
+            self.skipTest("this file system refuses the name")
+        _git(self.base, "-c", "core.precomposeunicode=false", "add", "--", nfd)
+        for declared in (nfc, nfd, f"{nfc}/a.txt"):
+            with self.subTest(declared=ascii(declared)):
+                with self.assertRaises(outputs.OutputError):
+                    outputs.declare(self.base, [declared])
+                self.assertEqual([], outputs.remove_declared(self.base, [declared]).to_document()["removed"])
+        self.assertTrue((self.base / nfd / "a.txt").is_file())
+
+    def test_a_path_inside_a_nested_repository_is_refused(self):
+        inner = self.base / "inner"
+        (inner / "Assets").mkdir(parents=True)
+        (inner / "Assets" / "a.txt").write_text("x", encoding="utf-8")
+        _git(inner, "init", "-q")
+        _git(inner, "add", ".")
+        self.assert_refused_everywhere("inner/Assets", inner / "Assets" / "a.txt", "inside another working copy")
+
+    def test_a_path_inside_a_submodule_is_refused(self):
+        sub = self.base / "sub"
+        (sub / "Assets").mkdir(parents=True)
+        (sub / "Assets" / "a.txt").write_text("x", encoding="utf-8")
+        (sub / ".git").write_text("gitdir: ../.git/modules/sub\n", encoding="utf-8")  # how a submodule checkout looks
+        self.assert_refused_everywhere("sub/Assets", sub / "Assets" / "a.txt", "inside another working copy")
+
+    def test_a_broken_git_file_refuses_every_path(self):
+        (self.base / ".git").rename(self.base / ".git-moved")
+        (self.base / ".git").write_text("gitdir: ../no-such-gitdir\n", encoding="utf-8")
+        (self.base / "out").mkdir()
+        (self.base / "out" / "f").write_text("x", encoding="utf-8")
+        self.assert_refused_everywhere("out", self.base / "out" / "f", "git could not list the tracked files")
+
     def test_a_symlink_on_the_way_into_a_tracked_folder_is_refused(self):
         def symlink():
             try:
@@ -200,6 +271,33 @@ class TrackedTests(OutputTestCase):
         self.assertEqual([], record["removed"])
         self.assertIn("working copy", record["refused"][0]["reason"])
         self.assertTrue((nested / ".git").exists())
+
+
+class WorkspaceWithoutGitTests(OutputTestCase):
+    def test_a_clone_inside_a_folder_without_git_is_never_reached(self):
+        clone = self.base / "checkout"
+        (clone / "Assets").mkdir(parents=True)
+        (clone / "Assets" / "a.txt").write_text("x", encoding="utf-8")
+        (clone / ".git").mkdir()  # no git call is needed: the `.git` entry on the way refuses it
+        for declared in ("checkout/Assets", "checkout"):
+            with self.subTest(declared=declared):
+                with self.assertRaises(outputs.OutputError):
+                    outputs.declare(self.base, [declared])
+                record = outputs.remove_declared(self.base, [declared]).to_document()
+                self.assertEqual([], record["removed"])
+                self.assertIn("working copy", record["refused"][0]["reason"])
+        self.assertTrue((clone / "Assets" / "a.txt").is_file())
+
+    def test_a_folder_on_the_way_that_turns_into_a_link_before_the_removal_is_refused(self):
+        (self.base / "out" / "sub").mkdir(parents=True)
+        target = (self.base / "out" / "sub").resolve()
+        # The checks saw plain folders; then `out` is reported as a link (swapped in between): the last look before removing refuses.
+        with mock.patch.object(outputs, "locate", return_value=(target, "")), mock.patch.object(outputs, "refusal", return_value=None), \
+                mock.patch.object(outputs, "is_link", side_effect=lambda path: Path(path).name == "out"):
+            record = outputs.remove_declared(self.base, ["out/sub"]).to_document()
+        self.assertEqual([], record["removed"], record)
+        self.assertIn("became a link or junction", record["refused"][0]["reason"])
+        self.assertTrue((self.base / "out" / "sub").is_dir())
 
 
 class RemovalTests(OutputTestCase):
