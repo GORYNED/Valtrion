@@ -69,6 +69,71 @@ class DiskTests(unittest.TestCase):
         self.volume.hold(folder, gib)
         return folder
 
+    def expired_scratch(self, name: str, gib: float) -> Path:
+        from valtrion import scratch
+        folder, _ = scratch.create(self.settings.roots, name, scratch.caller(), max_age_hours=1)
+        (folder / "checkout" / "Assets").mkdir(parents=True)
+        (folder / "checkout" / "Assets" / "a.cs").write_text("x\n", encoding="utf-8")
+        marker = core.read_json(folder / scratch.MARKER)
+        marker["expiresUtc"] = core.format_utc(core.now() - timedelta(hours=5))
+        core.atomic_write_json(folder / scratch.MARKER, marker)
+        self.old(folder, 1)
+        self.volume.hold(folder, gib)
+        return folder
+
+    def test_the_scratch_step_removes_an_expired_copy_but_never_the_one_the_job_builds_in(self):
+        from valtrion import scratch
+        building = self.expired_scratch("building", 4)
+        protected = self.expired_scratch("protected", 4)
+        idle = self.expired_scratch("idle", 4)
+        me = [mock.Mock(pid=os.getpid(), ppid=0, path="python", command="python", cwd=None)]
+        with mock.patch.object(scratch, "system_processes", lambda: me):
+            outcome = diskspace.ensure_free(self.settings, self.home, protected=[str(protected / "checkout" / "Assets")],
+                                            free=self.volume, busy=[str(building / "checkout")])
+        self.assertFalse(idle.exists(), outcome.removed)
+        self.assertTrue(building.is_dir(), "the project the running job builds in stays")
+        self.assertTrue(protected.is_dir(), "a scratch copy holding a protected path stays")
+        self.assertTrue(any("scratch" in item for item in outcome.removed))
+
+    def test_the_scratch_step_keeps_the_project_of_another_active_job_and_an_active_jobs_own_copy(self):
+        from valtrion import scratch
+        other = self.expired_scratch("other", 4)  # job B builds here, waiting for disk: no lease, no process naming it
+        own, _ = scratch.create(self.settings.roots, "own", scratch.caller(), max_age_hours=1, job="job-b",
+                                job_state_of=lambda job: "running")
+        marker = core.read_json(own / scratch.MARKER)
+        marker["expiresUtc"] = core.format_utc(core.now() - timedelta(hours=5))
+        core.atomic_write_json(own / scratch.MARKER, marker)
+        self.old(own, 1)
+        me = [mock.Mock(pid=os.getpid(), ppid=0, path="python", command="python", cwd=None)]
+        with mock.patch.object(scratch, "system_processes", lambda: me), \
+                mock.patch.object(jobs, "active_job_ids", return_value=["job-b"]), \
+                mock.patch.object(jobs, "active_job_folders", return_value=[str(other / "checkout")]):
+            diskspace.ensure_free(self.settings, self.home, free=self.volume)
+        self.assertTrue(other.is_dir(), "the project folder of another active job stays")
+        self.assertTrue(own.is_dir(), "an expired copy of a job that still runs stays")
+
+    def test_the_scratch_step_removes_nothing_when_an_active_jobs_spec_cannot_be_read(self):
+        from valtrion import scratch
+        folder = self.expired_scratch("any", 4)
+        run_dir = self.base / "runs" / "job-b"
+        run_dir.mkdir(parents=True)
+        (run_dir / "spec.json").write_text("{broken", encoding="utf-8")
+        core.atomic_write_json(jobs.index_path("job-b", self.home), {"dir": str(run_dir)})
+        me = [mock.Mock(pid=os.getpid(), ppid=0, path="python", command="python", cwd=None)]
+        with mock.patch.object(scratch, "system_processes", lambda: me), \
+                mock.patch.object(jobs, "active_job_ids", return_value=["job-b"]):
+            outcome = diskspace.ensure_free(self.settings, self.home, free=self.volume)
+        self.assertTrue(folder.is_dir(), outcome.removed)
+        self.assertFalse(any("scratch" in item for item in outcome.removed))
+
+    def test_the_scratch_step_keeps_a_copy_the_calling_process_runs_in(self):
+        from valtrion import scratch
+        folder = self.expired_scratch("mine", 4)
+        me = [mock.Mock(pid=os.getpid(), ppid=0, path="python", command=f"valtrion build --project-dir {folder / 'checkout'}", cwd=None)]
+        with mock.patch.object(scratch, "system_processes", lambda: me):
+            diskspace.ensure_free(self.settings, self.home, free=self.volume)
+        self.assertTrue(folder.is_dir(), "the sweep counts the caller itself as a user")
+
     def test_nothing_runs_without_a_threshold(self):
         (self.home / "host.json").write_text(json.dumps({"workRoot": str(self.work)}), encoding="utf-8")
         outcome = diskspace.ensure_free(config.load_host_settings(self.home), self.home, free=self.volume)

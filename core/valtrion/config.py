@@ -21,6 +21,9 @@ from .resolver import HostInfo
 from .schema import Validator, validate_document
 
 DEFAULT_RETENTION_DAYS = 30
+#: `scratch.maxAgeHours`: how long a scratch copy lives (its marker's expiry) when it names no time of its own, and how long an
+#: expired one must be idle before the sweep removes it.
+DEFAULT_SCRATCH_MAX_AGE_HOURS = 24.0
 
 
 class ConfigError(Exception):
@@ -138,6 +141,8 @@ class HostSettings:
     unity_accelerator: "UnityAccelerator | None" = None
     #: `buildCache`: retention of the published builds (`maxEntries`, `keepDays`, `dirtyKeepDays`); the built-in limits by default.
     build_cache: buildcache.Retention = field(default_factory=buildcache.Retention)
+    #: `scratch.maxAgeHours`: the default lifetime of a scratch copy and the idle time before the sweep removes an expired one.
+    scratch_max_age_hours: float = DEFAULT_SCRATCH_MAX_AGE_HOURS
 
     def project(self, name: str) -> "ManagedProject | None":
         return next((item for item in self.projects if item.name == name), None)
@@ -225,7 +230,22 @@ def _load_host_settings(home: Path | None = None) -> HostSettings:
                         Path(work).expanduser() if work else default_work, float(minimum) if minimum is not None else None,
                         float(pressure_days), projects, float(wait_sec), tools_root=home / "tools",
                         unity_accelerator=_load_unity_accelerator(document.get("unityAccelerator")),
-                        build_cache=_load_build_cache(document.get("buildCache")))
+                        build_cache=_load_build_cache(document.get("buildCache")),
+                        scratch_max_age_hours=_load_scratch(document.get("scratch")))
+
+
+def _load_scratch(value: Any) -> float:
+    if value is None:
+        return DEFAULT_SCRATCH_MAX_AGE_HOURS
+    if not isinstance(value, dict):
+        raise ConfigError("host.json: scratch must be an object")
+    unknown = sorted(set(value) - {"maxAgeHours"})
+    if unknown:
+        raise ConfigError(f"host.json: scratch has unknown keys: {', '.join(unknown)}")
+    hours = value.get("maxAgeHours", DEFAULT_SCRATCH_MAX_AGE_HOURS)
+    if isinstance(hours, bool) or not isinstance(hours, (int, float)) or not math.isfinite(hours) or hours <= 0:
+        raise ConfigError("host.json: scratch.maxAgeHours must be a positive number")
+    return float(hours)
 
 
 def _load_build_cache(value: Any) -> buildcache.Retention:

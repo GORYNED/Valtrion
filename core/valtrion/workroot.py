@@ -7,6 +7,7 @@ answer for. Repositories live in such folders and are never moved, so Valtrion k
     <workRoot>/jobs/<jobId>/{checkout,build,export,derived-data,tmp}   everything one job creates, removed when the job ends
     <workRoot>/jobs/inbox-<id>/                                        files a remote caller sent for a job (`valtrion workroot inbox`)
     <workRoot>/mirrors/<project>.git                                   a bare clone that checkouts hang off (objects only)
+    <workRoot>/scratch/<id>/                                           a temporary copy an agent asked for, with its marker (`scratch.py`)
     <workRoot>/tools/valtrion-<hash>/                                  the staged CLI that background jobs run
     <workRoot>/launchd/                                                job definitions and logs of macOS background jobs
 
@@ -354,6 +355,11 @@ class WorkRoots:
     def launchd(self) -> Path:
         return self.root / "launchd"
 
+    @property
+    def scratch(self) -> Path:
+        """Temporary copies an agent asked for (`valtrion workroot scratch create`), one folder with a marker each (`scratch.py`)."""
+        return self.root / "scratch"
+
     def job(self, job_id: str) -> JobDirs:
         return JobDirs(self.jobs / core.safe_segment(job_id, "job", 120))
 
@@ -483,30 +489,41 @@ def record_default_branch(mirror: Path, source: str, sha: str, run: Runner = run
 
 def add_checkout(roots: WorkRoots, project: str, source: str, sha: str, job_id: str, run: Runner = run_git) -> Path:
     """A detached checkout of `sha` in the job's `checkout` directory, hanging off the mirror (so git reads only the work root)."""
-    if len(sha) != 40 or any(c not in "0123456789abcdef" for c in sha):
-        raise WorkRootError("the candidate must be a full lowercase 40-character commit hash")
+    check_sha(sha)
     dirs = roots.job(job_id)
     if dirs.checkout.exists():
         raise WorkRootError(f"{dirs.checkout} already exists")
+    return add_worktree(roots, project, source, sha, dirs.checkout, run)
+
+
+def check_sha(sha: str) -> None:
+    if len(sha) != 40 or any(c not in "0123456789abcdef" for c in sha):
+        raise WorkRootError("the candidate must be a full lowercase 40-character commit hash")
+
+
+def add_worktree(roots: WorkRoots, project: str, source: str, sha: str, target: Path, run: Runner = run_git) -> Path:
+    """A detached checkout of `sha` at `target` (a folder under the work root that does not exist yet), hanging off the project's
+    mirror, with its Git LFS files restored. Used for a job's checkout and for a scratch copy (`scratch.create`)."""
+    check_sha(sha)
     mirror = ensure_mirror(roots, project, source, sha, run)
     record_default_branch(mirror, source, sha, run)
-    dirs.base.mkdir(parents=True, exist_ok=True)
+    target.parent.mkdir(parents=True, exist_ok=True)
     # The mirror has no LFS objects yet, so the smudge filter is switched off for the checkout and the objects are fetched after.
     _git(run, ["-c", "filter.lfs.smudge=", "-c", "filter.lfs.process=", "-c", "filter.lfs.required=false",
-               "worktree", "add", "--detach", "--quiet", str(dirs.checkout), sha], mirror)
+               "worktree", "add", "--detach", "--quiet", str(target), sha], mirror)
     # `lfs ls-files` honours attributes at any level (nested .gitattributes, info/attributes, global); it fails when git-lfs is
     # not installed, and then the checkout has no LFS files to restore.
-    code, tracked = run(["lfs", "ls-files", "--name-only"], dirs.checkout)
+    code, tracked = run(["lfs", "ls-files", "--name-only"], target)
     if code != 0:
         # No usable git-lfs: fine for a tree without LFS rules, but silently leaving pointer files in an LFS tree would make the
         # build compile text instead of assets.
-        declared, _ = run(["grep", "-l", "filter=lfs", "--", ".gitattributes", ":(glob)**/.gitattributes"], dirs.checkout)
+        declared, _ = run(["grep", "-l", "filter=lfs", "--", ".gitattributes", ":(glob)**/.gitattributes"], target)
         if declared == 0:
             raise WorkRootError(f"the commit uses Git LFS but git-lfs is not usable on this host: {tracked[:200]}")
     elif tracked.strip():
         _git(run, ["lfs", "fetch", source, sha], mirror)
-        _git(run, ["lfs", "checkout"], dirs.checkout)
-    return dirs.checkout
+        _git(run, ["lfs", "checkout"], target)
+    return target
 
 
 def prune_mirrors(roots: WorkRoots, run: Runner = run_git) -> None:
@@ -648,5 +665,6 @@ def usage(roots: WorkRoots) -> dict:
         return total
 
     jobs = [p for p in roots.jobs.iterdir() if p.is_dir()] if roots.jobs.is_dir() else []
+    scratch = [p for p in roots.scratch.iterdir() if p.is_dir()] if roots.scratch.is_dir() else []
     return {"jobDirectories": len(jobs), "mirrorCount": len(list(roots.mirrors.glob("*.git"))) if roots.mirrors.is_dir() else 0,
-            "bytes": size(roots.root) if roots.root.is_dir() else 0}
+            "scratchDirectories": len(scratch), "bytes": size(roots.root) if roots.root.is_dir() else 0}
