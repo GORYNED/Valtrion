@@ -1481,6 +1481,7 @@ def _configure_unity(parser: argparse.ArgumentParser) -> None:
     window.add_argument("--parent-pid", type=int, required=True)
     window.add_argument("--title", default="")
     window.add_argument("--detail", default="")
+    window.add_argument("--progress", type=Path, default=None)
     run = sub.add_parser("run", help="run Unity in batch mode under the host's unity-project and unity-editor leases and the watchdog",
                          description="valtrion unity run [options] -- <Unity arguments>. The last stdout line is STATUS <name>; "
                                      "exit codes: PASS 0, FAIL 1, BLOCKED 2, STALL and TIMEOUT 3.")
@@ -1499,7 +1500,7 @@ def _configure_unity(parser: argparse.ArgumentParser) -> None:
                      help="Windows only: start Unity on a desktop of its own, so the windows that tests open do not appear on your screen "
                           "or take the keyboard and the mouse (default: hiddenDesktop of host.json, on)")
     run.add_argument("--progress-window", action=argparse.BooleanOptionalAction, default=None,
-                     help="Windows only: show one small window with the progress of the run (default: progressWindow of host.json, on)")
+                     help="Windows only: show one small window with the progress of the run; the dashboard shows it too (default: progressWindow of host.json, off)")
     run.add_argument(STOP_ON_STDIN_EOF, action="store_true", help=argparse.SUPPRESS)  # added by a caller that keeps this command's input open
     _add_host_options(run)
     run.add_argument("unity_args", nargs=argparse.REMAINDER, help="after `--`: the arguments passed to Unity")
@@ -1517,7 +1518,7 @@ def _unity(arguments: argparse.Namespace) -> int:
     from . import progresswindow, unityrun
 
     if arguments.action == "_progress":
-        return progresswindow.run_window(arguments.log, arguments.done, arguments.parent_pid, arguments.title, arguments.detail)
+        return progresswindow.run_window(arguments.log, arguments.done, arguments.parent_pid, arguments.title, arguments.detail, arguments.progress)
     entry = _entry(arguments)
     try:  # the remote host applies its own host.json when no wait was given; here the wait only sizes the transport timeout
         wait = _lease_wait(arguments.lease_wait, unityrun.DEFAULT_LEASE_WAIT_SEC)
@@ -1529,9 +1530,9 @@ def _unity(arguments: argparse.Namespace) -> int:
         return _forward(arguments, entry, timeout=int(wait + limit + REMOTE_UNITY_MARGIN_SEC), retry=False,
                         lost_hint=REMOTE_UNITY_LOST_HINT, lifeline=True, extra=(STOP_ON_STDIN_EOF,))
 
-    try:  # both are on unless the command line or host.json says otherwise (they only act on Windows)
+    try:  # the hidden desktop is on, the progress window off, unless the command line or host.json says otherwise (Windows only)
         hidden = config.hidden_desktop(None, True) if arguments.hidden_desktop is None else arguments.hidden_desktop
-        progress = config.progress_window(None, True) if arguments.progress_window is None else arguments.progress_window
+        progress = config.progress_window(None, False) if arguments.progress_window is None else arguments.progress_window
     except config.ConfigError as error:
         return _blocked("unity", str(error))
     unity_args = _unity_arguments(arguments)

@@ -154,6 +154,113 @@ class SlotTests(HomeCase):
         self.assertEqual({"ios:A": True, "editor:mac": False}, flags)
 
 
+class TestProgressTests(HomeCase):
+    def write(self, name: str, document) -> Path:
+        path = self.home / "progress" / name
+        path.parent.mkdir(exist_ok=True)
+        path.write_text(json.dumps(document) if not isinstance(document, str) else document, encoding="utf-8")
+        return path
+
+    def good(self, **changes) -> dict:
+        return {"schema": "gdv.testprogress/1", "state": "running", "total": 361, "done": 120, "passed": 118, "failed": 2, "skipped": 0,
+                "current": "Ns.Fixture.Test", **changes}
+
+    def test_a_report_is_read_as_numbers_with_a_fraction(self) -> None:
+        from valtrion import testprogress
+
+        result = testprogress.read(self.write("a.json", self.good()))
+        self.assertEqual((361, 120, 2), (result["total"], result["done"], result["failed"]))
+        self.assertAlmostEqual(120 / 361, result["fraction"])
+        self.assertEqual("Ns.Fixture.Test", result["current"])
+
+    def test_nothing_sensible_is_nothing(self) -> None:
+        from valtrion import testprogress
+
+        self.assertIsNone(testprogress.read(self.home / "progress" / "missing.json"))
+        self.assertIsNone(testprogress.read(self.write("b.json", "{not json")))
+        self.assertIsNone(testprogress.read(self.write("c.json", self.good(schema="other/1"))))
+        self.assertIsNone(testprogress.read(self.write("d.json", self.good(total=-1))))
+        self.assertIsNone(testprogress.read(self.write("e.json", {"schema": "gdv.testprogress/1", "state": "running"})))
+
+    def test_a_run_with_no_tests_counted_yet_has_no_fraction(self) -> None:
+        from valtrion import testprogress
+
+        self.assertIsNone(testprogress.read(self.write("f.json", self.good(total=0, done=0)))["fraction"])
+
+    def test_the_slot_of_a_run_carries_its_report(self) -> None:
+        from valtrion import testprogress
+
+        manager = lease.LeaseManager(self.home)
+        manager.acquire("unity-editor:slot1", "me@host", "unity-run-5", 300, "EditMode tests", os.getpid())
+        testprogress.path_for("unity-run-5", self.home).parent.mkdir(exist_ok=True)
+        testprogress.path_for("unity-run-5", self.home).write_text(json.dumps(self.good()), encoding="utf-8")
+        held = dashboard.slots(self.home, dashboard.leases(self.home, core.now()))["unityEditor"]
+        self.assertEqual(120, held[0]["progress"]["done"])
+        self.assertNotIn("progress", held[1])
+
+
+class DeviceProgressTests(HomeCase):
+    def job(self, plan_steps: int | None = 3, relative: bool = False) -> Path:
+        directory = self.add_job("job-dev", "running", "RUNNING")
+        base = self.home / "plans"
+        base.mkdir()
+        plan = base / "run.plan.json"
+        if plan_steps is not None:
+            plan.write_text(json.dumps({"steps": [{"type": "wait"}] * plan_steps}), encoding="utf-8")
+        stage = {"stage": "run", "plan": "run.plan.json" if relative else str(plan)}
+        (directory / "spec.json").write_text(json.dumps({"payload": {"inline": {"stages": [{"stage": "build"}, {"stage": "install"}, stage]},
+                                                                    "baseDir": str(base)}}), encoding="utf-8")
+        return directory
+
+    def beat(self, directory: Path, **changes) -> None:
+        folder = directory / "runs" / "03-plan" / "device-poll" / "run-1"
+        folder.mkdir(parents=True, exist_ok=True)
+        document = {"schema": "gdv.heartbeat/1", "runId": "run-1", "seq": 4, "utc": "2026-11-05T10:04:30.000Z", "state": "running",
+                    "stepIndex": 1, "stepType": "wait", "elapsedMs": 9000, **changes}
+        (folder / "heartbeat.json").write_text(json.dumps(document), encoding="utf-8")
+
+    def test_the_step_counts_from_one_against_the_plan(self) -> None:
+        directory = self.job()
+        self.beat(directory)
+        progress = dashboard.device_progress(directory, "3:run", core.now())
+        self.assertEqual((2, 3, "wait"), (progress["step"], progress["total"], progress["stepType"]))
+
+    def test_a_relative_plan_is_found_next_to_the_pipeline_file(self) -> None:
+        directory = self.job(relative=True)
+        self.beat(directory)
+        self.assertEqual(3, dashboard.device_progress(directory, "3:run", core.now())["total"])
+
+    def test_a_finished_harness_is_all_steps_done(self) -> None:
+        directory = self.job()
+        self.beat(directory, state="done", stepIndex=-1)
+        self.assertEqual((3, 3), tuple(dashboard.device_progress(directory, "3:run", core.now())[key] for key in ("step", "total")))
+
+    def test_before_the_first_step_it_is_step_zero(self) -> None:
+        directory = self.job()
+        self.beat(directory, state="starting", stepIndex=-1)
+        self.assertEqual(0, dashboard.device_progress(directory, "3:run", core.now())["step"])
+
+    def test_without_a_plan_file_the_step_has_no_total(self) -> None:
+        directory = self.job(plan_steps=None)
+        self.beat(directory)
+        progress = dashboard.device_progress(directory, "3:run", core.now())
+        self.assertEqual(2, progress["step"])
+        self.assertIsNone(progress["total"])
+
+    def test_no_heartbeat_is_no_progress(self) -> None:
+        self.assertIsNone(dashboard.device_progress(self.job(), "3:run", core.now()))
+
+    def test_an_active_job_in_the_list_carries_it(self) -> None:
+        directory = self.job()
+        self.beat(directory)
+        from unittest import mock
+
+        with mock.patch.object(dashboard.jobs, "_runner_is_ours", return_value=True):
+            listed = dashboard.job_list(self.home, core.now())[0]
+        self.assertTrue(listed["active"])
+        self.assertEqual(2, listed["device"]["step"])
+
+
 class MemoryTests(unittest.TestCase):
     def test_windows_output_is_read(self) -> None:
         text = json.dumps({"total": 33554432, "free": 4194304, "procs": [

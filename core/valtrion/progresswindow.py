@@ -18,6 +18,8 @@ import time
 from pathlib import Path
 from typing import Sequence
 
+from . import testprogress
+
 POLL_MS = 500
 CLOSE_AFTER_END_MS = 4000
 READ_LIMIT = 1 << 20
@@ -114,8 +116,10 @@ class Handle:
             pass
 
 
-def start(log_file: Path, title: str, detail: str, enabled: bool = True) -> Handle | None:
-    """Open the window for a run whose Unity log is `log_file`. None when it is off, not on Windows or cannot be started. Never raises."""
+def start(log_file: Path, title: str, detail: str, enabled: bool = True, progress_file: Path | None = None) -> Handle | None:
+    """Open the window for a run whose Unity log is `log_file`. `progress_file` is where the Unity package reports "N of M" tests
+    (see `testprogress`): the window then shows a counter and a real bar. None when it is off, not on Windows or cannot be started.
+    Never raises."""
     if not enabled or os.name != "nt":
         return None
     try:
@@ -127,7 +131,7 @@ def start(log_file: Path, title: str, detail: str, enabled: bool = True) -> Hand
         done_file.unlink()  # the file appears when the run ends
         argv = remote.local_cli_argv([
             "unity", "_progress", "--log", str(log_file), "--done", str(done_file), "--parent-pid", str(os.getpid()),
-            "--title", title, "--detail", detail])
+            "--title", title, "--detail", detail, *(["--progress", str(progress_file)] if progress_file else [])])
         process = subprocess.Popen(
             argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             creationflags=0x08000000 | 0x00000200, close_fds=True)  # CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP
@@ -190,7 +194,13 @@ def _bottom_right(root, width: int, height: int) -> str:
     return f"{width}x{height}+{root.winfo_screenwidth() - width - 16}+{root.winfo_screenheight() - height - 64}"
 
 
-def run_window(log_file: Path, done_file: Path, parent_pid: int, title: str, detail: str) -> int:
+def test_counter_text(progress: dict) -> str:
+    """"120 of 361 tests" and, when there are some, the failed ones."""
+    text = f"{progress['done']} of {progress['total']} tests"
+    return f"{text} · {progress['failed']} failed" if progress["failed"] else text
+
+
+def run_window(log_file: Path, done_file: Path, parent_pid: int, title: str, detail: str, progress_file: Path | None = None) -> int:
     """Show the window until the run ends (or goes away). Returns 0; any failure to show it also returns 0."""
     try:
         import tkinter as tk
@@ -253,8 +263,17 @@ def run_window(log_file: Path, done_file: Path, parent_pid: int, title: str, det
             if not _process_alive(parent_pid):
                 close()
                 return
-            phase_label.configure(text=f"{tracker.phase}  ({elapsed})")
-            line_label.configure(text=tracker.last_line[:160])
+            counted = testprogress.read(progress_file) if progress_file else None
+            if counted is not None and counted["total"] > 0:  # the Unity package reports the tests: a real bar and a counter
+                if str(bar.cget("mode")) != "determinate":
+                    bar.stop()
+                    bar.configure(mode="determinate")
+                bar.configure(maximum=counted["total"], value=counted["done"])
+                phase_label.configure(text=f"{test_counter_text(counted)}  ({elapsed})")
+                line_label.configure(text=(counted["current"] or tracker.last_line)[:160])
+            else:
+                phase_label.configure(text=f"{tracker.phase}  ({elapsed})")
+                line_label.configure(text=tracker.last_line[:160])
             root.after(POLL_MS, tick)
 
         root.protocol("WM_DELETE_WINDOW", close)

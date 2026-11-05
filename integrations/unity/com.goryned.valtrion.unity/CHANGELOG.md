@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **Test progress for the host (Editor).** A new Editor assembly `Valtrion.Unity.Editor.Progress` (compiled only when the Test Framework package is present, `UNITY_TESTS_FRAMEWORK`) registers Test Runner callbacks when the environment variable `GDV_PROGRESS_FILE` is set, which `valtrion unity run` does. It keeps that file up to date (`gdv.testprogress/1`: `total`, `done`, `passed`, `failed`, `skipped`, `current`, `state`) so the host can show "120 of 361 tests" instead of a moving bar. Without the variable it does nothing; it only writes that file and never changes a test or its result. Contracts and the runtime harness are unchanged.
+
 ## 0.11.2 (2026-11-05)
 
 - **The harness survives IL2CPP stripping without a project `link.xml` (#80).** Nothing in a project references `Valtrion.Unity` (the harness starts from its own `RuntimeInitializeOnLoadMethod`), so UnityLinker removed the whole assembly from IL2CPP development players and a launch with `-gdv-plan` did nothing. `Runtime/link.xml` never prevented that: UnityLinker does not read a `link.xml` inside a package, and the earlier notes and the documentation that said it preserves `Valtrion.Unity` were wrong. The assembly is now marked `[assembly: UnityEngine.Scripting.AlwaysLinkAssembly]` (`Runtime/AssemblyInfo.cs`); the linker always processes it and keeps the bootstrap and what it reaches. The ineffective `Runtime/link.xml` is removed. A project `Assets/link.xml` that preserves `Valtrion.Unity` is no longer needed for the harness and may stay. Your own `[ValidationStep]` methods found by reflection still need a project `link.xml`, `[Preserve]` or `StepRegistry.Register`.

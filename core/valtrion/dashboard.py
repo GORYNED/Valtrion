@@ -14,7 +14,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 
-from . import core, jobs, lease, unityguard
+from . import core, jobs, lease, testprogress, unityguard
 
 SCHEMA = "gdv.dashboard/1"
 RECENT_JOBS = 30
@@ -152,6 +152,8 @@ def job_list(home: Path, now: datetime, limit: int = RECENT_JOBS) -> list[dict]:
             "stallSec": (job.get("watchdog") or {}).get("stallSec"), "timeoutSec": (job.get("watchdog") or {}).get("timeoutSec"),
             "lastProgressSec": _age_sec((job.get("watchdog") or {}).get("lastProgressUtc"), now)}
         item.update(_progress(directory))
+        if item["active"]:
+            item["device"] = device_progress(directory, item["currentStep"], now)
         result.append(item)
     return result
 
@@ -353,10 +355,58 @@ def slots(home: Path, held: list[dict]) -> dict:
         if entry is None:
             editor_slots.append({"slot": number, "state": "free"})
             continue
-        editor_slots.append({
+        slot = {
             "slot": number, "state": "held", "purpose": entry.get("purpose"), "owner": entry.get("owner"), "pid": entry.get("pid"),
-            "heldSec": entry.get("heldSec"), "renewedSec": entry.get("renewedSec"), "project": projects.get(entry.get("session"))})
+            "heldSec": entry.get("heldSec"), "renewedSec": entry.get("renewedSec"), "project": projects.get(entry.get("session"))}
+        counted = testprogress.read(testprogress.path_for(entry["session"], home)) if entry.get("session") else None
+        if counted is not None:  # the Unity package reports "N of M tests" for this run
+            slot["progress"] = counted
+        editor_slots.append(slot)
     return {"capacity": capacity, "unityEditor": editor_slots}
+
+
+def _plan_step_count(spec: dict, current_step: str | None) -> int | None:
+    """How many steps the plan of the run stage that runs now has (the plan file the pipeline names, on this host)."""
+    payload = spec.get("payload") if isinstance(spec.get("payload"), dict) else {}
+    inline = payload.get("inline") if isinstance(payload.get("inline"), dict) else {}
+    stages = [stage for stage in inline.get("stages", []) if isinstance(stage, dict)]
+    chosen = None
+    match = re.match(r"^(\d+):", current_step or "")
+    if match and 0 < int(match.group(1)) <= len(stages) and stages[int(match.group(1)) - 1].get("plan"):
+        chosen = stages[int(match.group(1)) - 1]
+    else:
+        planned = [stage for stage in stages if stage.get("plan")]
+        chosen = planned[0] if len(planned) == 1 else None
+    if chosen is None:
+        return None
+    plan_path = Path(str(chosen["plan"]))
+    if not plan_path.is_absolute() and payload.get("baseDir"):
+        plan_path = Path(str(payload["baseDir"])) / plan_path
+    plan = _read(plan_path)
+    steps = plan.get("steps") if plan else None
+    return len(steps) if isinstance(steps, list) and steps else None
+
+
+def device_progress(directory: Path, current_step: str | None, now: datetime) -> dict | None:
+    """Where the app on a device is in its plan, from the heartbeat the harness writes (pulled into the run folder while it runs)."""
+    newest = None
+    for path in (directory / "runs").rglob("heartbeat.json") if (directory / "runs").is_dir() else []:
+        try:
+            moment = path.stat().st_mtime
+        except OSError:
+            continue
+        if newest is None or moment > newest[0]:
+            newest = (moment, path)
+    if newest is None:
+        return None
+    beat = _read(newest[1])
+    if not beat or beat.get("schema") != "gdv.heartbeat/1" or not isinstance(beat.get("stepIndex"), int):
+        return None
+    total = _plan_step_count(_read(directory / "spec.json") or {}, current_step)
+    index = beat["stepIndex"]
+    step = total if beat.get("state") == "done" and total else (0 if index < 0 else index + 1)
+    return {"step": step, "total": total, "stepType": beat.get("stepType") or "", "state": beat.get("state"),
+            "message": beat.get("message") or "", "ageSec": _age_sec(beat.get("utc"), now)}
 
 
 # -- devices ----------------------------------------------------------------------------------------------------------------------

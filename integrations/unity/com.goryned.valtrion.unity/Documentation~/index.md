@@ -143,6 +143,10 @@ namespace Valtrion.Unity.Contracts {
 }
 ```
 
+## Test progress for the host
+
+When the Test Framework package is installed, the Editor assembly `Valtrion.Unity.Editor.Progress` reports how far a Test Runner run has come. `valtrion unity run` sets the environment variable `GDV_PROGRESS_FILE`; the assembly then keeps that file up to date (`gdv.testprogress/1`: `total`, `done`, `passed`, `failed`, `skipped`, `current`, `state`), so the host's dashboard can show "120 of 361 tests" and the test that runs now. Without the variable it does nothing; it writes only that file and never changes a test or its result.
+
 ## Runtime harness
 
 Nothing runs unless a plan is found, and the bootstrap never runs inside a Unity Test Framework play session (detected by the

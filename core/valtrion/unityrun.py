@@ -22,7 +22,7 @@ import time
 from pathlib import Path
 from typing import Callable, Sequence, TextIO
 
-from . import config, constants, core, lease, lfs, progresswindow, supervise, unityguard
+from . import config, constants, core, lease, lfs, progresswindow, supervise, testprogress, unityguard
 from .providers.unity import support
 
 DEFAULT_LEASE_WAIT_SEC = 1800.0
@@ -289,6 +289,8 @@ def run(
     what = purpose or "valtrion unity run"
     deadline = time.monotonic() + max(0.0, lease_wait_sec)
     work = Path(tempfile.mkdtemp(prefix="valtrion-unity-"))
+    progress_file = testprogress.path_for(session, home)
+    progress_file.unlink(missing_ok=True)  # one of an earlier run that had this process id says nothing about this run
     keeper = lease.LeaseKeeper(manager, session, pid, ttl_sec / 3, owner)
     #: Every lease this run may hold, in the order taken. A name is listed before its acquire call starts, so an interrupt between the
     #: moment a lease is created and the moment the run notes it still finds it at cleanup (releasing a lease of another holder does nothing).
@@ -359,10 +361,12 @@ def run(
                 watcher = threading.Thread(target=watch_leases, name="valtrion-unity-lease-watch", daemon=True)
                 watcher.start()
                 title, detail = progresswindow.describe_run(args, project)
-                window = progresswindow.start(log_file or console, title, detail, show_progress)
+                window = progresswindow.start(log_file or console, title, detail, show_progress, progress_file)
+                # The Editor part of the Unity package writes how far the tests have come into this file (dashboard, progress window).
+                unity_environment = {**os.environ, testprogress.ENVIRONMENT_VARIABLE: str(progress_file)}
                 outcome = None
                 try:
-                    outcome = supervise.supervise([editor, *args], watchdog, console, None, None, exit_codes=UNITY_EXIT_CODES,
+                    outcome = supervise.supervise([editor, *args], watchdog, console, None, unity_environment, exit_codes=UNITY_EXIT_CODES,
                                                   hidden_desktop=on_hidden_desktop)
                 finally:
                     if window is not None and outcome is None:  # an interrupt: there is no result to show
@@ -395,6 +399,7 @@ def run(
                     keeper.add(resource)
                     keeper.release_one(resource)
                 keeper.stop()
+                progress_file.unlink(missing_ok=True)
                 shutil.rmtree(work, ignore_errors=True)
 
             for _attempt in range(2):  # a signal that lands before `cleaning` is set interrupts the first attempt; the second is complete

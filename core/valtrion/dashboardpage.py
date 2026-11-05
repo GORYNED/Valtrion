@@ -99,6 +99,8 @@ function table(heads, rows) {
   return t;
 }
 function busyBar() { const b = el('div', 'bar busy'); b.append(el('i')); return b; }
+function doneBar(fraction) { const b = el('div', 'bar'), i = el('i'); i.style.width = Math.max(1, Math.min(100, Math.round(100 * fraction))) + '%'; b.append(i); return b; }
+function testsText(p) { return `${p.done} of ${p.total} tests` + (p.failed ? ` · ${p.failed} failed` : ''); }
 function emptyBar() { return el('div', 'bar'); }
 
 function slotCard(title, state, head) {
@@ -109,8 +111,14 @@ function slotCard(title, state, head) {
 function editorSlot(s, total) {
   if (s.state !== 'held') { const c = slotCard('Free', 'free', `Unity Editor · slot ${s.slot} of ${total}`); c.append(emptyBar()); return c; }
   const c = slotCard(s.purpose || 'unity run', 'active', `Unity Editor · slot ${s.slot} of ${total}`);
-  c.append(el('div', 'sub', [baseName(s.project), s.owner, s.pid ? `pid ${s.pid}` : ''].filter(Boolean).join(' · ')), busyBar());
-  const m = el('div', 'meta'); m.append(el('span', '', `running ${dur(s.heldSec)}`), el('span', '', `alive signal ${dur(s.renewedSec)} ago`)); c.append(m); return c;
+  const p = s.progress && s.progress.total > 0 ? s.progress : null;
+  c.append(el('div', 'sub', [baseName(s.project), s.owner, s.pid ? `pid ${s.pid}` : ''].filter(Boolean).join(' · ')));
+  if (p && p.current) c.append(el('div', 'sub', short(p.current, 90)));
+  c.append(p ? doneBar(p.done / p.total) : busyBar());
+  const m = el('div', 'meta');
+  if (p) m.append(el('span', '', testsText(p)), el('span', '', `${Math.round(100 * p.done / p.total)}% · ${dur(s.heldSec)}`));
+  else m.append(el('span', '', `running ${dur(s.heldSec)}`), el('span', '', `alive signal ${dur(s.renewedSec)} ago`));
+  c.append(m); return c;
 }
 function deviceSlot(d) {
   const c = slotCard(d.model || d.id, !d.online ? 'off' : (d.busy ? 'active' : 'free'), `${d.platform || 'device'} · 1 slot`);
@@ -122,7 +130,11 @@ function jobCard(j) {
   const c = el('div', 'card active');
   c.append(el('div', 'title', `${j.project || j.kind || 'job'} · ${j.kind || ''}`), el('div', 'sub', j.id));
   const steps = el('div', 'steps'); (j.steps || []).forEach((s) => steps.append(el('span', 'pill ' + s.status, `${s.step}  ${s.status === 'running' ? '…' : s.status}`))); c.append(steps);
-  c.append(el('div', 'sub', j.phase ? `phase: ${j.phase}` : (j.message || '')), busyBar());
+  const d = j.device;
+  c.append(el('div', 'sub', j.phase ? `phase: ${j.phase}` : (j.message || '')));
+  if (d && d.step > 0 && d.total) c.append(el('div', 'sub', `on the device: step ${d.step} of ${d.total}${d.stepType ? ' · ' + d.stepType : ''}`), doneBar(d.step / d.total));
+  else if (d && d.step > 0) c.append(el('div', 'sub', `on the device: step ${d.step}${d.stepType ? ' · ' + d.stepType : ''}`), busyBar());
+  else c.append(busyBar());
   const stall = j.stallSec ? Math.min(100, Math.round(100 * (j.lastProgressSec || 0) / j.stallSec)) : 0;
   const m = el('div', 'meta'); m.append(el('span', '', `running ${dur(j.ageSec)}`), el('span', '', `last progress ${dur(j.lastProgressSec)} ago` + (j.stallSec ? ` · stall at ${dur(j.stallSec)} (${stall}%)` : ''))); c.append(m);
   return c;

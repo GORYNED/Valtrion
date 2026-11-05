@@ -65,7 +65,7 @@ All keys are optional. `artifactsRoot` and `workRoot` must be non-empty; `workRo
 
 **`hiddenDesktop`.** `true` or `false` (default `true` for `unity run`; Windows only): `unity run` starts Unity on a desktop of its own, so the windows that tests open never appear on the screen or take the keyboard and the mouse. `unity run --hidden-desktop` / `--no-hidden-desktop` overrides it for one run (see [cli.md](cli.md#unity-run)). Anything but a boolean is an error (`BLOCKED`).
 
-**`progressWindow`.** `true` or `false` (default `true` for `unity run`; Windows only): `unity run` shows one small window with the progress of the run. `--progress-window` / `--no-progress-window` overrides it for one run. Anything but a boolean is an error (`BLOCKED`).
+**`progressWindow`.** `true` or `false` (default `false`; Windows only): `unity run` shows one small window with the progress of the run (the dashboard shows it too). `--progress-window` / `--no-progress-window` overrides it for one run. Anything but a boolean is an error (`BLOCKED`).
 
 **`lfs`.** Optional object `{"materialize": true}` (the default): `unity run` turns Git LFS pointer files of the project into their content before Unity starts, from the shared cache `<work root>/lfs-cache` (see below and [cli.md](cli.md#unity-run)). `false` turns it off on this host (`unity run --lfs-materialize` still turns it on for one run); other keys and values are an error (`BLOCKED`).
 
