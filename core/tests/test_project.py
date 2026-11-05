@@ -140,7 +140,7 @@ class CheckTests(ProjectCase):
         self.assertEqual("ok", self.check()["status"])
 
     def test_the_shipped_compat_table_is_valid_and_lists_this_core(self):
-        self.lock({"version": "0.11.1", "source": "registry"})
+        self.lock({"version": "0.12.0", "source": "registry"})
         self.assertEqual("ok", project.check_project(self.unity)["status"])
 
 
@@ -163,7 +163,7 @@ class DoctorProjectTests(ProjectCase):
         self.assertEqual("skipped", json.loads(out)["project"]["status"])
 
     def test_supported_package_passes(self):
-        self.lock({"version": "0.11.1", "source": "registry"})
+        self.lock({"version": "0.12.0", "source": "registry"})
         code, out, _ = self.doctor("--project", str(self.unity))
         self.assertEqual((0, "ok"), (code, json.loads(out)["project"]["status"]))
 
@@ -213,9 +213,9 @@ class ShippedTableTests(ProjectCase):
             self.assertEqual("BLOCKED", result["status"], core_version)
             self.assertIn(">=0.8.0,<0.14", result["reason"])
 
-    def test_package_0_11_1_works_with_core_0_8_to_0_14_and_the_current_core(self):
+    def test_package_0_11_1_works_with_core_0_8_to_0_14_but_not_0_15(self):
         self.lock({"version": "0.11.1", "source": "registry"})
-        for core_version in ("0.8.0", "0.13.1", "0.14.0", __import__("valtrion").__version__):
+        for core_version in ("0.8.0", "0.13.1", "0.14.0", "0.14.1"):
             self.assertEqual("ok", project.check_project(self.unity, core_version)["status"], core_version)
         for core_version in ("0.7.4", "0.15.0"):
             self.assertNotEqual("ok", project.check_project(self.unity, core_version)["status"], core_version)
@@ -239,12 +239,29 @@ class ShippedTableTests(ProjectCase):
         for version in ("0.11.1", "0.11.3", "0.11.20"):
             self.assertFalse(project.package_matches(version, "0.11.2"), version)
         self.lock({"version": "0.11.2", "source": "registry"})
-        for core_version in ("0.8.0", "0.13.1", "0.14.0", "0.14.9", __import__("valtrion").__version__):
+        for core_version in ("0.8.0", "0.13.1", "0.14.0", "0.14.9", "0.14.1"):
             self.assertEqual("ok", project.check_project(self.unity, core_version)["status"], core_version)
         for core_version in ("0.7.4", "0.15.0"):
             self.assertNotEqual("ok", project.check_project(self.unity, core_version)["status"], core_version)
         self.lock({"version": "0.11.3", "source": "registry"})
         self.assertEqual("BLOCKED", project.check_project(self.unity, "0.14.0")["status"], "a later 0.11 package needs its own row")
+
+    def test_package_0_12_x_works_with_core_0_8_to_0_15_and_not_with_0_16(self):
+        _, ranges = project.load_compat_document()
+        self.assertEqual([{"package": "0.12.x", "core": ">=0.8.0,<0.16"}], [r for r in ranges if r["package"] == "0.12.x"])
+        self.lock({"version": "0.12.0", "source": "registry"})
+        for core_version in ("0.8.0", "0.14.1", "0.15.0", "0.15.9"):
+            self.assertEqual("ok", project.check_project(self.unity, core_version)["status"], core_version)
+        for core_version in ("0.7.4", "0.16.0"):
+            self.assertNotEqual("ok", project.check_project(self.unity, core_version)["status"], core_version)
+
+    def test_the_package_and_the_core_of_this_checkout_are_paired(self):
+        package = json.loads((Path(__file__).resolve().parents[2] / "integrations" / "unity" / "com.goryned.valtrion.unity" / "package.json")
+                             .read_text(encoding="utf-8"))["version"]
+        _, ranges = project.load_compat_document()
+        core_version = __import__("valtrion").__version__
+        self.assertTrue(any(project.package_matches(package, str(r["package"])) and project.version_in_range(core_version, str(r["core"]))
+                            for r in ranges), f"package {package} and core {core_version} must be paired by compat.json")
 
     def test_the_package_id_comes_from_the_table(self):
         other = self.base / "other.json"

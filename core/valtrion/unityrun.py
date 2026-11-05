@@ -22,7 +22,7 @@ import time
 from pathlib import Path
 from typing import Callable, Sequence, TextIO
 
-from . import config, constants, core, lease, lfs, supervise, unityguard
+from . import config, constants, core, lease, lfs, progresswindow, supervise, testprogress, unityguard
 from .providers.unity import support
 
 DEFAULT_LEASE_WAIT_SEC = 1800.0
@@ -226,17 +226,28 @@ class _Handlers:
                 pass
 
 
+def default_purpose(args: Sequence[str], project: Path) -> str:
+    """What the leases say a run is for when the caller gives no `--purpose`: what the run does and, for an agent's session, the name of
+    its working copy (`Unity tests (EditMode) · task-ab12cd`), which stands for the session on the dashboard."""
+    title, _ = progresswindow.describe_run(args, None)
+    label = core.worktree_label(project) or core.worktree_label(Path.cwd())
+    return f"{title} · {label}" if label else title
+
+
 def run(
         unity_args: Sequence[str], project_dir: Path | None = None, unity: str | None = None,
         lease_wait_sec: float = DEFAULT_LEASE_WAIT_SEC, timeout_sec: float = 0.0, stall_sec: float = DEFAULT_STALL_SEC,
         purpose: str = "", home: Path | None = None, out: TextIO | None = None, err: TextIO | None = None,
         ttl_sec: int = LEASE_TTL_SEC, poll_sec: float = 1.0, cancel_poll_sec: float = 1.0,
         probe: unityguard.Probe | None = None, guard_poll_sec: float | None = None, lifeline: int | None = None,
-        lfs_materialize: bool | None = None, lfs_call: lfs.LfsCall | None = None, lfs_free: Callable[[Path], int] | None = None) -> int:
+        lfs_materialize: bool | None = None, lfs_call: lfs.LfsCall | None = None, lfs_free: Callable[[Path], int] | None = None,
+        hidden_desktop: bool | None = None, progress_window: bool | None = None) -> int:
     """Run Unity with `unity_args`; returns the exit code of the final status (already printed as the last stdout line).
     `lifeline`: a file descriptor whose end of input means the caller is gone (the standard input of a command run over SSH); the run is then
     interrupted like by Ctrl+C. `lfs_materialize`: run the Git LFS preflight (None: `lfs.materialize` of host.json, default on);
-    `lfs_call` and `lfs_free` replace `git lfs` and the free-space probe in tests."""
+    `lfs_call` and `lfs_free` replace `git lfs` and the free-space probe in tests. `hidden_desktop`: start Unity on a desktop of its own
+    (None: `hiddenDesktop` of host.json, default off here; the command line turns it on by default; Windows only, ignored elsewhere), so
+    test windows do not appear on the screen. `progress_window`: show one window with the progress of the run (same rules, `progressWindow`)."""
     out = out or sys.stdout
     err = err or sys.stderr
     args = normalize_assembly_names(unity_args)
@@ -266,6 +277,8 @@ def run(
             args += config.unity_accelerator_args(home)
         guard_settings = unityguard.load_settings(home)
         materialize = config.lfs_materialize(home) if lfs_materialize is None else lfs_materialize
+        on_hidden_desktop = config.hidden_desktop(home) if hidden_desktop is None else hidden_desktop
+        show_progress = config.progress_window(home) if progress_window is None else progress_window
         lfs_cache = lfs.cache_root(config.load_host_settings(home).work_root) if materialize else None
 
         capacity = lease.unity_editor_capacity(home)
@@ -281,9 +294,11 @@ def run(
     owner = os.environ.get("GDV_OWNER") or f"{_user()}@{core.local_host_id()}"
     pid = os.getpid()
     session = f"unity-run-{pid}"
-    what = purpose or "valtrion unity run"
+    what = purpose or default_purpose(args, project)
     deadline = time.monotonic() + max(0.0, lease_wait_sec)
     work = Path(tempfile.mkdtemp(prefix="valtrion-unity-"))
+    progress_file = testprogress.path_for(session, home)
+    progress_file.unlink(missing_ok=True)  # one of an earlier run that had this process id says nothing about this run
     keeper = lease.LeaseKeeper(manager, session, pid, ttl_sec / 3, owner)
     #: Every lease this run may hold, in the order taken. A name is listed before its acquire call starts, so an interrupt between the
     #: moment a lease is created and the moment the run notes it still finds it at cleanup (releasing a lease of another holder does nothing).
@@ -353,7 +368,17 @@ def run(
 
                 watcher = threading.Thread(target=watch_leases, name="valtrion-unity-lease-watch", daemon=True)
                 watcher.start()
-                outcome = supervise.supervise([editor, *args], watchdog, console, None, None, exit_codes=UNITY_EXIT_CODES)
+                title, detail = progresswindow.describe_run(args, project)
+                window = progresswindow.start(log_file or console, title, detail, show_progress, progress_file)
+                # The Editor part of the Unity package writes how far the tests have come into this file (dashboard, progress window).
+                unity_environment = {**os.environ, testprogress.ENVIRONMENT_VARIABLE: str(progress_file)}
+                outcome = None
+                try:
+                    outcome = supervise.supervise([editor, *args], watchdog, console, None, unity_environment, exit_codes=UNITY_EXIT_CODES,
+                                                  hidden_desktop=on_hidden_desktop)
+                finally:
+                    if window is not None and outcome is None:  # an interrupt: there is no result to show
+                        window.finish(constants.BLOCKED, "interrupted")
                 stop_watching.set()
                 watcher.join(timeout=5)
                 lost = f"the lease(s) {', '.join(keeper.lost)} were lost while Unity ran"
@@ -364,6 +389,8 @@ def run(
                     status, reason = classify(outcome, log_file if _log_is_new(log_file, before) else console)
                     if keeper.lost:  # Unity had already ended: its own result stands, with the note
                         reason = f"{reason}; note: {lost}" if reason else f"note: {lost}"
+                if window is not None:
+                    window.finish(status, reason)
                 text = log_tail(console, CONSOLE_TAIL_BYTES)
                 if text:
                     _say(err, text.rstrip("\n"))
@@ -380,6 +407,7 @@ def run(
                     keeper.add(resource)
                     keeper.release_one(resource)
                 keeper.stop()
+                progress_file.unlink(missing_ok=True)
                 shutil.rmtree(work, ignore_errors=True)
 
             for _attempt in range(2):  # a signal that lands before `cleaning` is set interrupts the first attempt; the second is complete

@@ -535,6 +535,43 @@ class EditorLookupTests(UnityRunTestCase):
         self.assertEqual("STATUS BLOCKED", lines[-1])
 
 
+class DefaultPurposeTests(unittest.TestCase):
+    def test_a_session_working_copy_names_the_run(self):
+        project = Path("D:/Projects/Repo/.claude/worktrees/task-7/Game")
+        self.assertEqual("Unity tests (EditMode) · task-7",
+                         unityrun.default_purpose(["-runTests", "-testPlatform", "EditMode"], project))
+
+    def test_outside_a_working_copy_it_is_just_what_the_run_does(self):
+        with mock.patch.object(unityrun.Path, "cwd", return_value=Path("D:/Projects/Repo")):
+            self.assertEqual("Unity batch method", unityrun.default_purpose(["-executeMethod", "Build.Run"], Path("D:/Projects/Repo/Game")))
+
+
+class ProgressFileTests(UnityRunTestCase):
+    def test_unity_is_told_where_to_report_its_progress(self):
+        dump = self.base / "dump"
+        code, out, err = self.unity("--dump", str(dump))
+        self.assertEqual(0, code, err)
+        given = Path((dump / "progress-env").read_text(encoding="utf-8"))
+        self.assertEqual(self.home / "progress", given.parent)
+        self.assertRegex(given.name, r"^unity-run-\d+\.json$")
+
+    def test_the_report_is_gone_when_the_run_has_ended(self):
+        dump = self.base / "dump"
+        code, out, err = self.unity("--dump", str(dump), "--progress-report")
+        self.assertEqual(0, code, err)
+        given = Path((dump / "progress-env").read_text(encoding="utf-8"))
+        self.assertEqual(4, json.loads((dump / "progress-seen").read_text(encoding="utf-8"))["done"])
+        self.assertFalse(given.exists(), "a finished run leaves no report behind")
+
+    def test_a_report_left_by_an_earlier_run_with_the_same_process_id_is_not_shown(self):
+        stale = self.home / "progress" / f"unity-run-{os.getpid()}.json"
+        stale.parent.mkdir()
+        stale.write_text("old", encoding="utf-8")
+        dump = self.base / "dump"
+        self.unity("--dump", str(dump))
+        self.assertFalse(stale.exists())
+
+
 class CommandLineTests(HostTestCase):
     def setUp(self):
         super().setUp()
@@ -547,6 +584,12 @@ class CommandLineTests(HostTestCase):
                                  FAKE, "-batchmode", "-projectPath", str(self.project), "--dump", str(dump))
         self.assertEqual((0, "STATUS PASS"), (code, out.strip().splitlines()[-1]), err)
         self.assertIn("-batchmode", json.loads((dump / "argv.json").read_text()))
+
+    def test_the_progress_window_is_off_unless_asked_for(self):
+        with mock.patch.object(unityrun.progresswindow, "start", return_value=None) as start:
+            run_cli("unity", "run", "--unity", sys.executable, "--lease-wait", "0", "--", FAKE, "-projectPath", str(self.project))
+            run_cli("unity", "run", "--unity", sys.executable, "--lease-wait", "0", "--progress-window", "--", FAKE, "-projectPath", str(self.project))
+        self.assertEqual([False, True], [call.args[3] for call in start.call_args_list])
 
     def test_project_dir_becomes_the_project_path(self):
         dump = self.base / "dump"

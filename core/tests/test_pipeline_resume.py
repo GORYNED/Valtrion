@@ -99,7 +99,7 @@ class StageSelectionTests(_Harness):
         records = self.stage_records(result)
         self.assertEqual([("build", "ran", "PASS"), ("install", "ran", "PASS"), ("run", "ran", "PASS")],
                          [(records[i]["stage"], records[i]["disposition"], records[i]["status"]) for i in (1, 2, 3)])
-        self.assertEqual("android:ZY22", records[2]["deviceId"])
+        self.assertEqual("android:A1B2", records[2]["deviceId"])
         self.assertEqual(("perf.open", result["runId"]), (records[3]["plan"], records[3]["runId"]))
         self.assertTrue(all(len(item["stageSha256"]) == 64 for item in records.values()))
 
@@ -240,11 +240,11 @@ class StageSelectionTests(_Harness):
         FakeAdapter.devices = [DeviceOther(), *FakeAdapter.devices]
         _, store = self.run_pipeline(self.pipeline_document(self.stages()), {"selection": {"stages": ["3"]}})
         self.assertEqual("PASS", store.read_job()["status"], store.read_job()["reason"])
-        self.assertEqual("android:ZY22", self.result_of(store)["target"]["deviceId"])
+        self.assertEqual("android:A1B2", self.result_of(store)["target"]["deviceId"])
         document = self.pipeline_document(self.stages())
         document["device"]["id"] = "android:AA00"
         _, store = self.run_pipeline(document, {"selection": {"stages": ["3"]}})
-        self.assertIn("installed on android:ZY22, not on the device android:AA00", store.read_job()["reason"])
+        self.assertIn("installed on android:A1B2, not on the device android:AA00", store.read_job()["reason"])
 
     def test_selectors(self):
         stages = self.stages()
@@ -579,7 +579,7 @@ def _result(status=constants.PASS, sha=SHA, dirty=False, **changes):
     document = {
         "schema": "gdv.result/1", "runId": "job-3-1", "status": status, "reason": None if status == constants.PASS else f"it ended {status}",
         "candidate": {"repo": "Sample", "sha": sha, "profile": "Validation", "unity": "6000.6.7f1", "dirty": dirty},
-        "target": {"platform": "android", "deviceId": "android:ZY22", "deviceClass": "phone-mid", "osMajor": 15, "evidence": "physical"},
+        "target": {"platform": "android", "deviceId": "android:A1B2", "deviceClass": "phone-mid", "osMajor": 15, "evidence": "physical"},
         "host": {"id": "win", "transport": "local", "selectedBy": "local"}, "plan": {"id": "perf.open", "sha256": "a" * 64},
         "startedUtc": "2026-11-04T10:00:00Z", "finishedUtc": "2026-11-04T10:01:00Z", "layers": {"scenario": status},
         "steps": [], "metrics": [], "artifacts": [], "unverified": [],

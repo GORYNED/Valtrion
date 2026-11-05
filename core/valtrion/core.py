@@ -68,6 +68,26 @@ def safe_segment(text: str, fallback: str = "x", limit: int = 100) -> str:
     return cleaned or fallback
 
 
+def worktree_label(path: "str | Path | None", user_home: Path | None = None) -> str:
+    """The name of the working copy a path lies in, when it is a worktree of an agent session: `<name>` of
+    `<home>/.claude/worktrees/<repo>/<name>/...` or of `<repo>/.claude/worktrees/<name>/...`. It stands for the session, since every agent
+    session works in a working copy of its own. Empty when the path is in no such folder."""
+    if not path:
+        return ""
+    parts = Path(str(path).replace("\\", "/")).parts
+    try:
+        index = max(i for i, part in enumerate(parts) if part.lower() == "worktrees" and i > 0 and parts[i - 1].lower() == ".claude")
+    except ValueError:
+        return ""
+    rest = parts[index + 1:]
+    base = Path(*parts[:index - 1]) if index > 1 else Path(".")
+    home_of_user = (user_home or Path.home())
+    in_user_home = str(base).replace("\\", "/").rstrip("/").lower() == str(home_of_user).replace("\\", "/").rstrip("/").lower()
+    if in_user_home:  # `<home>/.claude/worktrees/<repo>/<name>`: the repository comes first
+        return rest[1] if len(rest) >= 2 else ""
+    return rest[0] if rest else ""  # `<repo>/.claude/worktrees/<name>`
+
+
 def local_os() -> str:
     if sys.platform.startswith("win"):
         return "windows"

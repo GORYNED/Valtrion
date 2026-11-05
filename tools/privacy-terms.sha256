@@ -1,0 +1,20 @@
+# Hashes of names that must not appear in this repository (real projects, devices, machines, people).
+# One line per name: sha256 of the normalized name (lowercase letters and digits, the words joined). Make a line with
+#   python tools/check_privacy.py --hash "Example Name"
+# A hash hides a name from a reader, not from someone who tries guesses; keep the plain list in ~/.valtrion/private-terms.txt.
+sha256:1b4a1fec39cf90d8281b15b63e4037b48b5656f64dc6893ad0dd9a718fcebe25
+sha256:1e06bd45e9e173450666c56ccd9da4700fcc553d43e0517595d18f78887fa6d0
+sha256:21f2313c3e8b996861bf84d659fd61d2609c651422bc94a484de1266b6125886
+sha256:243c6af36176cac42d244df428f138b644d09c8e0adaafe75187385a135b1a07
+sha256:27e433fc2dab1d4a953a2ed22a82caadbace4e3814071ae8331fd9d9cd1ee6b0
+sha256:37546bb747a3785967b89897de04a7eeba84e2b0e3ed664ac0e49c69c41a3b65
+sha256:4df9469ef420d66c15197cbf214a60741ecaeced20753f0dc578f78f5f83ce0b
+sha256:5feed2e8eef9e9236c06e6618e5bc967cbb7891b52442cff2f288f9c10ed852a
+sha256:69835cd1967cb410ccb7999b6dfa2430f88b8b1aca1cf65389588aa8e8b65972
+sha256:74dcced32b17cbf44498e0002a2113e7c89808b26be258ecaef042529028f82b
+sha256:83105c59fa8ae87ef4d6ead8ff580b2d521a80ca9e56f15d489abc40d9eb7612
+sha256:8fbcde4b93bb48d351fc2450f09975c4dc1504478138f384838ae29fb2ee4772
+sha256:91fef954dc8350d0157ae02e4d530ca8811420e1c895bd7ecfd29ba52c50a28e
+sha256:aec69af4cd198cef07f8be938f0a420287037640071d03bb173d4a8f95c4e88a
+sha256:c9affe7f758723c3eb9fe8b143520c7d3c73fa7cacdbf1a76b34e18624cc6ecf
+sha256:d7dbb1765923b057520fc7e4b7ec0dede04c3fef598fcc52aef12230db60bf80

@@ -44,6 +44,12 @@ State is kept as files: a run folder per job under the artifacts root holds `job
 
 A project can map changed files to the checks a change needs (`valtrion select`) and print a verification block for a pull request (`valtrion report`). See [cli.md](cli.md).
 
+## Seeing what runs
+
+`valtrion dashboard` opens a read-only page (and a tray icon on Windows) with the slots, jobs, memory and leases of this machine and of your SSH hosts. See [`dashboard` in cli.md](cli.md#dashboard).
+
+![The Valtrion dashboard: free and busy slots, memory and disk, running jobs.](images/dashboard-tiles.png)
+
 ## Where to go next
 
 [install.md](install.md) to install, [cli.md](cli.md) for commands, [trust-model.md](trust-model.md) for what runs project code.

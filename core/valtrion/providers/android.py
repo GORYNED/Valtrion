@@ -34,7 +34,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Mapping, Sequence
 
-from .. import config, constants, core, doctor, supervise
+from .. import config, constants, core, doctor, nowindow, supervise
 from ..adapter import Capabilities, DeviceHealth, DeviceInfo, PlatformAdapter, StepOutcome
 from . import register
 
@@ -196,7 +196,7 @@ class AndroidAdapter(PlatformAdapter):
         self._server_started = True
         try:
             subprocess.run([*command, "start-server"], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                           timeout=30, check=False)
+                           timeout=30, check=False, **nowindow.OPTIONS)
         except (OSError, subprocess.SubprocessError):
             pass  # the first supervised call reports what is wrong
 

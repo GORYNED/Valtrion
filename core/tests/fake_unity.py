@@ -31,6 +31,13 @@ def main():
         folder.mkdir(parents=True, exist_ok=True)
         (folder / "argv.json").write_text(json.dumps(sys.argv[1:]), encoding="utf-8")
         (folder / "pid").write_text(str(os.getpid()), encoding="utf-8")
+        progress = os.environ.get("GDV_PROGRESS_FILE", "")
+        (folder / "progress-env").write_text(progress, encoding="utf-8")
+        if progress and "--progress-report" in sys.argv:  # what the Unity package does: report how far the tests have come
+            Path(progress).parent.mkdir(parents=True, exist_ok=True)
+            Path(progress).write_text(json.dumps({"schema": "gdv.testprogress/1", "state": "running", "total": 10, "done": 4, "passed": 4,
+                                                  "failed": 0, "skipped": 0, "current": "A.B.C"}), encoding="utf-8")
+            (folder / "progress-seen").write_text(Path(progress).read_text(encoding="utf-8"), encoding="utf-8")
         leases = Path(os.environ.get("FAKE_UNITY_LEASES", ""))
         names = sorted(p.name for p in leases.glob("*.lock")) if leases.is_dir() else []
         (folder / "leases.json").write_text(json.dumps(names), encoding="utf-8")
