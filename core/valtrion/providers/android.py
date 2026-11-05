@@ -376,6 +376,12 @@ class AndroidAdapter(PlatformAdapter):
 
     # -- build, install, prepare ---------------------------------------------------------------------------------------------
 
+    def toolchain(self) -> dict[str, str]:
+        """What changes the build besides the project's profile (whose settings are in the build cache key already): the
+        `GDV_ANDROID_BACKEND` override, so a Mono build and an IL2CPP build of one commit get different keys."""
+        backend = os.environ.get("GDV_ANDROID_BACKEND")
+        return {"androidBackend": backend} if backend else {}
+
     def build(self, project: Path, profile: str, out: Path) -> StepOutcome:
         profiles_path = project / "validation" / "device" / "profiles.json"
         try:

@@ -4,8 +4,8 @@ Off by default. With `host.json` `"repeatGuard": {"windowSec": N}` (N > 0) a sta
 less than N seconds ago is refused before a job exists, with the id, state and status of the earlier job; `--allow-repeat` starts it
 anyway. The inputs are the pipeline as it will run (including the commit named with `--sha`), the content of every plan and
 pre-launch file of its run stages, the options that change what runs (stage selection, `--resume-from`, `--keep-going`, the result
-cache mode, the managed checkout), the job limits (`--timeout-sec`, `--stall-sec`, `--lease-wait`, `--disk-wait`), the project
-folder, its commit, and for each uncommitted change its path, size and modification time. Any change of these is a new input and is never refused. Records live in `<valtrion home>/repeat-guard/<key>.json` and are
+cache mode, the managed checkout), the job limits (`--timeout-sec`, `--stall-sec`, `--lease-wait`, `--disk-wait`), how the job is
+started (`--domain`, `--foreground`), the project folder, its commit, and for each uncommitted change its path, size and modification time. Any change of these is a new input and is never refused. Records live in `<valtrion home>/repeat-guard/<key>.json` and are
 removed by `prune` once they are older than a day beyond any window; two identical starts in the same instant may both pass.
 """
 
@@ -55,7 +55,8 @@ def _file_digest(path: Path) -> str:
 def fingerprint(pipeline: Mapping[str, Any], payload: Mapping[str, Any], base: Path, project_dir: Path | None,
                 git: GitRunner, request: Mapping[str, Any] | None = None) -> str:
     """The key of a start: SHA-256 over the inputs listed in the module text. `request` holds the job limits that are not in the
-    payload (`--timeout-sec`, `--stall-sec`, `--lease-wait`, `--disk-wait`): a rerun with a longer timeout is a changed input."""
+    payload (`--timeout-sec`, `--stall-sec`, `--lease-wait`, `--disk-wait`) and how the job is started (`--domain`, `--foreground`):
+    a rerun with a longer timeout, or in the `gui` domain after a `NEEDS_PERMISSION` in the `user` domain, is a changed input."""
     files = []
     for stage in pipeline.get("stages", []):
         if stage.get("plan"):

@@ -12,7 +12,8 @@ already on the device, an `args.artifact`, or a carried install), and a lookup t
 - it is a `valtrion.resultcache/1` entry whose key is the file name and whose recorded components are the ones asked for;
 - the stored result hashes to the recorded `resultSha256`, is a valid `gdv.result/1`, is `PASS`, is not dirty, and its own
   `candidate`, `plan`, `target` and `build` fields agree with the key (its `build` is a clean build of the commit with the key's
-  build key).
+  build key, and its SHA-256 is the one of the build now published under that key: a build made again under the same key, as
+  `args.reuse: false` does, makes the older results misses, and `forget_build` removes them when it is published).
 
 Anything else is ignored (a miss with a reason), never trusted and never repaired. `FAIL`, `BLOCKED`, `STALL`, `TIMEOUT`,
 `NEEDS_PERMISSION` and stages that did not run are never stored, so they are never reused. Retention follows the build cache: entries
@@ -42,6 +43,11 @@ MAX_ENTRY_BYTES = 8 << 20
 _TEMP_PREFIX = ".incoming-"
 _HEX64 = frozenset("0123456789abcdef")
 _REPLACE_ATTEMPTS = 20
+#: Windows reparse points that redirect to another path: a symbolic link and a junction (mount point). Other tags (OneDrive cloud
+#: files, deduplication) are ordinary files for the cache.
+IO_REPARSE_TAG_SYMLINK = 0xA000000C
+IO_REPARSE_TAG_MOUNT_POINT = 0xA0000003
+_LINK_REPARSE_TAGS = frozenset({IO_REPARSE_TAG_SYMLINK, IO_REPARSE_TAG_MOUNT_POINT})
 
 
 @dataclass(frozen=True)
@@ -128,7 +134,7 @@ def _untrusted(path: Path, folder: bool = False) -> str | None:
         return "no entry"
     except OSError as error:
         return f"unreadable ({error})"
-    if stat.S_ISLNK(info.st_mode) or getattr(info, "st_reparse_tag", 0) or _is_junction(path):
+    if stat.S_ISLNK(info.st_mode) or getattr(info, "st_reparse_tag", 0) in _LINK_REPARSE_TAGS or _is_junction(path):
         return "it is a link or junction"
     if folder and not stat.S_ISDIR(info.st_mode):
         return "the cache folder is not a folder"
@@ -241,9 +247,10 @@ def clean_build_of(build_key: Any, candidate_sha: Any, dirty: Any, platform: Any
             and dirty is False and (platform is None or platform == wanted_platform))
 
 
-def lookup(root: Path, key: Key, validator: Validator | None = None, touch: bool = True) -> tuple[Hit | None, str]:
-    """The trusted passing result for `key`, or (None, why it is a miss). See the module text for what is checked. A hit counts as
-    a use for `gc` unless `touch` is False (a status query)."""
+def lookup(root: Path, key: Key, *, build_sha256: str, validator: Validator | None = None, touch: bool = True) -> tuple[Hit | None, str]:
+    """The trusted passing result for `key`, or (None, why it is a miss). See the module text for what is checked. `build_sha256` is
+    the hash of the build now published under the key's build key: a result made with another binary of that key (the build was
+    forced again, `args.reuse: false`) is a miss. A hit counts as a use for `gc` unless `touch` is False (a status query)."""
     digest = key.digest
     if not _valid_digest(digest):
         return None, "invalid key"
@@ -283,6 +290,9 @@ def lookup(root: Path, key: Key, validator: Validator | None = None, touch: bool
     problem = _mismatch(result, key)
     if problem is not None:
         return None, f"the cached entry is ignored: {problem}"
+    if result["build"].get("sha256") != build_sha256:
+        return None, (f"the cached entry is ignored: it was made with another binary of build {key.build_key} (sha256 "
+                      f"{str(result['build'].get('sha256'))[:12]}, now {str(build_sha256)[:12]}); the build was made again since")
     job_id, stored = entry.get("jobId"), entry.get("storedUtc")
     if not isinstance(job_id, str) or not job_id or not isinstance(stored, str):
         return None, "the cached entry is ignored: it does not say which job stored it"
@@ -292,6 +302,26 @@ def lookup(root: Path, key: Key, validator: Validator | None = None, touch: bool
         except OSError:
             pass
     return Hit(digest, result, job_id, stored, path), "reused"
+
+
+def forget_build(root: Path, build_key: str) -> list[str]:
+    """Remove every entry stored for `build_key` (the build was replaced by another binary under the same key). Only trusted files
+    directly in the cache folder are read; an unreadable entry is left to `gc`. Returns the removed file names."""
+    if _untrusted(root, folder=True) is not None:
+        return []
+    removed: list[str] = []
+    for path in root.glob("*.json"):
+        if not _valid_digest(path.stem) or _untrusted(path) is not None:
+            continue
+        try:
+            with open(path, "rb") as handle:
+                entry = json.loads(handle.read(MAX_ENTRY_BYTES + 1).decode("utf-8"))
+        except (OSError, UnicodeDecodeError, ValueError, RecursionError):
+            continue
+        components = entry.get("components") if isinstance(entry, dict) else None
+        if isinstance(components, dict) and components.get("buildKey") == build_key and _unlink(path):
+            removed.append(path.name)
+    return removed
 
 
 def gc(root: Path, keep_days: float = DEFAULT_KEEP_DAYS, max_entries: int = DEFAULT_MAX_ENTRIES, protect: tuple[str, ...] = (),

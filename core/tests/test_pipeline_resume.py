@@ -12,6 +12,7 @@ from pathlib import Path, PureWindowsPath
 from unittest import mock
 
 from valtrion import cli, commands, constants, core, jobs, pipeline, repeatguard, resultcache, resume
+from valtrion.adapter import StepOutcome
 
 from tests import test_pipeline as base  # its test class is used through the module, so it is not run again here
 
@@ -257,6 +258,26 @@ class KeepGoingTests(_Harness):
         summary = json.loads((store.directory / "summary.json").read_text(encoding="utf-8"))
         self.assertEqual(["STALL", "PASS"], [entry["status"] for entry in summary])
 
+    def test_a_keep_going_pipeline_that_stops_later_reports_the_stopping_stage_in_job_and_result(self):
+        stages = [*self.two_series()[:3], {"stage": "install"}, self.two_series()[3]]
+        original = FakeAdapter.install
+        installs = []
+
+        def install(adapter, device, artifact):
+            installs.append(artifact)
+            if len(installs) == 2:
+                return StepOutcome(constants.BLOCKED, "the device storage is full")
+            return original(adapter, device, artifact)
+
+        with mock.patch.object(FakeAdapter, "install", install), self.scenarios("fail"):
+            _, store = self.run_pipeline(self.pipeline_document(stages), {"keepGoing": True})
+        job, result = store.read_job(), self.result_of(store)
+        self.assertEqual(("BLOCKED", "BLOCKED"), (job["status"], result["status"]))
+        self.assertEqual(job["reason"], result["reason"])
+        self.assertTrue(job["reason"].startswith("install failed: the device storage is full"), job["reason"])
+        self.assertIn("earlier stages that did not pass: 3:run FAIL", job["reason"])
+        self.assertEqual("not-run", self.stage_records(result)[5]["disposition"])
+
     def test_without_keep_going_the_first_failure_stops_and_the_rest_did_not_run(self):
         with self.scenarios("hang", "pass"):
             _, store = self.run_pipeline(self.pipeline_document(self.two_series()))
@@ -423,6 +444,38 @@ class ResultCachePipelineTests(_Harness):
         self.assertNotIn("launch", FakeAdapter.calls, "a lookup does not depend on the device")
         self.assertIn("reusedFrom", self.result_of(store))
 
+    def test_a_forced_rebuild_under_the_same_key_makes_the_earlier_pass_a_miss(self):
+        self.run_pipeline(self.pipeline_document(self.stages()))
+        self.assertEqual(1, len(self.stored()))
+        forced = self.stages()
+        forced[0]["args"] = {"reuse": False}
+        original = FakeAdapter.build
+
+        def other_binary(adapter, project, profile, out):
+            outcome = original(adapter, project, profile, out)
+            (out / "app.apk").write_bytes(b"another binary")
+            return outcome
+
+        with mock.patch.object(FakeAdapter, "build", other_binary), self.scenarios("fail"):
+            _, store = self.run_pipeline(self.pipeline_document(forced), {"resultCache": "reuse"})
+        self.assertEqual("FAIL", store.read_job()["status"])
+        self.assertIn("build", FakeAdapter.calls, "args.reuse false builds, whatever the cache holds")
+        self.assertIn("launch", FakeAdapter.calls, "a forced build is not answered from the result cache")
+        self.assertEqual([], self.stored(), "the results of the replaced binary were removed")
+        _, store = self.run_pipeline(self.pipeline_document(self.stages()), {"resultCache": "reuse"})
+        self.assertIn("launch", FakeAdapter.calls, "the old PASS does not answer for the new binary")
+        self.assertNotIn("reusedFrom", self.result_of(store))
+
+    def test_a_stored_pass_of_an_older_binary_is_a_miss_even_if_it_was_not_removed(self):
+        _, store = self.run_pipeline(self.pipeline_document(self.stages()))
+        key = self.result_of(store)["build"]["key"]
+        manifest_path = self.home / "builds" / key / "manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        core.atomic_write_json(manifest_path, {**manifest, "sha256": "9" * 64})  # another binary was published under the key
+        _, store = self.run_pipeline(self.pipeline_document(self.stages()), {"resultCache": "reuse"})
+        self.assertIn("launch", FakeAdapter.calls)
+        self.assertIn("another binary of build", store.events.read_text(encoding="utf-8"))
+
     def test_another_build_of_the_commit_is_another_key(self):
         self.run_pipeline(self.pipeline_document(self.stages()))
         with mock.patch.object(FakeAdapter, "toolchain", lambda adapter: {"gradle": "9.9"}, create=True):
@@ -436,6 +489,9 @@ class ResultCachePipelineTests(_Harness):
         self.run_pipeline(self.pipeline_document(self.stages(launchArgs=["-x"])), {"resultCache": "reuse"})
         self.assertIn("launch", FakeAdapter.calls, "other launch arguments are another stage")
         self.assertEqual(2, len(self.stored()))
+
+
+BUILD_SHA = "e" * 64  # the binary hash of the build in `_result`
 
 
 def _result(status=constants.PASS, sha=SHA, dirty=False, **changes):
@@ -469,17 +525,17 @@ class ResultCacheUnitTests(unittest.TestCase):
         path = resultcache.store(self.root, _key(), _result(), "job")
         self.assertEqual(f"{_key().digest}.json", path.name)
         os.utime(path, (1, 1))
-        hit, why = resultcache.lookup(self.root, _key())
+        hit, why = resultcache.lookup(self.root, _key(), build_sha256=BUILD_SHA)
         self.assertEqual(("reused", "job-3-1", "job"), (why, hit.result["runId"], hit.job_id))
         self.assertGreater(path.stat().st_mtime, 1)
         os.utime(path, (1, 1))
-        resultcache.lookup(self.root, _key(), touch=False)
+        resultcache.lookup(self.root, _key(), build_sha256=BUILD_SHA, touch=False)
         self.assertEqual(1, path.stat().st_mtime)
 
     def test_every_status_but_pass_is_never_stored(self):
         for status in (constants.FAIL, constants.BLOCKED, constants.STALL, constants.TIMEOUT, constants.NEEDS_PERMISSION):
             self.assertIsNone(resultcache.store(self.root, _key(), _result(status), "job"), status)
-            self.assertEqual("no cached result", resultcache.lookup(self.root, _key())[1])
+            self.assertEqual("no cached result", resultcache.lookup(self.root, _key(), build_sha256=BUILD_SHA)[1])
 
     def test_a_dirty_or_commitless_or_mismatching_or_invalid_result_is_not_stored(self):
         self.assertIsNone(resultcache.store(self.root, _key(), _result(dirty=True), "job"))
@@ -536,22 +592,70 @@ class ResultCacheUnitTests(unittest.TestCase):
         if made.returncode != 0 or not self.root.exists():
             self.skipTest(f"mklink /J is not available: {made.stderr.strip() or made.stdout.strip()}")
         self.addCleanup(lambda: os.rmdir(self.root) if self.root.exists() else None)
-        hit, why = resultcache.lookup(self.root, _key())
+        hit, why = resultcache.lookup(self.root, _key(), build_sha256=BUILD_SHA)
         self.assertIsNone(hit)
         self.assertIn("link or junction", why)
         self.assertEqual([], resultcache.gc(self.root, keep_days=0, max_entries=0))
         self.assertIsNone(resultcache.store(self.root, _key(stage_sha256="c" * 64), _result(), "job"))
         self.assertEqual(1, len(list(target.glob("*.json"))), "nothing was written or removed through the junction")
 
+    def test_a_result_of_another_binary_under_the_same_build_key_is_a_miss(self):
+        resultcache.store(self.root, _key(), _result(), "job")
+        hit, why = resultcache.lookup(self.root, _key(), build_sha256="9" * 64)
+        self.assertIsNone(hit)
+        self.assertIn("another binary of build", why)
+
+    def test_forget_build_removes_only_the_results_of_that_build(self):
+        resultcache.store(self.root, _key(), _result(), "job")
+        other = _result()
+        other["build"] = {**other["build"], "key": "1" * 32}
+        kept = resultcache.store(self.root, _key(build_key="1" * 32), other, "job")
+        self.assertEqual([f"{_key().digest}.json"], resultcache.forget_build(self.root, "f" * 32))
+        self.assertEqual([kept.name], [p.name for p in self.root.glob("*.json")])
+
+    def test_only_link_and_junction_reparse_points_are_refused(self):
+        path = resultcache.store(self.root, _key(), _result(), "job")
+        real = os.lstat(path)
+        original = os.lstat
+        for tag, refused in ((0x9000001A, False), (0x80000013, False), (resultcache.IO_REPARSE_TAG_SYMLINK, True),
+                             (resultcache.IO_REPARSE_TAG_MOUNT_POINT, True)):
+            fake = mock.Mock(st_mode=real.st_mode, st_size=real.st_size, st_uid=real.st_uid, st_reparse_tag=tag)
+            with mock.patch.object(resultcache.os, "lstat", lambda target, fake=fake: fake if Path(target) == path else original(target)):
+                hit, why = resultcache.lookup(self.root, _key(), build_sha256=BUILD_SHA, touch=False)
+            self.assertEqual(refused, hit is None, hex(tag))
+            if refused:
+                self.assertIn("link or junction", why)
+
+    def test_build_overrides_of_the_adapters_are_part_of_their_toolchain(self):
+        from valtrion import buildcache
+        from valtrion.providers.android import AndroidAdapter
+        from valtrion.providers.macos import MacOSAdapter
+        with mock.patch.dict(os.environ, {"GDV_ANDROID_BACKEND": ""}):
+            self.assertEqual({}, AndroidAdapter().toolchain())
+        with mock.patch.dict(os.environ, {"GDV_ANDROID_BACKEND": "IL2CPP"}):
+            self.assertEqual({"androidBackend": "IL2CPP"}, AndroidAdapter().toolchain())
+        self.assertEqual({}, MacOSAdapter(environ={}).toolchain())
+        script = self.root.parent / "sign-macos.py"
+        script.parent.mkdir(parents=True, exist_ok=True)
+        script.write_text("print(1)\n", encoding="utf-8")
+        environ = {"GDV_MACOS_BUILD_METHOD": "A.B.C", "GDV_MACOS_SIGN_SCRIPT": str(script)}
+        first = MacOSAdapter(environ=environ).toolchain()
+        self.assertEqual(("A.B.C", str(script)), (first["buildMethod"], first["signScript"]))
+        script.write_text("print(2)\n", encoding="utf-8")
+        self.assertNotEqual(first, MacOSAdapter(environ=environ).toolchain(), "another sign script content is another build")
+        keys = {buildcache.compute_key("P", "android", SHA, "Validation", {"unity": "6", **toolchain}, "none")
+                for toolchain in ({}, {"androidBackend": "Mono"}, {"androidBackend": "IL2CPP"})}
+        self.assertEqual(3, len(keys), "a backend override is another build key, so a Mono result never answers for IL2CPP")
+
     def test_another_core_version_is_a_miss(self):
         resultcache.store(self.root, _key(), _result(), "job")
-        self.assertIsNone(resultcache.lookup(self.root, _key(core_version="9.9.9"))[0])
+        self.assertIsNone(resultcache.lookup(self.root, _key(core_version="9.9.9"), build_sha256=BUILD_SHA)[0])
 
     def tamper(self, change):
         path = resultcache.store(self.root, _key(), _result(), "job")
         entry = json.loads(path.read_text(encoding="utf-8"))
         change(entry, path)
-        return resultcache.lookup(self.root, _key())
+        return resultcache.lookup(self.root, _key(), build_sha256=BUILD_SHA)
 
     def test_corrupted_foreign_or_rehashed_entries_are_ignored(self):
         def edit_result(entry, path):
@@ -597,13 +701,13 @@ class ResultCacheUnitTests(unittest.TestCase):
         path = resultcache.store(self.root, _key(), _result(), "job")
         other = _key(device_class="tablet")
         shutil.copyfile(path, self.root / f"{other.digest}.json")
-        self.assertIn("another key", resultcache.lookup(self.root, other)[1])
+        self.assertIn("another key", resultcache.lookup(self.root, other, build_sha256=BUILD_SHA)[1])
 
     def test_an_oversized_entry_is_not_read(self):
         path = resultcache.store(self.root, _key(), _result(), "job")
         with open(path, "ab") as handle:
             handle.write(b" " * (resultcache.MAX_ENTRY_BYTES + 1))
-        self.assertIn("larger than", resultcache.lookup(self.root, _key())[1])
+        self.assertIn("larger than", resultcache.lookup(self.root, _key(), build_sha256=BUILD_SHA)[1])
 
     def test_a_link_is_never_followed(self):
         target = resultcache.store(self.root, _key(), _result(), "job")
@@ -613,7 +717,7 @@ class ResultCacheUnitTests(unittest.TestCase):
             os.symlink(moved, target)
         except (OSError, NotImplementedError):
             self.skipTest("this host cannot create symbolic links")
-        self.assertIn("link", resultcache.lookup(self.root, _key())[1])
+        self.assertIn("link", resultcache.lookup(self.root, _key(), build_sha256=BUILD_SHA)[1])
 
     @unittest.skipIf(os.name == "nt", "POSIX permissions")
     def test_an_entry_others_can_write_is_ignored_and_entries_are_private(self):
@@ -621,13 +725,13 @@ class ResultCacheUnitTests(unittest.TestCase):
         self.assertEqual(0o600, path.stat().st_mode & 0o777)
         self.assertEqual(0o700, self.root.stat().st_mode & 0o777)
         os.chmod(path, 0o666)
-        self.assertIn("writable by other users", resultcache.lookup(self.root, _key())[1])
+        self.assertIn("writable by other users", resultcache.lookup(self.root, _key(), build_sha256=BUILD_SHA)[1])
 
     @unittest.skipIf(os.name == "nt" or not hasattr(os, "geteuid"), "POSIX ownership")
     def test_an_entry_of_another_user_is_ignored(self):
         path = resultcache.store(self.root, _key(), _result(), "job")
         with mock.patch.object(os, "geteuid", lambda: path.stat().st_uid + 1):
-            self.assertIn("another user", resultcache.lookup(self.root, _key())[1])
+            self.assertIn("another user", resultcache.lookup(self.root, _key(), build_sha256=BUILD_SHA)[1])
 
     def test_gc_removes_old_and_surplus_entries_and_stray_temporary_files(self):
         paths = [resultcache.store(self.root, _key(stage_sha256=f"{n:064x}"), _result(), "job") for n in range(4)]
@@ -736,7 +840,8 @@ class CliTests(_CliMixin, _Harness):
             code, out, err = self.cli("pipeline", str(path), *project, "--cache-status")
         self.assertEqual(0, code, err)
         rows = json.loads(out)["stages"]
-        self.assertEqual([("3:run", "miss", "no cached result")], [(r["stage"], r["state"], r["reason"]) for r in rows])
+        self.assertEqual([("3:run", "miss")], [(r["stage"], r["state"]) for r in rows])
+        self.assertIn("is not in the build cache", rows[0]["reason"], "nothing was built yet, so no result can be tied to a binary")
         self.assertEqual([], payloads)
         self.run_pipeline(document)
         with patch:
@@ -784,6 +889,9 @@ class RepeatGuardTests(_CliMixin, _Harness):
             self.assertEqual(0, self.start(path, "--keep-going", "--timeout-sec", "14400")[0], "a longer timeout after a TIMEOUT")
             self.assertEqual(0, self.start(path, "--keep-going", "--timeout-sec", "14400", "--stall-sec", "900")[0], "another stall window")
             self.assertEqual(constants.EXIT_BLOCKED, self.start(path, "--keep-going", "--timeout-sec", "14400", "--stall-sec", "900")[0])
+            self.assertEqual(0, self.start(path, "--domain", "user")[0])
+            self.assertEqual(0, self.start(path, "--domain", "gui")[0], "a retry in the GUI session after NEEDS_PERMISSION")
+            self.assertEqual(constants.EXIT_BLOCKED, self.start(path, "--domain", "gui")[0])
             plan = self.work / "plans" / "open.plan.json"
             plan.write_text(plan.read_text(encoding="utf-8") + " ", encoding="utf-8")
             self.assertEqual(0, self.start(path)[0], "the plan changed")
@@ -793,7 +901,7 @@ class RepeatGuardTests(_CliMixin, _Harness):
             with mock.patch.object(pipeline.compare, "run_git", dirty), contextlib.redirect_stdout(io.StringIO()):
                 code = cli.main(["pipeline", str(path), "--local", "--project-dir", str(self.work / "project")])
             self.assertEqual(0, code, "an uncommitted change is an input")
-        self.assertEqual(6, len(payloads))
+        self.assertEqual(8, len(payloads))
 
     def test_the_guard_is_off_by_default_and_ends_with_its_window(self):
         path = self.write_pipeline(self.pipeline_document(self.stages()))

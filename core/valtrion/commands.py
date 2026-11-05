@@ -816,7 +816,7 @@ def _start_pipeline(arguments: argparse.Namespace, pipeline: dict, payload: dict
     guard_key = None
     if settings.repeat_guard_sec > 0:
         limits = {"timeoutSec": arguments.timeout_sec, "stallSec": arguments.stall_sec, "leaseWait": arguments.lease_wait,
-                  "diskWait": getattr(arguments, "disk_wait", None)}
+                  "diskWait": getattr(arguments, "disk_wait", None), "domain": arguments.domain, "foreground": arguments.foreground}
         guard_key = repeatguard.fingerprint(pipeline, payload, base, project_dir, comparing.run_git, limits)
         previous = None if getattr(arguments, "allow_repeat", False) else repeatguard.check(guard_key, settings.repeat_guard_sec)
         if previous is not None:

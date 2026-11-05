@@ -822,7 +822,10 @@ def execute(pipeline: Mapping[str, Any], pipeline_path: Path | None, ctx: JobCon
                 if series["status"] == constants.PASS and series["runId"] in series_plans:
                     _attach_comparison(series, series_plans[series["runId"]], folders)
         core.atomic_write_json(directory / "summary.json", [_summary_entry(r) for r in stage_results])
-        job_result = _with_other_series(_worst_result(stage_results), stage_results)
+        leading = _worst_result(stage_results)
+        if options.keep_going and overall.status != constants.PASS and not overall.cancelled and stage_results[-1]["status"] == overall.status:
+            leading = stage_results[-1]  # --keep-going went on and then stopped: the stage that stopped it leads the job result
+        job_result = _with_other_series(leading, stage_results)
         job_result, aggregated = _with_stage_record(job_result, pipeline["id"], [records.get(i) or {
             "index": i + 1, "stage": s["stage"], "disposition": "not-run", "stageSha256": resume.stage_sha(s, base)}
             for i, s in enumerate(stages)], resumed, options.keep_going, overall)
@@ -1136,9 +1139,15 @@ def execute(pipeline: Mapping[str, Any], pipeline_path: Path | None, ctx: JobCon
         build_key = expected_build(index)
         if build_key is None:
             events.emit("log", "result cache: no lookup, the stage does not run on a known clean build of this commit installed by "
-                        "the pipeline", step=resume.stage_name(index, stage))
+                        "the pipeline (or its build stage is forced with args.reuse false)", step=resume.stage_name(index, stage))
             return None
-        hit, why = resultcache.lookup(cache_root, result_key(stage, plan_sha, device_class, build_key))
+        published = buildcache.lookup(buildcache.builds_root(ctx.home), build_key)
+        if published is None:
+            events.emit("log", f"result cache: no lookup, the build {build_key} is not in the build cache (or is damaged), so a stored "
+                        "result cannot be tied to the binary that would run", step=resume.stage_name(index, stage))
+            return None
+        hit, why = resultcache.lookup(cache_root, result_key(stage, plan_sha, device_class, build_key),
+                                      build_sha256=str(published.manifest.get("sha256")))
         if hit is None:
             events.emit("log", f"result cache: {why}", step=resume.stage_name(index, stage))
         return hit
@@ -1333,6 +1342,12 @@ def execute(pipeline: Mapping[str, Any], pipeline_path: Path | None, ctx: JobCon
                 else:
                     artifact, used_entry = published.path, published
                     build_info = {**published.describe(), "reused": False, "builtByJob": ctx.job_id}
+                    if stage.get("args", {}).get("reuse") is False and cache_root is not None:
+                        # A forced build replaced whatever was published under this key: results of the old binary are not its.
+                        forgotten = resultcache.forget_build(cache_root, published.key)
+                        if forgotten:
+                            events.emit("log", f"result cache: removed {len(forgotten)} result(s) of the replaced build {published.key}",
+                                        step=name, data={"removed": forgotten})
                     diskspace.remember_build(directory, published.key)
                     events.emit("progress", f"build published {published.key}", step=name, data={"build": build_info})
                     _collect_build_cache(ctx, published.key)
@@ -1448,7 +1463,8 @@ def expected_build_key(stages: Sequence[Mapping[str, Any]], index: int, selected
     """The build-cache key of the clean build of commit `sha` that run stage `index` will run on: the build its last install takes,
     which is the last build stage's (`planned`, when that stage runs in this job; the earlier run's build when it is carried), or the
     published build `args.artifactKey` names. None when the stage does not run on a known clean build of the commit: no install before
-    it (the app already on the device), `args.artifact`, a dirty or another commit's build, or a key that cannot be known yet."""
+    it (the app already on the device), `args.artifact`, a dirty or another commit's build, a key that cannot be known yet, or a build
+    stage that runs with `args.reuse: false` (a forced build is built and its stages run; nothing is answered from earlier results)."""
     installs = [i for i in range(index) if stages[i]["stage"] == "install"]
     if not installs:
         return None
@@ -1464,6 +1480,8 @@ def expected_build_key(stages: Sequence[Mapping[str, Any]], index: int, selected
             return None
         return entry.key
     if builds[-1] in selected:
+        if (stages[builds[-1]].get("args") or {}).get("reuse") is False:
+            return None
         return planned()
     build = dict(carried_build or {})
     if not resultcache.clean_build_of(build.get("key"), build.get("candidateSha"), build.get("dirty"), build.get("platform"), sha, platform):
@@ -1525,9 +1543,11 @@ def _with_other_series(chosen: dict, results: Sequence[dict]) -> dict:
 
 def _with_stage_record(document: dict, pipeline_id: str, records: Sequence[dict], resumed: "resume.ResumePlan | None",
                        keep_going: bool, overall: PipelineOutcome) -> tuple[dict, bool]:
-    """The job result with `pipelineRun` (what became of every stage), and whether its status was replaced by the aggregate of the
-    stages: with `--keep-going` any stage that did not pass makes the job FAIL; without it a carried stage that did not pass (or never
-    ran) decides a job whose own stages passed."""
+    """The job result with `pipelineRun` (what became of every stage), and whether its status and reason were replaced by the
+    aggregate of the stages (the job then takes them too, so `result.json` and the job agree). With `--keep-going` the job is FAIL
+    when a stage failed, else the first status that is not a pass; a pipeline that stopped there anyway (a build or install that did not
+    pass, a device that cannot be taken) has the status and reason of the stage that stopped it, with the earlier stages that did not
+    pass named after it. Without `--keep-going` a carried stage that did not pass (or never ran) decides a job whose own stages passed."""
     run: dict[str, Any] = {"pipelineId": pipeline_id, "stages": [dict(r) for r in records]}
     if resumed is not None and resumed.prior is not None:
         run["resumedFrom"] = resumed.prior.job_id
@@ -1536,7 +1556,7 @@ def _with_stage_record(document: dict, pipeline_id: str, records: Sequence[dict]
     document = {**document, "pipelineRun": run}
     if overall.cancelled:
         return document, False
-    problems: list[tuple[str, str]] = []
+    problems: list[tuple[str, str, Mapping[str, Any]]] = []
     for item in records:
         status = item.get("status")
         if item["disposition"] == "not-run" or status == constants.PASS:
@@ -1545,23 +1565,30 @@ def _with_stage_record(document: dict, pipeline_id: str, records: Sequence[dict]
         detail = f": {' '.join(str(item['reason']).split())[:300]}" if item.get("reason") else ""
         if item["disposition"] == "carried":
             problems.append((status or constants.BLOCKED, f"{name} carried over from run {item.get('fromRun')} "
-                             + (f"is {status}{detail}" if status else "never ran there")))
+                             + (f"is {status}{detail}" if status else "never ran there"), item))
         elif keep_going:
-            problems.append((str(status), f"{name} {status}{detail}"))
+            problems.append((str(status), f"{name} {status}{detail}", item))
     if not problems:
         return document, False
     # A pipeline that stopped (a build or install that did not pass, a busy device) did not go on: its result is the stage that stopped
-    # it, as without --keep-going.
+    # it, as without --keep-going, and with --keep-going the stages that did not pass before it are named too.
     stopped = overall.status != constants.PASS
-    if keep_going and not stopped:
+    if keep_going and stopped:
+        stopper = overall.reason or f"the pipeline ended {overall.status}"
+        # The stage that stopped it is the last one that ran without passing; the others are named after its reason.
+        last = next((item for _, _, item in reversed(problems) if item["disposition"] == "ran"), None)
+        earlier = [text for _, text, item in problems if item is not last]
+        reason = stopper + (f" (the pipeline stopped there; earlier stages that did not pass: {'; '.join(earlier)})" if earlier else "")
+        return {**document, "status": overall.status, "reason": reason}, True
+    if keep_going:
         # FAIL when a stage failed; otherwise (only BLOCKED, STALL, TIMEOUT, NEEDS_PERMISSION) the first of them, as `_worst_result`.
         status = constants.FAIL if any(item[0] == constants.FAIL for item in problems) else problems[0][0]
         reason = (f"{len(problems)} of {len(records)} stages did not pass (--keep-going ran the stages after a failure): "
-                  + "; ".join(text for _, text in problems))
+                  + "; ".join(text for _, text, _ in problems))
         return {**document, "status": status, "reason": reason}, True
     if document["status"] != constants.PASS:
         return document, False
-    status, text = problems[0]
+    status, text, _ = problems[0]
     more = f" (and {len(problems) - 1} more carried stage(s) that did not pass)" if len(problems) > 1 else ""
     return {**document, "status": status, "reason": f"the selected stages passed, but stage {text}{more}"}, True
 
@@ -1751,12 +1778,17 @@ def cache_status(pipeline: Mapping[str, Any], base: Path, sha: str | None, dirty
             row.update(state="unknown", reason="the pipeline names no device.class; the job looks up with the class of the device it selects")
         elif (build_key := expected_build_key(pipeline["stages"], index, everything, planned, None, home, sha, platform)) is None:
             row.update(state="unknown", reason="the stage does not run on a clean build of this commit known before the job (no install of "
-                                                "such a build, args.artifact, a platform that signs for one device, or an unknown toolchain)")
+                                                "such a build, args.artifact, a build forced with args.reuse false, a platform that signs "
+                                                "for one device, or an unknown toolchain)")
         else:
             key = resultcache.Key(pipeline["candidate"]["repo"], platform, str(sha), plan_hash, str(device_class),
                                   pipeline["candidate"]["profile"], resultcache.stage_fingerprint(stage, base), build_key, __version__)
-            hit, why = resultcache.lookup(root, key, touch=False)
+            published = buildcache.lookup(buildcache.builds_root(home), build_key)
             row.update(key=key.digest, components=key.components())
+            if published is None:
+                hit, why = None, f"the build {build_key} is not in the build cache (or is damaged)"
+            else:
+                hit, why = resultcache.lookup(root, key, build_sha256=str(published.manifest.get("sha256")), touch=False)
             if hit is not None:
                 row.update(state="hit", fromRun=hit.result["runId"], fromJob=hit.job_id, storedUtc=hit.stored_utc)
             else:
