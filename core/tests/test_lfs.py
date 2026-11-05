@@ -2,6 +2,7 @@
 the repository's LFS store or a fake `git lfs fetch`. No network is used: `git lfs` is replaced by `FakeLfs`, git's clean filter by
 `fake_lfs_clean.py`, and the global and system git configuration are switched off."""
 
+import _thread
 import fnmatch
 import hashlib
 import io
@@ -373,6 +374,68 @@ class GitProblemTests(LfsTestCase):
         self.assertEqual([("Game/Assets/a.bin", lfs.CODE_CHANGED)], outcome.failed)
         self.assertEqual(other, (project / "Assets" / "a.bin").read_bytes())
         self.assertEqual("M  Game/Assets/a.bin", git(project.parent, "status", "--porcelain"), "the staged change survives")
+
+
+class InterruptTests(LfsTestCase):
+    """An interrupt of the process (`unity run`'s lifeline or a console event arrive as one) is handled while a child still runs."""
+
+    def interrupt_after(self, seconds):
+        timer = threading.Timer(seconds, _thread.interrupt_main)
+        timer.start()
+        self.addCleanup(timer.cancel)
+
+    def test_a_slow_fetch_is_stopped_at_once_by_an_interrupt(self):
+        marker = self.base / "survived"
+        slow = [sys.executable, "-c", "import sys, time; time.sleep(3); open(sys.argv[1], 'w').write('x')", str(marker)]
+        started = time.monotonic()
+        with mock.patch.object(lfs, "LFS_COMMAND", tuple(slow)):
+            self.interrupt_after(0.5)
+            with self.assertRaises(KeyboardInterrupt):
+                lfs.run_lfs(self.base, ["fetch"])
+        self.assertLess(time.monotonic() - started, 2.5, "the interrupt did not wait for the child")
+        time.sleep(3.5)
+        self.assertFalse(marker.exists(), "the fetch was stopped, not left running")
+
+    def test_an_index_writer_is_finished_not_killed_by_an_interrupt(self):
+        marker = self.base / "finished"
+        slow = (sys.executable, "-c", f"import time; time.sleep(1.5); open({str(marker)!r}, 'w').write('x')")
+        started = time.monotonic()
+        with mock.patch.object(lfs, "GIT_COMMAND", slow):
+            self.interrupt_after(0.3)
+            with self.assertRaises(KeyboardInterrupt):
+                lfs.run_git(self.base, ["update-index", "-q", "--refresh"])
+        self.assertTrue(marker.exists(), "git update-index ran to its end before the interrupt was raised")
+        self.assertGreaterEqual(time.monotonic() - started, 1.4)
+
+    def test_an_interrupt_right_after_a_file_is_renamed_into_place_still_syncs_the_index(self):
+        project = make_repo(self.base / "repo", {"Assets/a.bin": self.texture})
+        self.seed_cache(self.texture)
+        real = os.replace
+        target = os.path.normcase(str(project / "Assets" / "a.bin"))
+
+        def replace(source, destination):
+            real(source, destination)
+            if os.path.normcase(str(destination)) == target:
+                raise KeyboardInterrupt
+
+        with mock.patch.object(lfs.os, "replace", replace), self.assertRaises(KeyboardInterrupt):
+            self.run_lfs(project, FakeLfs())
+        self.assertEqual(self.texture, (project / "Assets" / "a.bin").read_bytes())
+        self.assertClean(project.parent)
+
+    def test_a_lock_of_another_git_is_named_as_the_cause(self):
+        project = make_repo(self.base / "repo", {"Assets/a.bin": self.texture})
+        self.seed_cache(self.texture)
+        lock = project.parent / ".git" / "index.lock"
+        lock.write_text("", encoding="utf-8")
+        try:
+            outcome = self.run_lfs(project, FakeLfs())
+        finally:
+            lock.unlink()
+        self.assertEqual(lfs.CODE_GIT_FAILED, outcome.code)
+        self.assertIn("could not be materialized (Game/Assets/a.bin): git update-index --index-info failed", outcome.reason)
+        self.assertEqual(pointer(self.texture), (project / "Assets" / "a.bin").read_bytes())
+        self.assertClean(project.parent)
 
 
 def lfs_available():

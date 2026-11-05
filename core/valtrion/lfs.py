@@ -93,26 +93,73 @@ def _environment() -> dict[str, str]:
     return environment
 
 
+#: The programs run for `git` and `git lfs` (replaced in tests by slow stand-ins).
+GIT_COMMAND: tuple[str, ...] = ("git",)
+LFS_COMMAND: tuple[str, ...] = ("git", "lfs")
+#: How often a waiting call looks up from the child, so an interrupt (`unity run`'s lifeline, a console event) is handled at once.
+WAIT_STEP_SEC = 0.2
+#: Git commands that write the index. They are short and are never killed on an interrupt: a killed one can leave `index.lock`.
+INDEX_WRITERS = frozenset({"update-index"})
+KILL_GRACE_SEC = 5.0
+
+
+def _run(command: Sequence[str], cwd: Path, stdin: bytes | None, timeout: float, protect: bool) -> tuple[int, bytes, bytes]:
+    """Run `command` and wait for it in short steps, so an interrupt of this process (KeyboardInterrupt, `unity run`'s `Interrupted`)
+    is raised within `WAIT_STEP_SEC`, not when the child ends. On an interrupt the child is terminated, then killed, and the interrupt
+    raised again, unless `protect`: an index-writing git command is then waited for until it ends by itself (its timeout still
+    applies) before the interrupt is raised. Returns (exit code, stdout, stderr); exit code 124 is a timeout (the child was killed)."""
+    process = subprocess.Popen(list(command), cwd=cwd, stdin=subprocess.PIPE if stdin is not None else subprocess.DEVNULL,
+                               stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=_environment())
+    deadline = time.monotonic() + timeout
+    pending = stdin
+    interrupt: BaseException | None = None
+    while True:
+        try:
+            out, err = process.communicate(pending, timeout=max(0.01, min(WAIT_STEP_SEC, deadline - time.monotonic())))
+            break
+        except subprocess.TimeoutExpired:
+            pending = None
+            if time.monotonic() >= deadline:
+                process.kill()
+                out, err = process.communicate()
+                if interrupt is not None:
+                    raise interrupt
+                return 124, out or b"", err or b""
+        except BaseException as stop:  # noqa: BLE001 - an interrupt: stop (or, for an index writer, finish) the child first
+            pending = None
+            if protect:
+                interrupt = interrupt or stop
+                continue
+            process.terminate()
+            try:
+                process.wait(KILL_GRACE_SEC)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait()
+            raise
+    if interrupt is not None:
+        raise interrupt
+    return process.returncode, out or b"", err or b""
+
+
 def run_git(cwd: Path, argv: Sequence[str], stdin: bytes | None = None) -> tuple[int, bytes, str]:
     try:
-        done = subprocess.run(["git", *argv], cwd=cwd, input=stdin if stdin is not None else b"", capture_output=True,
-                              timeout=GIT_TIMEOUT_SEC, check=False, env=_environment())
-    except subprocess.TimeoutExpired:
-        return 124, b"", f"git {argv[0] if argv else ''} timed out after {GIT_TIMEOUT_SEC:g} s"
+        code, out, err = _run([*GIT_COMMAND, *argv], cwd, stdin, GIT_TIMEOUT_SEC, protect=bool(argv) and argv[0] in INDEX_WRITERS)
     except (OSError, subprocess.SubprocessError) as error:
         return 127, b"", str(error)
-    return done.returncode, done.stdout, done.stderr.decode("utf-8", "replace").strip()
+    if code == 124:
+        return 124, b"", f"git {argv[0] if argv else ''} timed out after {GIT_TIMEOUT_SEC:g} s"
+    return code, out, err.decode("utf-8", "replace").strip()
 
 
 def run_lfs(cwd: Path, argv: Sequence[str]) -> tuple[int, str]:
     try:
-        done = subprocess.run(["git", "lfs", *argv], cwd=cwd, capture_output=True, text=True, encoding="utf-8", errors="replace",
-                              timeout=FETCH_TIMEOUT_SEC, check=False, env=_environment(), stdin=subprocess.DEVNULL)
-    except subprocess.TimeoutExpired:
-        return 124, f"git lfs {argv[0] if argv else ''} timed out after {FETCH_TIMEOUT_SEC:g} s"
+        code, out, err = _run([*LFS_COMMAND, *argv], cwd, None, FETCH_TIMEOUT_SEC, protect=False)
     except (OSError, subprocess.SubprocessError) as error:
         return 127, str(error)
-    return done.returncode, (done.stdout + done.stderr).strip()
+    if code == 124:
+        return 124, f"git lfs {argv[0] if argv else ''} timed out after {FETCH_TIMEOUT_SEC:g} s"
+    return code, (out.decode("utf-8", "replace") + err.decode("utf-8", "replace")).strip()
 
 
 def cache_root(work_root: Path) -> Path:
@@ -606,7 +653,14 @@ def materialize(project: Path, cache: Path, *, git: GitCall = run_git, lfs: LfsC
                 os.chmod(temp, mode & 0o7777)
             except OSError:
                 pass
-            os.replace(temp, target)
+            # Listed before the rename: an interrupt right after it must still find the file to sync (syncing an entry whose file
+            # is still the pointer changes nothing).
+            placed.append(item)
+            try:
+                os.replace(temp, target)
+            except OSError:
+                placed.remove(item)
+                raise
         except OSError as error:
             _unlink(temp)
             outcome.notes.append(f"cannot write {target}: {error}")
@@ -614,7 +668,6 @@ def materialize(project: Path, cache: Path, *, git: GitCall = run_git, lfs: LfsC
         except BaseException:  # an interrupt (Ctrl+C, a signal of `unity run`): no temporary file stays behind in the tree
             _unlink(temp)
             raise
-        placed.append(item)
         outcome.materialized.append(item.path)
         return None
 
@@ -692,17 +745,38 @@ def materialize(project: Path, cache: Path, *, git: GitCall = run_git, lfs: LfsC
                         _fail(outcome, left(items), problem or CODE_WRITE_FAILED,
                               "the fetched object does not match its pointer" if problem == CODE_HASH_MISMATCH else "")
         if placed:
-            unsynced = _sync_index(project, top, git, placed, outcome)
+            unsynced, index_problem = _sync_index(project, repository, git, placed, outcome)
             synced = True
-            _verify_clean(top, git, placed, unsynced, outcome)
+            _verify_clean(top, git, placed, unsynced, index_problem, outcome)
     finally:
         if placed and not synced:  # interrupted: the files placed so far must not stay "modified" for git
-            _sync_index(project, top, git, placed, outcome)
+            _sync_index(project, repository, git, placed, outcome)
     return _finish(outcome)
 
 
-def _sync_index(project: Path, top: Path, git: GitCall, placed: list[Pointer], outcome: Outcome) -> set[str]:
-    """Make the index agree with the placed files; returns the paths it left alone because their index entry changed meanwhile.
+def _index_writer(repository: Repository, git: GitCall, argv: Sequence[str], stdin: bytes | None,
+                  outcome: Outcome) -> tuple[int, str]:
+    """Run an index-writing git command. If it timed out and had to be killed, an `index.lock` it left behind (one created after the
+    call started) is removed; an older lock belongs to another git and is only reported."""
+    started = time.time()
+    code, _, error = git(repository.top, argv, stdin)
+    lock = repository.git_dir / "index.lock"
+    if code == 124 and lock.exists():
+        try:
+            if lock.stat().st_mtime >= started - 1:
+                lock.unlink()
+                outcome.notes.append(f"removed {lock}, left by our git {argv[0]} that timed out and was killed")
+            else:
+                outcome.notes.append(f"{lock} is held by another git command")
+        except OSError as problem:
+            outcome.notes.append(f"cannot remove {lock}: {problem}")
+    return code, error
+
+
+def _sync_index(project: Path, repository: Repository, git: GitCall, placed: list[Pointer],
+                outcome: Outcome) -> tuple[set[str], str | None]:
+    """Make the index agree with the placed files; returns the paths it left alone because their index entry changed meanwhile, and why
+    the index could not be written (None when it was).
 
     The index still holds the stat data of the pointer, and git takes an entry whose recorded size differs from the file for modified
     without looking at the content. The entries are therefore written again with the same mode and blob (`--index-info`: what the
@@ -712,27 +786,31 @@ def _sync_index(project: Path, top: Path, git: GitCall, placed: list[Pointer], o
     current, problem = _index_entries(project, git)
     if current is None:
         outcome.notes.append(f"the index could not be read again ({problem}); it was not updated")
-        return {item.path for item in placed}
+        return {item.path for item in placed}, None
     fresh = [item for item in placed if (entry := current.get(item.path)) is not None and (entry.mode, entry.blob) == (item.mode, item.blob)]
     unsynced = {item.path for item in placed} - {item.path for item in fresh}
+    index_problem: str | None = None
     if fresh:
         info = b"".join(f"{item.mode} {item.blob}\t".encode("ascii") + item.path.encode("utf-8", "surrogateescape") + b"\0"
                         for item in fresh)
-        code, _, error = git(top, ["update-index", "-z", "--index-info"], info)
+        code, error = _index_writer(repository, git, ["update-index", "-z", "--index-info"], info, outcome)
         if code != 0:
-            outcome.notes.append(f"git update-index --index-info failed: {error[:200]}")
-        git(top, ["update-index", "-q", "--refresh"], None)  # exit 1 only says some other entry needs an update
+            index_problem = f"git update-index --index-info failed ({' '.join(error.split())[:200] or f'exit code {code}'})"
+        code, error = _index_writer(repository, git, ["update-index", "-q", "--refresh"], None, outcome)
+        if code not in (0, 1) and index_problem is None:  # 1 only says some other entry needs an update
+            index_problem = f"git update-index --refresh failed ({' '.join(error.split())[:200] or f'exit code {code}'})"
         for flag, wanted in (("--assume-unchanged", lambda tag: tag.islower()), ("--skip-worktree", lambda tag: tag.upper() == "S")):
             paths = [item.path for item in fresh if wanted(current[item.path].tag)]
             if paths:
                 feed = b"".join(path.encode("utf-8", "surrogateescape") + b"\0" for path in paths)
-                code, _, error = git(top, ["update-index", flag, "-z", "--stdin"], feed)
+                code, error = _index_writer(repository, git, ["update-index", flag, "-z", "--stdin"], feed, outcome)
                 if code != 0:
                     outcome.notes.append(f"git update-index {flag} failed: {error[:200]}")
-    return unsynced
+    return unsynced, index_problem
 
 
-def _verify_clean(top: Path, git: GitCall, placed: list[Pointer], unsynced: set[str], outcome: Outcome) -> None:
+def _verify_clean(top: Path, git: GitCall, placed: list[Pointer], unsynced: set[str], index_problem: str | None,
+                  outcome: Outcome) -> None:
     """Make sure git sees none of the placed files as modified. A file that it does see so and that still holds exactly the placed
     object gets its pointer back; one whose content or index entry someone changed meanwhile is never touched, only reported."""
     # The whole tree: `status` compares the content (through the clean filter) also where the refresh could not write the index.
@@ -760,9 +838,12 @@ def _verify_clean(top: Path, git: GitCall, placed: list[Pointer], unsynced: set[
             restored = True
         except OSError as error:
             outcome.notes.append(f"cannot restore the pointer of {item.path}: {error}")
-        outcome.failed.append((item.path, CODE_STATUS_DIRTY))
+        outcome.failed.append((item.path, CODE_GIT_FAILED if index_problem else CODE_STATUS_DIRTY))
     if restored:
         git(top, ["update-index", "-q", "--refresh"], None)
-        outcome.notes.append("git status showed materialized files as modified (the clean filter does not give back the pointer); "
-                             "their pointers were restored")
+        if index_problem:  # the real cause comes first: git could not write the index (another git's lock, for example)
+            outcome.notes.insert(0, f"{index_problem}, so git still saw the materialized files as modified; their pointers were restored")
+        else:
+            outcome.notes.append("git status showed materialized files as modified (the clean filter does not give back the pointer); "
+                                 "their pointers were restored")
 
