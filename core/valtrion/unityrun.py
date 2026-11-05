@@ -303,8 +303,8 @@ def run(
         try:
             try:
                 may_hold.append(project_resource)
-                taken = manager.acquire(project_resource, owner, session, ttl_sec, what, pid, wait_sec=max(0.0, deadline - time.monotonic()),
-                                        poll_sec=poll_sec, on_wait=waiting)
+                taken = manager.acquire(project_resource, owner, session, ttl_sec, what, pid, worktree=str(project),
+                                        wait_sec=max(0.0, deadline - time.monotonic()), poll_sec=poll_sec, on_wait=waiting)
                 if not taken.acquired:
                     return _result(out, constants.BLOCKED, taken.reason)
                 keeper.add(project_resource)

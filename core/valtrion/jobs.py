@@ -202,6 +202,42 @@ def active_job_ids(home: Path | None = None, now: Callable[[], datetime] = core.
     return active
 
 
+class JobFoldersUnreadable(ValueError):
+    """The spec of an active job cannot be read, so the folders it works in are unknown: a cleanup must then remove nothing."""
+
+
+def active_job_folders(home: Path | None = None, active: Sequence[str] | None = None) -> list[str]:
+    """The folders the active jobs work in (`payload.projectDir` and `payload.cwd` of each spec): a cleanup must not remove them,
+    whether or not the job holds a lease on them yet (one waiting for disk space holds none). `active` is the list of active job
+    ids when the caller already has it. A job whose index entry is gone (it has just ended) is skipped; an indexed job whose spec
+    cannot be read raises JobFoldersUnreadable (fail safe). A relative folder is resolved where the runner resolves it: its working
+    directory is the job's folder, or on macOS the work root's `launchd` folder; both are returned."""
+    folders: list[str] = []
+    for job_id in (active_job_ids(home) if active is None else active):
+        if not index_path(job_id, home).exists():
+            continue
+        try:
+            directory = find_job_directory(job_id, home)
+            spec = JobStore(directory).read_spec()
+            payload = spec.get("payload") or {}
+            if not isinstance(payload, dict):
+                raise ValueError("payload is not an object")
+        except (JobError, OSError, ValueError, AttributeError, KeyError) as error:
+            raise JobFoldersUnreadable(f"the spec of the active job {job_id} cannot be read ({error})") from error
+        bases = [directory]
+        if spec.get("workRoot"):
+            bases.append(workroot.WorkRoots(Path(spec["workRoot"])).launchd)
+        for key in ("projectDir", "cwd"):
+            value = payload.get(key)
+            if not isinstance(value, str) or not value:
+                continue
+            if Path(value).is_absolute():
+                folders.append(value)
+            else:
+                folders.extend(str(base / value) for base in bases)
+    return folders
+
+
 def prune_index(artifacts_root: Path, home: Path | None = None, dry_run: bool = False) -> list[str]:
     """Remove index entries (`<home>/jobs/<jobId>.json`) whose run folder no longer exists (`valtrion gc` removed it): the index
     is read in full by `active_job_ids`, so it must not grow for ever. Only an entry that lies under `artifacts_root` is judged, and
@@ -546,7 +582,9 @@ class _Runner:
                 outcome = self.leases.acquire_slot(resource, int(slots), owner, self.job_id, ttl, purpose, pid, wait_sec=wait, on_wait=waiting,
                                                    precondition=gate)
             else:
-                outcome = self.leases.acquire(resource, owner, self.job_id, ttl, purpose, pid, wait_sec=wait, on_wait=waiting)
+                # `worktree` names the folder the lease guards (a project lease), so a cleanup can see it from any depth
+                outcome = self.leases.acquire(resource, owner, self.job_id, ttl, purpose, pid, worktree=str(item.get("worktree") or ""),
+                                              wait_sec=wait, on_wait=waiting)
         finally:
             self._waited_sec += time.monotonic() - self._wait_since
             self._wait_since = None

@@ -1,7 +1,7 @@
 # Valtrion Unity
 
 Unity is Valtrion's first and currently only ready application integration. Valtrion manages repeatable checks and their
-execution evidence; Core also supervises ordinary processes without Unity. This package (0.11.0) ships the **contracts** (C# readers and writers for the Valtrion JSON documents) and the
+execution evidence; Core also supervises ordinary processes without Unity. This package (0.11.1) ships the **contracts** (C# readers and writers for the Valtrion JSON documents) and the
 development-only Runtime **harness** (plan inbox, runner, steps, probes, result writer). The host CLI, the JSON Schemas and the
 golden fixtures live in the repository root (`core/` and `contracts/`); see the repository `docs/` for the CLI.
 
@@ -33,7 +33,7 @@ same reviewed checkout as Core. Add a local path to `Packages/manifest.json` for
 
 For a shared project, use `https://github.com/GORYNED/Valtrion.git?path=integrations/unity/com.goryned.valtrion.unity#<full-reviewed-commit-sha>`
 with the full SHA substituted; do not commit an absolute local path. Public HTTPS Git installation needs no GitHub account or token; private forks require existing access. This package is
-MIT licensed; the notice is included in `LICENSE.md`. Core 0.13.1 and this package 0.11.0 are paired by `compat.json`; identical
+MIT licensed; the notice is included in `LICENSE.md`. Core 0.13.1 and this package 0.11.1 are paired by `compat.json`; identical
 version numbers are not required. The repository tests use Unity Test Framework 1.8.0; the repository's test Editor is specified in
 `integrations/unity/UnityProject/ProjectSettings/ProjectVersion.txt`.
 
@@ -94,8 +94,8 @@ objects reject unknown properties.
 | Schema | C# type | Purpose |
 | --- | --- | --- |
 | `gdv.plan/1` | `PlanDocument` | `id`, `kind` (`functional`, `performance`, `soak`, `smoke`), `requires`, `dataPolicy` (`isolated`, `devdata`, `clean-install`), `budgetSeconds`, `repeat`, `warmup`, `continueOnFail`, `setup[]`, `steps[]` (each `type` + mandatory `timeoutSec` + free-form arguments), `metrics{}`, `cleanup` |
-| `gdv.pipeline/1` | `PipelineDocument` | `candidate`, `device`, `stages[]` (`build`, `install`, `run`, `collect`; optional `prelaunchFiles[]`), `compare` |
-| `gdv.result/1` | `ResultDocument` | `runId`, `status`, `reason`, `candidate`, `target`, `host`, `plan` (id + SHA-256), `layers`, `steps[]`, `metrics[]`, `comparison`, `artifacts[]` and `unverified[]` (both required: an empty list is a claim, omission is not) |
+| `gdv.pipeline/1` | `PipelineDocument` | `candidate`, `device`, `stages[]` (`build`, `install`, `run`, `collect`; optional `externalUi`, `prelaunchFiles[]` and `cleanup[]`), `compare` |
+| `gdv.result/1` | `ResultDocument` | `runId`, `status`, `reason`, `candidate`, `target`, `host`, `plan` (id + SHA-256), `layers`, `steps[]`, `metrics[]`, `comparison`, `checkout`, `build`, `cleanup`, `artifacts[]` and `unverified[]` (both required: an empty list is a claim, omission is not) |
 | `gdv.heartbeat/1` | `HeartbeatDocument` | rewritten atomically by the Runtime every few seconds: `seq`, `state`, current step, `elapsedMs`, optional host `request` |
 | `gdv.job/1` | `JobDocument` | state of a detached host job |
 | `gdv.event/1` | `EventDocument` | one line of `events.jsonl` |

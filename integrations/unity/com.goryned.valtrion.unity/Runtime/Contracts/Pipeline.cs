@@ -71,6 +71,33 @@ namespace Valtrion.Unity.Contracts
         internal JsonValue Write() => JsonValue.NewObject().Set("local", JsonValue.From(Local)).Set("remote", JsonValue.From(Remote));
     }
 
+    /// <summary>How the host answers the plan's <c>external.ui</c> requests of a run stage (<c>externalUi</c>): it runs
+    /// <see cref="Command"/> (an argv list, no shell) once per request, with the project folder as the working directory, and writes
+    /// <c>inbox/reply-&lt;id&gt;.json</c>. Placeholders: {device} {app} {action} {request} {arg:NAME}.</summary>
+    public sealed class PipelineExternalUi
+    {
+        /// <summary>The argv list; at least one non-empty item.</summary>
+        public List<string> Command { get; set; } = new List<string>();
+
+        public int? TimeoutSec { get; set; }
+
+        internal static PipelineExternalUi Read(ContractReader reader)
+        {
+            var externalUi = new PipelineExternalUi
+            {
+                Command = reader.Strings("command"),
+                TimeoutSec = reader.OptInt32("timeoutSec", 1),
+            };
+            if (externalUi.Command.Count < 1)
+                throw new ContractException($"{reader.Path}.command: fewer than 1 items");
+            reader.Done();
+            return externalUi;
+        }
+
+        internal JsonValue Write() => JsonValue.NewObject()
+            .Set("command", JsonBuild.Strings(Command)).SetIf("timeoutSec", TimeoutSec);
+    }
+
     public sealed class PipelineStage
     {
         /// <summary>build, install, run or collect.</summary>
@@ -87,6 +114,9 @@ namespace Valtrion.Unity.Contracts
         public int? TimeoutSec { get; set; }
 
         public JsonValue Args { get; set; }
+
+        /// <summary>How the host answers the plan's external.ui requests; null when the stage names no command.</summary>
+        public PipelineExternalUi ExternalUi { get; set; }
 
         /// <summary>Files pushed through the platform adapter before the application starts; null when the stage names none.</summary>
         public List<PrelaunchFile> PrelaunchFiles { get; set; }
@@ -105,6 +135,7 @@ namespace Valtrion.Unity.Contracts
                 ColdLaunch = reader.OptBool("coldLaunch"),
                 TimeoutSec = reader.OptInt32("timeoutSec", 1),
                 Args = reader.OptTree("args"),
+                ExternalUi = reader.OptObject("externalUi") is ContractReader externalUi ? PipelineExternalUi.Read(externalUi) : null,
                 PrelaunchFiles = reader.OptItems("prelaunchFiles", PrelaunchFile.Read),
                 Cleanup = reader.OptStrings("cleanup"),
             };
@@ -117,6 +148,8 @@ namespace Valtrion.Unity.Contracts
             var node = JsonValue.NewObject().Set("stage", JsonValue.From(Stage));
             node.SetIf("plan", Plan).SetIf("variant", Variant).SetIf("repeat", Repeat).SetIf("coldLaunch", ColdLaunch)
                 .SetIf("timeoutSec", TimeoutSec).SetIf("args", Args);
+            if (ExternalUi != null)
+                node.Set("externalUi", ExternalUi.Write());
             if (PrelaunchFiles != null)
                 node.Set("prelaunchFiles", JsonBuild.Array(PrelaunchFiles, file => file.Write()));
             if (Cleanup != null)

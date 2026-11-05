@@ -18,7 +18,7 @@ import tempfile
 from pathlib import Path
 from typing import Any, Callable, Sequence
 
-from . import artifacts, buildcache, compare as comparing, config, constants, core, diskspace, doctor, hostsync, jobs, lease, outputs, project, providers, remote, repeatguard, submit, supervise, wheel, workroot
+from . import artifacts, buildcache, compare as comparing, config, constants, core, diskspace, doctor, hostsync, jobs, lease, outputs, project, providers, remote, repeatguard, scratch, submit, supervise, wheel, workroot
 from . import __version__
 from .adapter import DeviceInfo
 from .cli import Command, register
@@ -1308,9 +1308,36 @@ def _configure_workroot(parser: argparse.ArgumentParser) -> None:
     sub.add_parser("inbox", help="create a private folder under the work root for files a caller sends to run a job here; prints its path as JSON")
     release = sub.add_parser("release", help="remove a job's directories under the work root")
     release.add_argument("--job-id", required=True)
-    sweep = sub.add_parser("sweep", help="remove job directories left behind by a runner that died")
-    sweep.add_argument("--max-age-hours", type=float, default=workroot.STALE_JOB_DIRECTORY_SEC / 3600)
+    sweep = sub.add_parser("sweep", help="remove job directories left behind by a runner that died and expired idle scratch directories")
+    sweep.add_argument("--max-age-hours", type=float, default=workroot.STALE_JOB_DIRECTORY_SEC / 3600,
+                       help="idle time of an abandoned job directory (scratch directories use host.json scratch.maxAgeHours)")
     sweep.add_argument("--dry-run", action="store_true")
+    sweep.add_argument("--any-owner", action="store_true",
+                       help="also remove expired scratch directories of other owners of this host user (never another host user's)")
+    scratch_parser = sub.add_parser("scratch", help="temporary copies for an agent under <work root>/scratch, with a marker and an expiry")
+    actions = scratch_parser.add_subparsers(dest="scratch_action", required=True)
+    create = actions.add_parser("create", help="make <work root>/scratch/<name>-<hex>/ (with --sha: a detached checkout in its checkout/); "
+                                               "prints its path as JSON")
+    create.add_argument("--name", required=True, help="1-40 letters, digits, '.', '_', '-'")
+    create.add_argument("--project", help="the project whose mirror the checkout hangs off (with --sha)")
+    create.add_argument("--sha", help="full 40-character commit hash to check out into checkout/")
+    create.add_argument("--source", help="URL or path to fetch the commit from; default: origin of --repo")
+    create.add_argument("--repo", type=Path, help="a working copy whose origin URL is the source")
+    create.add_argument("--ttl-hours", type=float, help="lifetime; default host.json scratch.maxAgeHours (24)")
+    create.add_argument("--job-id", help="a job the copy belongs to: the sweep may remove it once that job has ended")
+    create.add_argument("--lease", help="a lease the copy depends on: while it is held the copy is never removed")
+    release_scratch = actions.add_parser("release", help="remove exactly one scratch directory, when it is idle and yours")
+    release_scratch.add_argument("id", help="the id `scratch create` printed")
+    release_scratch.add_argument("--any-owner", action="store_true", help="release a scratch directory of another owner of this host user")
+    release_scratch.add_argument("--dry-run", action="store_true")
+    actions.add_parser("list", help="the scratch directories with owner and expiry, as JSON")
+    adopt = sub.add_parser("adopt", help="make an unowned folder of the work root a scratch directory (moved into scratch/) so it expires")
+    adopt.add_argument("path", type=Path, help="a direct entry of the work root (absolute, or its name)")
+    adopt.add_argument("--yes", action="store_true", help="required: confirms that the owner wants valtrion to remove it once it expires")
+    adopt.add_argument("--name", help="scratch name; default: the folder's name")
+    adopt.add_argument("--ttl-hours", type=float, help="lifetime from now; default host.json scratch.maxAgeHours (24)")
+    adopt.add_argument("--discard-unsaved-work", action="store_true",
+                       help="adopt a git repository even with uncommitted changes, stashes or commits on no remote (lost when it expires)")
 
 
 def _workroot(arguments: argparse.Namespace) -> int:
@@ -1319,13 +1346,33 @@ def _workroot(arguments: argparse.Namespace) -> int:
         roots = settings.roots
         if arguments.action == "show":
             warning = workroot.protected_location(settings.work_root)
+            unowned = scratch.unowned(roots)
             data = {"workRoot": str(roots.root), "jobs": str(roots.jobs), "mirrors": str(roots.mirrors), "tools": str(roots.tools),
-                    "launchd": str(roots.launchd), "protected": warning, **workroot.usage(roots)}
+                    "launchd": str(roots.launchd), "scratch": str(roots.scratch), "protected": warning, **workroot.usage(roots),
+                    "unowned": unowned, "warnings": [scratch.describe_unowned(item) for item in unowned]}
             if arguments.json:
                 _out(data)
             else:
                 for key, value in data.items():
-                    print(f"{key}: {value}")
+                    if key not in ("unowned", "warnings"):
+                        print(f"{key}: {value}")
+                for line in data["warnings"]:
+                    print(f"WARNING {line}")
+            return constants.EXIT_PASS
+        if arguments.action == "scratch":
+            return _workroot_scratch(arguments, settings)
+        if arguments.action == "adopt":
+            if not arguments.yes:
+                return _blocked("workroot", "adopt moves the folder into scratch/ and lets valtrion remove it once it expires; the owner "
+                                            "confirms that with --yes")
+            hours = settings.scratch_max_age_hours if arguments.ttl_hours is None else arguments.ttl_hours
+            adopt_warnings: list[str] = []
+            folder, marker = scratch.adopt(roots, arguments.path, scratch.caller(), max_age_hours=hours, name=arguments.name,
+                                           discard_unsaved_work=arguments.discard_unsaved_work, warnings=adopt_warnings)
+            data = {"scratch": str(folder), "id": marker["id"], "expiresUtc": marker["expiresUtc"], "adoptedFrom": marker["adoptedFrom"]}
+            if adopt_warnings:
+                data["warnings"] = adopt_warnings
+            _out(data)
             return constants.EXIT_PASS
         if arguments.action == "inbox":
             folder = roots.inbox()
@@ -1350,14 +1397,54 @@ def _workroot(arguments: argparse.Namespace) -> int:
         if arguments.action == "release":
             _out({"removed": workroot.cleanup_job(roots, arguments.job_id)})
             return constants.EXIT_PASS
-        removed = workroot.sweep(roots, jobs.active_job_ids(), arguments.max_age_hours * 3600, arguments.dry_run,
-                                 keep=jobs.kept_work_reason)
+        active = jobs.active_job_ids()
+        removed = workroot.sweep(roots, active, arguments.max_age_hours * 3600, arguments.dry_run, keep=jobs.kept_work_reason)
+        swept = scratch.sweep(roots, scratch.caller(), active, settings.scratch_max_age_hours * 3600, any_owner=arguments.any_owner,
+                              dry_run=arguments.dry_run)  # the folders of the active jobs are protected by the sweep itself
+        removed.extend(swept.removed)
+        verb = "would remove" if arguments.dry_run else "removed"
         for path in removed:
-            print(f"{'would remove' if arguments.dry_run else 'removed'} {path}")
-        print(f"{len(removed)} abandoned item(s)")
+            print(f"{verb} {path}")
+        for path, reason in swept.kept:
+            print(f"kept {path}: {reason}")
+        unowned = scratch.unowned(roots)
+        for item in unowned:
+            print(f"WARNING {scratch.describe_unowned(item)}")
+        print(f"{len(removed)} abandoned item(s), {len(unowned)} unowned entr{'y' if len(unowned) == 1 else 'ies'} (never removed)")
         return constants.EXIT_PASS
-    except (config.ConfigError, workroot.WorkRootError, OSError) as error:
-        return _blocked("workroot", str(error))
+    except (config.ConfigError, workroot.WorkRootError, scratch.ScratchError, OSError, ValueError) as error:
+        return _blocked("workroot", str(error))  # ValueError: an invalid host.json leasesDir, read for the lease checks
+
+
+def _workroot_scratch(arguments: argparse.Namespace, settings: config.HostSettings) -> int:
+    roots = settings.roots
+    if arguments.scratch_action == "list":
+        _out({"scratch": str(roots.scratch), "directories": scratch.listing(roots)})
+        return constants.EXIT_PASS
+    if arguments.scratch_action == "release":
+        path = scratch.release(roots, arguments.id, scratch.caller(), any_owner=arguments.any_owner, dry_run=arguments.dry_run)
+        _out({"wouldRemove" if arguments.dry_run else "removed": [path]})
+        return constants.EXIT_PASS
+    source = arguments.source
+    if arguments.sha and not source:
+        if arguments.repo is None:
+            return _blocked("workroot", "a scratch checkout (--sha) needs --source or --repo")
+        code, output = workroot.run_git(["remote", "get-url", "origin"], arguments.repo)
+        if code != 0:
+            return _blocked("workroot", f"cannot read the origin of {arguments.repo}: {output[:200]}")
+        source = output.strip()
+    hours = settings.scratch_max_age_hours if arguments.ttl_hours is None else arguments.ttl_hours
+    folder, marker = scratch.create(roots, arguments.name, scratch.caller(), max_age_hours=hours, project=arguments.project,
+                                    source=source, sha=arguments.sha, job=arguments.job_id, lease_resource=arguments.lease)
+    data = {"scratch": str(folder), "id": marker["id"], "expiresUtc": marker["expiresUtc"],
+            "release": f"valtrion workroot scratch release {marker['id']}"}
+    if arguments.sha:
+        data["checkout"] = str(folder / scratch.CHECKOUT)
+        warnings = workroot.checkout_warnings(folder / scratch.CHECKOUT)
+        if warnings:
+            data["warnings"] = warnings
+    _out(data)
+    return constants.EXIT_PASS
 
 
 # -- unity ------------------------------------------------------------------------------------------------------------------
