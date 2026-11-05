@@ -53,6 +53,11 @@
             "timeoutSec": { "$ref": "common.schema.json#/$defs/int32", "minimum": 1 }
           }
         },
+        "cleanup": {
+          "type": "array",
+          "description": "Run stages only: output paths relative to the project folder that the host removes when the job ends (never a tracked file, a working copy or a path outside the folder, also through a link; such a path is refused and the job does not start). The result records what was removed, kept and refused.",
+          "items": { "type": "string", "minLength": 1 }
+        },
         "prelaunchFiles": {
           "type": "array",
           "description": "Files pushed into the application's data root before it starts (read before the first scene): local is absolute or relative to the pipeline file, remote is relative to the data root.",

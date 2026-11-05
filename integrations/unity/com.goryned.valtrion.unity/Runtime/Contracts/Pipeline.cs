@@ -121,6 +121,9 @@ namespace Valtrion.Unity.Contracts
         /// <summary>Files pushed through the platform adapter before the application starts; null when the stage names none.</summary>
         public List<PrelaunchFile> PrelaunchFiles { get; set; }
 
+        /// <summary>Run stages: output paths relative to the project folder that the host removes when the job ends; null when none.</summary>
+        public List<string> Cleanup { get; set; }
+
         internal static PipelineStage Read(ContractReader reader)
         {
             var stage = new PipelineStage
@@ -134,6 +137,7 @@ namespace Valtrion.Unity.Contracts
                 Args = reader.OptTree("args"),
                 ExternalUi = reader.OptObject("externalUi") is ContractReader externalUi ? PipelineExternalUi.Read(externalUi) : null,
                 PrelaunchFiles = reader.OptItems("prelaunchFiles", PrelaunchFile.Read),
+                Cleanup = reader.OptStrings("cleanup"),
             };
             reader.Done();
             return stage;
@@ -148,6 +152,8 @@ namespace Valtrion.Unity.Contracts
                 node.Set("externalUi", ExternalUi.Write());
             if (PrelaunchFiles != null)
                 node.Set("prelaunchFiles", JsonBuild.Array(PrelaunchFiles, file => file.Write()));
+            if (Cleanup != null)
+                node.Set("cleanup", JsonBuild.Strings(Cleanup));
             return node;
         }
     }

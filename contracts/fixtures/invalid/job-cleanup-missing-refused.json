@@ -1,0 +1,15 @@
+{
+  "schema": "gdv.job/1",
+  "jobId": "20261104T1530Z-helper-build-0123abcd",
+  "kind": "build",
+  "state": "finished",
+  "status": "PASS",
+  "reason": "exit code 0",
+  "createdUtc": "2026-11-04T15:30:00Z",
+  "updatedUtc": "2026-11-04T15:41:30Z",
+  "host": "mac-build",
+  "command": ["xcodebuild"],
+  "cleanup": { "base": "/Users/builder/projects/ExampleApp", "removed": ["DerivedData"], "kept": [] },
+  "watchdog": { "stallSec": 600, "timeoutSec": 7200, "lastProgressUtc": "2026-11-04T15:41:24Z" },
+  "eventsOffset": 0
+}

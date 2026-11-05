@@ -94,8 +94,8 @@ objects reject unknown properties.
 | Schema | C# type | Purpose |
 | --- | --- | --- |
 | `gdv.plan/1` | `PlanDocument` | `id`, `kind` (`functional`, `performance`, `soak`, `smoke`), `requires`, `dataPolicy` (`isolated`, `devdata`, `clean-install`), `budgetSeconds`, `repeat`, `warmup`, `continueOnFail`, `setup[]`, `steps[]` (each `type` + mandatory `timeoutSec` + free-form arguments), `metrics{}`, `cleanup` |
-| `gdv.pipeline/1` | `PipelineDocument` | `candidate`, `device`, `stages[]` (`build`, `install`, `run`, `collect`; optional `externalUi` and `prelaunchFiles[]`), `compare` |
-| `gdv.result/1` | `ResultDocument` | `runId`, `status`, `reason`, `candidate`, `target`, `host`, `plan` (id + SHA-256), `layers`, `steps[]`, `metrics[]`, `comparison`, `checkout`, `build`, `artifacts[]` and `unverified[]` (both required: an empty list is a claim, omission is not) |
+| `gdv.pipeline/1` | `PipelineDocument` | `candidate`, `device`, `stages[]` (`build`, `install`, `run`, `collect`; optional `externalUi`, `prelaunchFiles[]` and `cleanup[]`), `compare` |
+| `gdv.result/1` | `ResultDocument` | `runId`, `status`, `reason`, `candidate`, `target`, `host`, `plan` (id + SHA-256), `layers`, `steps[]`, `metrics[]`, `comparison`, `checkout`, `build`, `cleanup`, `artifacts[]` and `unverified[]` (both required: an empty list is a claim, omission is not) |
 | `gdv.heartbeat/1` | `HeartbeatDocument` | rewritten atomically by the Runtime every few seconds: `seq`, `state`, current step, `elapsedMs`, optional host `request` |
 | `gdv.job/1` | `JobDocument` | state of a detached host job |
 | `gdv.event/1` | `EventDocument` | one line of `events.jsonl` |
