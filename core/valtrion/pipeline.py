@@ -746,6 +746,10 @@ def execute(pipeline: Mapping[str, Any], pipeline_path: Path | None, ctx: JobCon
         if options.result_cache != "off":
             head_note.append(f"the result cache is not used: {error}")
     lookup_results = cache_settings is not None and (options.result_cache == "reuse" or (options.result_cache is None and cache_settings.reuse))
+    if lookup_results and resumed is not None and resumed.prior is not None:
+        # A resume carries stages that ran on the earlier run's binary; a cached result of another binary must not complete it.
+        lookup_results = False
+        head_note.append("the result cache was not looked up: results are not reused in a job that carries stages from an earlier run")
     store_results = cache_settings is not None and options.result_cache != "off"
 
     device: DeviceInfo | None = None
@@ -773,6 +777,9 @@ def execute(pipeline: Mapping[str, Any], pipeline_path: Path | None, ctx: JobCon
     #: The build-cache key of the clean build of this commit that this job's latest install put on the device; None when the app on
     #: the device is not known to be such a build (no install in this job, an `args.artifact`, another commit's build, a failed one).
     installed_build: list[str | None] = [None]
+    #: The binary SHA-256 of that install; False while no install ran in this job (a cached result then needs no binary to match),
+    #: None after an install of something that is not such a build.
+    installed_sha: list[str | bool | None] = [False]
 
     def record(index: int, disposition: str, status: str | None = None, reason: str | None = None, **extra: Any) -> dict:
         stage = stages[index]
@@ -815,6 +822,11 @@ def execute(pipeline: Mapping[str, Any], pipeline_path: Path | None, ctx: JobCon
                                  else early(constants.PASS, ""))
         if not stage_results:
             return overall
+        went_on_and_stopped = options.keep_going and overall.status != constants.PASS and not overall.cancelled
+        if went_on_and_stopped and (stage_results[-1]["status"] != overall.status or stage_results[-1].get("reason") != overall.reason):
+            # --keep-going went on after a failure and a later stage stopped it without a result of its own (an install without an
+            # artifact, an unknown artifactKey): that stage's result leads, so the document is the stopping stage's, not a run's.
+            stage_results.append(early(overall.status, overall.reason or f"the pipeline ended {overall.status}"))
         if pipeline.get("compare"):
             # Every passing series is compared with the baseline of its own plan; none is skipped because another one failed or came last.
             folders = baseline_folders(pipeline["compare"], base, project_dir)
@@ -823,7 +835,7 @@ def execute(pipeline: Mapping[str, Any], pipeline_path: Path | None, ctx: JobCon
                     _attach_comparison(series, series_plans[series["runId"]], folders)
         core.atomic_write_json(directory / "summary.json", [_summary_entry(r) for r in stage_results])
         leading = _worst_result(stage_results)
-        if options.keep_going and overall.status != constants.PASS and not overall.cancelled and stage_results[-1]["status"] == overall.status:
+        if went_on_and_stopped:
             leading = stage_results[-1]  # --keep-going went on and then stopped: the stage that stopped it leads the job result
         job_result = _with_other_series(leading, stage_results)
         job_result, aggregated = _with_stage_record(job_result, pipeline["id"], [records.get(i) or {
@@ -1357,6 +1369,12 @@ def execute(pipeline: Mapping[str, Any], pipeline_path: Path | None, ctx: JobCon
             continue
         if kind == "run" and stage.get("plan"):
             hit = reused_hits[index] if index in reused_hits else None if index in prechecked else look_up(index)
+            if hit is not None and installed_sha[0] is not False and hit.result["build"].get("sha256") != installed_sha[0]:
+                # An install of this job put another binary on the device than the one the cached result was made with (the build was
+                # published again since the lookup): the stage runs, so the job's results all come from one binary.
+                events.emit("log", f"result cache: not reused, the installed binary ({str(installed_sha[0])[:12]}) is not the one the "
+                            f"cached result was made with ({str(hit.result['build'].get('sha256'))[:12]})", step=name)
+                hit = None
             if hit is not None:
                 # Answered from the result cache: the plan does not run, the device is not needed, and the result says where it came from.
                 plan = load_plan(stage["plan"])[1]
@@ -1402,6 +1420,7 @@ def execute(pipeline: Mapping[str, Any], pipeline_path: Path | None, ctx: JobCon
             if used_entry is not None:
                 buildcache.touch(used_entry)
             installed_build[0] = None  # whatever was installed before is replaced (or, after a failed install, unknown)
+            installed_sha[0] = None  # an install ran in this job: from now on the device holds its binary (unknown until it passes)
             installed = _bounded(lambda: adapter.install(device, chosen), stage, adapter_name="install")
             extra_layers["install"] = installed.status
             events.emit("step.finished", installed.reason, step=name, status=installed.status)
@@ -1414,6 +1433,7 @@ def execute(pipeline: Mapping[str, Any], pipeline_path: Path | None, ctx: JobCon
                     used_entry.key, used_entry.manifest.get("sha"), used_entry.manifest.get("dirty"), used_entry.manifest.get("platform"),
                     candidate_sha, platform):
                 installed_build[0] = used_entry.key  # a known clean build of this commit: its run results may be cached
+                installed_sha[0] = str(used_entry.manifest.get("sha256"))
             continue
         if kind == "run":
             assert device is not None

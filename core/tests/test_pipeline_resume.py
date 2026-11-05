@@ -76,6 +76,18 @@ class _Harness(unittest.TestCase):
     def cache_folder(self):
         return resultcache.cache_root(self.home / "work")
 
+    @contextlib.contextmanager
+    def another_binary(self, content=b"another binary"):
+        original = FakeAdapter.build
+
+        def build(adapter, project, profile, out):
+            outcome = original(adapter, project, profile, out)
+            (out / "app.apk").write_bytes(content)
+            return outcome
+
+        with mock.patch.object(FakeAdapter, "build", build):
+            yield
+
 
 class StageSelectionTests(_Harness):
     def test_a_full_run_records_every_stage_as_ran(self):
@@ -204,6 +216,17 @@ class StageSelectionTests(_Harness):
         self.assertIn("stage 1:build of the earlier run", store.read_job()["reason"])
         self.assertIn("is FAIL", store.read_job()["reason"])
 
+    def test_a_selected_install_is_refused_when_the_earlier_build_was_built_again(self):
+        first, _ = self.run_pipeline(self.pipeline_document(self.stages()))
+        with self.another_binary():
+            forced = self.stages()
+            forced[0]["args"] = {"reuse": False}
+            self.run_pipeline(self.pipeline_document(forced))
+        _, store = self.run_pipeline(self.pipeline_document(self.stages()), {"selection": {"stages": ["2", "3"]}, "resumeFrom": first["jobId"]})
+        self.assertEqual("BLOCKED", store.read_job()["status"])
+        self.assertIn("was built again after the earlier run", store.read_job()["reason"])
+        self.assertEqual([], FakeAdapter.calls)
+
     def test_a_selected_install_is_refused_when_the_earlier_build_is_gone(self):
         _, store = self.run_pipeline(self.pipeline_document(self.stages()))
         key = self.result_of(store)["build"]["key"]
@@ -277,6 +300,22 @@ class KeepGoingTests(_Harness):
         self.assertTrue(job["reason"].startswith("install failed: the device storage is full"), job["reason"])
         self.assertIn("earlier stages that did not pass: 3:run FAIL", job["reason"])
         self.assertEqual("not-run", self.stage_records(result)[5]["disposition"])
+
+    def test_a_keep_going_stop_without_a_result_of_its_own_still_leads_the_job_result(self):
+        apk = self.work / "old.apk"
+        apk.write_bytes(b"x")
+        run = self.two_series()[2]
+        stages = [{"stage": "install", "args": {"artifact": str(apk)}}, run, {"stage": "install", "args": {"artifactKey": "nope"}},
+                  self.two_series()[3]]
+        with self.scenarios("fail"):
+            _, store = self.run_pipeline(self.pipeline_document(stages), {"keepGoing": True})
+        job, result = store.read_job(), self.result_of(store)
+        self.assertEqual(("BLOCKED", "BLOCKED"), (job["status"], result["status"]))
+        self.assertEqual(job["reason"], result["reason"])
+        self.assertTrue(result["reason"].startswith("install: no published build with key nope"), result["reason"])
+        self.assertIn("earlier stages that did not pass: 2:run FAIL", result["reason"])
+        self.assertEqual([], result["steps"])
+        self.assertEqual([], result["metrics"], "the body is the stopping stage's, not the failed run's")
 
     def test_without_keep_going_the_first_failure_stops_and_the_rest_did_not_run(self):
         with self.scenarios("hang", "pass"):
@@ -434,15 +473,57 @@ class ResultCachePipelineTests(_Harness):
         self.run_pipeline(by_key)
         self.assertEqual([], self.stored(), "another commit's build installed by key is not this commit's evidence")
 
-    def test_a_resumed_run_after_a_carried_install_is_not_stored_but_can_be_answered(self):
+    def test_a_resumed_run_after_a_carried_install_is_neither_stored_nor_answered(self):
         self.run_pipeline(self.pipeline_document(self.stages()), {"resultCache": "off"})
         _, store = self.run_pipeline(self.pipeline_document(self.stages()), {"selection": {"stages": ["3"]}})
         self.assertEqual("PASS", store.read_job()["status"], store.read_job()["reason"])
         self.assertEqual([], self.stored(), "the app on the device may have been replaced since the carried install")
         self.run_pipeline(self.pipeline_document(self.stages()))
+        self.assertEqual(1, len(self.stored()))
         _, store = self.run_pipeline(self.pipeline_document(self.stages()), {"selection": {"stages": ["3"]}, "resultCache": "reuse"})
-        self.assertNotIn("launch", FakeAdapter.calls, "a lookup does not depend on the device")
-        self.assertIn("reusedFrom", self.result_of(store))
+        self.assertIn("launch", FakeAdapter.calls, "a job that carries stages never reuses results")
+        result = self.result_of(store)
+        self.assertNotIn("reusedFrom", result)
+        self.assertTrue(any("not reused in a job that carries stages" in item for item in result["unverified"]), result["unverified"])
+
+    def forced(self, stages):
+        stages[0]["args"] = {"reuse": False}
+        return stages
+
+    def test_a_resume_never_completes_its_carried_binary_with_a_result_of_another_binary(self):
+        with self.scenarios("pass", "fail"):
+            first, _ = self.run_pipeline(self.pipeline_document(self.two_series()), {"keepGoing": True})
+        with self.another_binary():
+            self.run_pipeline(self.pipeline_document(self.forced(self.two_series())))
+        self.assertEqual(2, len(self.stored()), "both series passed on the rebuilt binary")
+        _, store = self.run_pipeline(self.pipeline_document(self.two_series()),
+                                     {"selection": {"stages": ["4"]}, "resumeFrom": first["jobId"], "resultCache": "reuse"})
+        self.assertEqual("PASS", store.read_job()["status"], store.read_job()["reason"])
+        self.assertIn("launch", FakeAdapter.calls, "stage 4 runs on the install carried from the first run")
+        result = self.result_of(store)
+        self.assertNotIn("reusedFrom", result)
+        self.assertEqual("ran", self.stage_records(result)[4]["disposition"])
+
+    def test_a_cached_result_of_a_binary_republished_after_the_lookup_is_not_used(self):
+        self.run_pipeline(self.pipeline_document(self.stages()))
+        original = pipeline.buildcache.lookup
+        calls = []
+
+        def lookup(root, key):
+            calls.append(key)
+            if len(calls) == 3:  # the build stage, after both run stages were looked up: another job publishes the key again
+                manifest_path = root / key / "manifest.json"
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                core.atomic_write_json(manifest_path, {**manifest, "sha256": "9" * 64})
+            return original(root, key)
+
+        with mock.patch.object(pipeline.buildcache, "lookup", lookup):
+            _, store = self.run_pipeline(self.pipeline_document(self.two_series()), {"resultCache": "reuse"})
+        self.assertEqual("PASS", store.read_job()["status"], store.read_job()["reason"])
+        self.assertEqual(2, FakeAdapter.calls.count("launch"), "the hit for stage 3 was of the earlier binary: both series ran")
+        records = self.stage_records(self.result_of(store))
+        self.assertEqual(["ran", "ran"], [records[i]["disposition"] for i in (3, 4)])
+        self.assertIn("is not the one the cached result was made with", store.events.read_text(encoding="utf-8"))
 
     def test_a_forced_rebuild_under_the_same_key_makes_the_earlier_pass_a_miss(self):
         self.run_pipeline(self.pipeline_document(self.stages()))
@@ -849,6 +930,11 @@ class CliTests(_CliMixin, _Harness):
         (row,) = json.loads(out)["stages"]
         self.assertEqual("hit", row["state"])
         self.assertEqual(SHA, row["components"]["sha"])
+        with patch:
+            code, out, _ = self.cli("pipeline", str(path), *project, "--cache-status", "--stages", "3")
+        (row,) = json.loads(out)["stages"]
+        self.assertEqual("off", row["state"], "a resume never reuses results")
+        self.assertIn("off while resuming", row["reason"])
         del document["device"]["class"]
         path = self.write_pipeline(document)
         with patch:

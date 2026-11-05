@@ -755,14 +755,28 @@ def _preflight(pipeline: dict, base: Path, payload: dict, project_dir: Path | No
     return None
 
 
-def _cache_status(pipeline: dict, base: Path, sha: str | None, project_dir: Path | None, settings: config.HostSettings) -> int:
+def _cache_status(pipeline: dict, base: Path, sha: str | None, project_dir: Path | None, settings: config.HostSettings,
+                  payload: dict | None = None) -> int:
     """`pipeline --cache-status`: print the result cache key and state of every run stage (JSON) and start nothing."""
-    from . import gitstate, pipeline as pipelines
+    from . import gitstate, pipeline as pipelines, resume
+    platform = _request_for(pipeline, base, project_dir).platform
+    selection = (payload or {}).get("selection")
+    if selection:
+        try:
+            resuming = resume.plan_resume(selection, (payload or {}).get("resumeFrom"), pipeline, sha, base, platform).prior is not None
+        except resume.ResumeError:
+            resuming = True  # the job would be refused, and a resume never reuses results either
+        if resuming:
+            rows = [{"stage": resume.stage_name(index, stage), "plan": stage["plan"], "state": "off",
+                     "reason": "results are not reused in a job that carries stages from an earlier run (off while resuming)"}
+                    for index, stage in enumerate(pipeline["stages"]) if stage["stage"] == "run" and stage.get("plan")]
+            _out({"cache": str(pipelines.resultcache.cache_root(settings.work_root)), "reuseByDefault": settings.result_cache.reuse,
+                  "stages": rows})
+            return constants.EXIT_PASS
     dirty = True
     if project_dir is not None and sha:
         state = gitstate.read_state(project_dir, comparing.run_git, [settings.artifacts_root, settings.work_root])
         dirty = state.dirty or state.sha != sha
-    platform = _request_for(pipeline, base, project_dir).platform
     rows = pipelines.cache_status(pipeline, base, sha, dirty, platform, settings.work_root, project_dir)
     _out({"cache": str(pipelines.resultcache.cache_root(settings.work_root)), "reuseByDefault": settings.result_cache.reuse,
           "stages": rows})
@@ -802,7 +816,7 @@ def _start_pipeline(arguments: argparse.Namespace, pipeline: dict, payload: dict
         sha = None  # no commit known: the run folder is `unversioned`, not `00000000`
     settings = config.load_host_settings()
     if getattr(arguments, "cache_status", False):
-        return _cache_status(pipeline, base, sha, project_dir, settings)
+        return _cache_status(pipeline, base, sha, project_dir, settings, payload)
     problem = _preflight(pipeline, base, payload, project_dir)
     if not problem and payload.get("selection"):
         from . import resume

@@ -9,7 +9,8 @@ ran. The earlier run is `--resume-from JOB`, or else the newest finished run of 
 A resume is refused (`BLOCKED`, nothing runs) when the earlier run cannot be identified with the current one: it is missing, still
 active, has no stage record (made before stage selection existed), is for another project, profile or commit, was made from a dirty
 tree, has other stages, or a carried stage (or its plan or pre-launch files) changed since; when a carried `build` or `install` that a
-selected stage depends on did not pass; when a selected `install` needs the earlier build and it is no longer in the build cache; and
+selected stage depends on did not pass; when a selected `install` needs the earlier build and it is no longer in the build cache, or
+was built again under its key since (another binary than the one the earlier run recorded); and
 when a selected `run` needs the earlier install and the device is unknown or differs from the one the pipeline names.
 """
 
@@ -282,6 +283,9 @@ def _plan_install(plan: ResumePlan, pipeline: Mapping[str, Any], sha: str, platf
         if entry.manifest.get("sha") != sha or entry.manifest.get("dirty") or (platform and entry.manifest.get("platform") != platform):
             raise ResumeError(f"the build {key} of the earlier run {plan.prior.job_id} is not a clean {platform or ''} build of "
                               f"{sha[:12]}; select the build stage too")
+        if entry.manifest.get("sha256") != (plan.build or {}).get("sha256"):
+            raise ResumeError(f"the build {key} was built again after the earlier run {plan.prior.job_id} (its binary differs from the one "
+                              "that run recorded); select the build stage too")
         plan.build_entry = entry
         return
 
