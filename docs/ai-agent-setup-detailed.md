@@ -110,6 +110,12 @@ Verify in Unity
    Use the commands in the Unity Quick Start for the current shell. Do not add -quit.
    Supervise the complete process tree: hard timeout, a no-progress limit,
    periodic log/result checks. Stop only processes you started if it stalls.
+   If the project uses Git LFS, an agent's worktree often holds LFS pointer
+   files instead of assets. `valtrion unity run` materializes them before Unity
+   starts, from the host's shared LFS cache, and fetches only objects that are
+   missing; its LFS-PREFLIGHT line says what it did. A BLOCKED result with an
+   lfs.* code (for example lfs.git-lfs-missing or lfs.network-failed) is a
+   blocker to report with the listed files. Do not import a project of pointers.
 8. Read the Editor log and NUnit XML. Confirm a nonempty selected test set with
    no failures or unexplained skips, not just process exit zero. Read and validate
    <output>/<run ID>/result.json with `valtrion validate <file>`. Require PASS,

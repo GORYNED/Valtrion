@@ -269,6 +269,30 @@ def default_lease_wait(home: Path | None = None) -> float | None:
     return float(value)
 
 
+def lfs_materialize(home: Path | None = None) -> bool:
+    """`lfs.materialize` of host.json: whether `unity run` turns Git LFS pointer files of the project into their content before Unity
+    starts (see `lfs.py`). True when host.json does not set it."""
+    base = home or core.valtrion_home()
+    try:
+        document = core.read_json(host_json_path(base))
+    except FileNotFoundError:
+        return True
+    except (OSError, ValueError) as error:
+        raise ConfigError(f"cannot read {host_json_path(base)}: {error}") from error
+    value = document.get("lfs") if isinstance(document, dict) else None
+    if value is None:
+        return True
+    if not isinstance(value, dict):
+        raise ConfigError("host.json: lfs must be an object")
+    unknown = sorted(set(value) - {"materialize"})
+    if unknown:
+        raise ConfigError(f"host.json: lfs has unknown keys: {', '.join(unknown)}")
+    materialize = value.get("materialize", True)
+    if not isinstance(materialize, bool):
+        raise ConfigError("host.json: lfs.materialize must be true or false")
+    return materialize
+
+
 def check_launch_timeout(value: Any, where: str) -> float:
     """A `launchTimeoutSec` value: a finite number from 1 to `constants.LAUNCH_TIMEOUT_MAX_SEC`. Larger values are refused, never clamped:
     a launch wait has a hard upper limit, and a typo must not turn into a silent shorter or longer wait."""
