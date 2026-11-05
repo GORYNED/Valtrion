@@ -699,26 +699,30 @@ class RemovalSafetyTests(ScratchBase):
 class RealProcessTests(ScratchBase):
     """The real process probe of this host (Win32_Process in UTF-8 on Windows, ps elsewhere) with a non-ASCII path."""
 
-    def test_a_live_process_in_a_cyrillic_folder_is_seen_and_keeps_it(self):
+    def test_a_live_process_in_a_work_root_under_a_cyrillic_folder_is_seen_and_keeps_it(self):
+        # The whole work root lies below a non-ASCII folder (a Cyrillic user profile, as the default work root does): with output
+        # in the console code page the command line arrives with `?` in place of every such letter and matches nothing.
+        self.roots = workroot.WorkRoots(self.base / "Пользователь" / "work")
+        self.roots.root.mkdir(parents=True)
         folder, marker = self.make("cyr")
-        project = folder / "Проект-Тест"
-        project.mkdir()
-        holder = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)", str(project)])
+        holder = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)", str(folder)])
         self.addCleanup(holder.wait)
         self.addCleanup(holder.kill)
-        seen = []
+        listed = None
         deadline = time.monotonic() + 60
-        while time.monotonic() < deadline and holder.pid not in seen:
+        while time.monotonic() < deadline:
             listed = scratch.system_processes()
             self.assertIsNotNone(listed, "the process list of this host must be readable")
-            seen = scratch.using_processes(folder, listed)
-            if holder.pid not in seen:
-                time.sleep(1)
-        self.assertIn(holder.pid, seen, "the command line with Cyrillic characters must match the folder")
+            if any(proc.pid == holder.pid for proc in listed):
+                break
+            time.sleep(1)
+        command = next(proc.command for proc in listed if proc.pid == holder.pid)
+        self.assertIn("Пользователь", command, "the command line must arrive in UTF-8")
+        self.assertIn(holder.pid, scratch.using_processes(folder, listed), "the command line must match the folder")
         with self.assertRaises(scratch.ScratchError) as caught:
             scratch.release(self.roots, marker["id"], self.me, manager=self.manager)
         self.assertIn(f"pid {holder.pid}", str(caught.exception))
-        self.assertTrue(project.is_dir())
+        self.assertTrue(folder.is_dir())
         holder.kill()
         holder.wait()
         scratch.release(self.roots, marker["id"], self.me, manager=self.manager)
@@ -736,6 +740,136 @@ class LsofTests(unittest.TestCase):
             (folder / "deep").mkdir(parents=True)
             shell = SimpleNamespace(pid=77, ppid=1, path="zsh", command="-zsh", cwd=str(folder / "deep"))
             self.assertEqual([77], scratch.using_processes(folder, [ME, shell]))
+
+
+class EncodingTests(unittest.TestCase):
+    def test_lsof_hex_escapes_are_decoded_and_bad_bytes_refused(self):
+        raw = b"p42\nfcwd\nn/Users/a/\\xd0\\x9f\\xd1\\x80\\xd0\\xbe/work/scratch/x-0123abcd\n"
+        self.assertEqual({42: "/Users/a/Про/work/scratch/x-0123abcd"}, scratch.parse_lsof_cwd(raw))
+        with self.assertRaises(ValueError):
+            scratch.parse_lsof_cwd(b"p42\nn/Users/\\xff\\xfe\n")
+
+    def test_posix_probes_run_in_a_utf8_locale(self):
+        from valtrion import unityguard
+        self.assertEqual("en_US.UTF-8", unityguard.utf8_environment("macos")["LC_ALL"])
+        self.assertEqual("C.UTF-8", unityguard.utf8_environment("linux")["LC_ALL"])
+        self.assertIsNone(unityguard.utf8_environment("windows"))
+        done = SimpleNamespace(returncode=0, stdout=b"ok")
+        with mock.patch.object(unityguard.subprocess, "run", return_value=done) as run:
+            self.assertEqual("ok", unityguard.run_text(["ps"]))
+        options = run.call_args.kwargs
+        if os.name == "nt":
+            self.assertEqual(subprocess.CREATE_NO_WINDOW, options["creationflags"], "PowerShell gets a console of its own")
+        else:
+            self.assertIn("UTF-8", options["env"]["LC_ALL"])
+
+    @unittest.skipUnless(os.name == "nt", "the console code page is a Windows matter")
+    def test_the_process_probe_leaves_the_callers_console_code_page_alone(self):
+        import ctypes
+        kernel32 = ctypes.WinDLL("kernel32")
+        before = kernel32.GetConsoleOutputCP()
+        if before == 0:
+            self.skipTest("this process has no console")
+        self.assertIsNotNone(scratch.system_processes())
+        self.assertEqual(before, kernel32.GetConsoleOutputCP())
+
+    def test_a_path_ends_at_any_character_a_scratch_id_cannot_hold(self):
+        needle = scratch._key(r"C:\w\scratch\x-1234abcd" if os.name == "nt" else "/w/scratch/x-1234abcd")
+        sep = ";" if os.name == "nt" else ":"
+        for text in (f"tool --paths={needle}{sep}C:\\other", f"tool {needle},C:\\o", f"tool ({needle})", f"tool {needle}"):
+            self.assertTrue(scratch._mentions(text, [needle]), text)
+        for text in (f"tool {needle}0", f"tool {needle}-old", f"tool {needle}.bak"):
+            self.assertFalse(scratch._mentions(text, [needle]), text)
+
+
+class SweepCallerAndTombstoneTests(ScratchBase):
+    def test_the_sweep_counts_the_caller_itself_but_release_does_not(self):
+        folder, marker = self.make()
+        self.expire(folder)
+        caller = SimpleNamespace(pid=os.getpid(), ppid=0, path="python", command=f"valtrion build --project-dir {folder}")
+        report = self.sweep(processes=lambda: [caller])
+        self.assertEqual([], report.removed)
+        self.assertIn(f"pid {os.getpid()}", dict(report.kept)[str(folder)])
+        self.release(marker["id"], processes=lambda: [caller])
+        self.assertFalse(folder.exists())
+
+    def test_the_sweep_keeps_a_folder_that_holds_or_lies_in_a_protected_path_or_the_working_directory(self):
+        holds, _ = self.make("holds")
+        inside, _ = self.make("inside")
+        cwd, _ = self.make("cwd")
+        for folder in (holds, inside, cwd):
+            (folder / "checkout").mkdir()
+            self.expire(folder)
+        here = os.getcwd()
+        os.chdir(cwd / "checkout")
+        self.addCleanup(os.chdir, here)
+        report = self.sweep(protected=[holds / "checkout", self.roots.scratch / inside.name])
+        self.assertEqual([], report.removed)
+        for folder in (holds, inside, cwd):
+            self.assertIn("overlaps", dict(report.kept)[str(folder)])
+
+    def interrupted(self, name="tmp"):
+        folder, marker = self.make(name)
+        tombstone = self.roots.scratch / f".removing-{marker['id']}-0123abcd"
+        os.rename(folder, tombstone)
+        return tombstone, marker
+
+    def test_an_interrupted_removal_is_finished_by_release_or_sweep_and_never_reported_as_adoptable(self):
+        first, one = self.interrupted("one")
+        second, _ = self.interrupted("two")
+        listed = {item["name"]: item for item in scratch.listing(self.roots)}
+        self.assertEqual(one["id"], listed[first.name]["interruptedRemovalOf"])
+        self.assertEqual([], scratch.unowned(self.roots, self.manager, no_processes), "a valid tombstone is valtrion's")
+        self.assertEqual(str(first), self.release(one["id"]))
+        self.assertFalse(first.exists())
+        report = self.sweep()
+        self.assertFalse(second.exists())
+        self.assertIn("interrupted removal", report.removed[0])
+
+    def test_an_interrupted_removal_still_passes_every_guard(self):
+        tombstone, marker = self.interrupted()
+        editor = SimpleNamespace(pid=999999, ppid=1, path="Unity", command=f"Unity -projectPath {tombstone}")
+        with self.assertRaises(scratch.ScratchError):
+            self.release(marker["id"], processes=with_me(editor))
+        self.assertTrue(tombstone.is_dir())
+        foreign = self.roots.scratch / ".removing-evil-0123abcd-0123abcd"
+        foreign.mkdir()
+        core.atomic_write_json(foreign / scratch.MARKER, {"marker": "other/1", "id": "evil-0123abcd"})
+        self.sweep()
+        self.assertTrue(foreign.is_dir(), "a tombstone without a valid marker is never removed")
+        found = {item["name"]: item for item in scratch.unowned(self.roots, self.manager, no_processes)}
+        hint = scratch.describe_unowned(found[f"scratch/{foreign.name}"])
+        self.assertNotIn("adopt", hint)
+
+
+class DeepAdoptGitTests(AdoptGitTests):
+    def test_a_repository_two_levels_down_with_untracked_work_is_refused(self):
+        stray = self.roots.root / "stray"
+        repo = stray / "group" / "repo"
+        git(["clone", "-q", str(self.source), str(repo)], self.base)
+        (repo / "notes.txt").write_text("mine\n", encoding="utf-8")
+        with self.assertRaises(scratch.ScratchError) as caught:
+            scratch.adopt(self.roots, stray, self.me, max_age_hours=1, manager=self.manager, processes=no_processes)
+        self.assertIn("uncommitted or untracked", str(caught.exception))
+        self.assertTrue((repo / "notes.txt").is_file())
+
+    def test_a_bare_repository_with_branches_on_no_remote_or_without_remote_is_refused(self):
+        stray = self.roots.root / "stray"
+        stray.mkdir()
+        git(["clone", "-q", "--bare", str(self.source), str(stray / "bare.git")], self.base)
+        git(["remote", "remove", "origin"], stray / "bare.git")
+        with self.assertRaises(scratch.ScratchError) as caught:
+            scratch.adopt(self.roots, stray, self.me, max_age_hours=1, manager=self.manager, processes=no_processes)
+        self.assertIn("bare repository without any remote", str(caught.exception))
+        git(["init", "-q", "--bare", str(stray / "empty.git")], self.base)
+        git(["remote", "add", "origin", str(self.source)], stray / "bare.git")
+        with self.assertRaises(scratch.ScratchError) as caught:
+            scratch.adopt(self.roots, stray, self.me, max_age_hours=1, manager=self.manager, processes=no_processes)
+        self.assertIn("on no remote", str(caught.exception))
+
+    def test_a_tree_not_searched_within_the_budget_is_refused(self):
+        self.assertIsNone(scratch.find_repositories(self.clone, budget_sec=-1))
+        self.assertTrue(scratch.unsaved_work(self.clone, budget_sec=-1))
 
 
 class ConfigAndCliTests(ScratchBase):

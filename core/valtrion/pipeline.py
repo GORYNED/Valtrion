@@ -846,6 +846,11 @@ def execute(pipeline: Mapping[str, Any], pipeline_path: Path | None, ctx: JobCon
         ctx.set_phase("on-device")
         return None
 
+    def own_folders() -> list[str]:
+        """The folders this run builds in: the disk cleanup must not remove a scratch copy the run itself works in (it holds no
+        lease on it yet while it waits for space)."""
+        return [str(project_dir)] if project_dir is not None else []
+
     def check_disk(name: str) -> PipelineOutcome | None:
         """Before the build starts: with `disk.minFreeGiB` set, clean up when the work root's volume is low on space, and end the
         stage BLOCKED (no toolchain started) when it still is. Without the setting nothing happens."""
@@ -856,7 +861,7 @@ def execute(pipeline: Mapping[str, Any], pipeline_path: Path | None, ctx: JobCon
             return None
         if not settings.min_free_gib:
             return None
-        outcome = diskspace.ensure_free(settings, ctx.home, ctx.spec.get("protectedPaths", []))
+        outcome = diskspace.ensure_free(settings, ctx.home, ctx.spec.get("protectedPaths", []), busy=own_folders())
         if outcome.removed:
             events.emit("log", f"low disk space ({outcome.free_before / diskspace.GIB:.1f} GiB free): removed {len(outcome.removed)} "
                         f"abandoned or expired item(s), {outcome.free_after / diskspace.GIB:.1f} GiB free now",
@@ -891,7 +896,7 @@ def execute(pipeline: Mapping[str, Any], pipeline_path: Path | None, ctx: JobCon
         try:
             with ctx.wait_clock():
                 outcome = diskspace.wait_for_space(settings, ctx.home, ctx.spec.get("protectedPaths", []), wait, ctx.job_id,
-                                                   on_wait=waiting, cancelled=ctx.cancelled)
+                                                   on_wait=waiting, cancelled=ctx.cancelled, busy=own_folders())
         finally:
             ctx.set_phase(None)
         if outcome.removed:

@@ -20,7 +20,8 @@ Removal is the only dangerous step, so every removal (`release`, `sweep`, the pr
 
 A sweep removes only a folder that is due (its readable expiry passed, or the job it depends on is recorded as finished or
 cancelled) and in which nothing changed for the idle time; that is measured over the whole tree, and a tree that cannot be walked
-within a time budget counts as in use.
+within a time budget counts as in use. A sweep also counts the calling process and its ancestors as users, and keeps a folder that
+overlaps a protected path, the project folder of the running build or the current working directory.
 
 The folder is first renamed to a tombstone name inside `scratch/` (on Windows this fails while a file inside is open), checked once
 more, and then removed: its content first and the marker last. A removal that fails half way renames it back, so it still carries
@@ -63,7 +64,11 @@ SCRATCH_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,39}-[0-9a-f]{8}")
 #: How deep below a folder a Unity project (a folder with `ProjectSettings/`) is looked for, for its `unity-project:` lease.
 PROJECT_DEPTH = 3
 _SKIP_WHEN_LOOKING_FOR_PROJECTS = {".git", "library", "temp", "logs", "obj", "node_modules"}
-_BOUNDARY = "\\/\"' \t"
+#: The characters a scratch id (and so the last part of a scratch path) can contain; any other character ends a path's name.
+_NAME_CHARACTERS = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-")
+TOMBSTONE = re.compile(re.escape(".removing-") + r"([A-Za-z0-9][A-Za-z0-9._-]{0,39}-[0-9a-f]{8})-[0-9a-f]{8}")
+#: How long `adopt` may search a folder for git repositories; a folder not searched within it is refused.
+ADOPT_SEARCH_BUDGET_SEC = 30.0
 #: Job states after which a job never runs again (`jobs.py`).
 ENDED_JOB_STATES = ("finished", "cancelled")
 #: How long the sweep may walk one folder to find its newest change; a folder not walked within it counts as in use.
@@ -119,18 +124,29 @@ def job_state(job_id: str, home: Path | None = None) -> str | None:
 # -- processes --------------------------------------------------------------------------------------------------------------
 
 
-def parse_lsof_cwd(text: str) -> dict[int, str]:
-    """Output of `lsof -a -d cwd -Fn` (`p<pid>` and `n<path>` lines): the working directory of each process."""
+_HEX_ESCAPE = re.compile(rb"\\x([0-9a-fA-F]{2})")
+
+
+def decode_lsof_name(raw: bytes) -> str:
+    """A name as lsof prints it: bytes it considers unprintable (any non-ASCII byte in the C locale) come as `\\xNN`. The escapes are
+    turned back into bytes and the result must be valid UTF-8; otherwise ValueError (the caller then trusts no answer)."""
+    return _HEX_ESCAPE.sub(lambda match: bytes([int(match.group(1), 16)]), raw).decode("utf-8")
+
+
+def parse_lsof_cwd(output: "bytes | str") -> dict[int, str]:
+    """Output of `lsof -a -d cwd -Fn` (`p<pid>` and `n<path>` lines): the working directory of each process. Raises ValueError for
+    a name that does not decode (see `decode_lsof_name`)."""
+    data = output.encode("utf-8") if isinstance(output, str) else output
     found: dict[int, str] = {}
     pid = None
-    for line in text.splitlines():
-        if line.startswith("p"):
+    for line in data.splitlines():
+        if line.startswith(b"p"):
             try:
                 pid = int(line[1:])
             except ValueError:
                 pid = None
-        elif line.startswith("n") and pid is not None:
-            found[pid] = line[1:]
+        elif line.startswith(b"n") and pid is not None:
+            found[pid] = decode_lsof_name(line[1:])
     return found
 
 
@@ -147,12 +163,13 @@ def _working_directories(os_name: str) -> "dict[int, str] | None":
                     continue
         return found
     if os_name == "macos":
+        from . import unityguard
         try:
-            done = subprocess.run(["lsof", "-a", "-d", "cwd", "-Fn"], capture_output=True, timeout=LSOF_TIMEOUT_SEC, check=False)
-        except (OSError, subprocess.SubprocessError):
+            done = subprocess.run(["lsof", "-a", "-d", "cwd", "-Fn"], capture_output=True, timeout=LSOF_TIMEOUT_SEC, check=False,
+                                  env=unityguard.utf8_environment(os_name))
+            found = parse_lsof_cwd(done.stdout)
+        except (OSError, subprocess.SubprocessError, ValueError):
             return None
-        text = done.stdout.decode("utf-8", "replace")
-        found = parse_lsof_cwd(text)
         return found if found else None  # lsof exits 1 when some process cannot be read; an empty answer is no answer
     return {}
 
@@ -345,7 +362,7 @@ def _mentions(text: str, needles: Sequence[str]) -> bool:
             if index < 0:
                 break
             end = index + len(needle)
-            if end == len(hay) or hay[end] in _BOUNDARY:
+            if end == len(hay) or hay[end] not in _NAME_CHARACTERS:  # `;`, `,`, a quote, a separator: the name ends there
                 return True
             start = index + 1
     return False
@@ -364,11 +381,12 @@ def _family(processes: Sequence[Any]) -> set[int]:
     return seen
 
 
-def using_processes(folder: Path, processes: "Sequence[Any]") -> list[int]:
-    """Ids of the processes (other than this one and its ancestors) whose command line or executable names `folder` or a path in
-    it, or whose working directory (when the probe knows it) lies in it."""
+def using_processes(folder: Path, processes: "Sequence[Any]", exclude_caller: bool = True) -> list[int]:
+    """Ids of the processes whose command line or executable names `folder` or a path in it, or whose working directory (when the
+    probe knows it) lies in it. With `exclude_caller` this process and its ancestors do not count: right for an explicit `release`
+    or `adopt`, whose own command line names the folder; a sweep counts them (a build run inside a scratch copy cleans up the disk)."""
     needles = _needles(folder)
-    mine = _family(processes)
+    mine = _family(processes) if exclude_caller else set()
     found = []
     for proc in processes:
         if proc.pid in mine:
@@ -401,15 +419,16 @@ class _Processes:
         return self._value
 
 
-def activity(folder: Path, marker: dict, manager: lease.LeaseManager, processes: "_Processes") -> str | None:
-    """Why `folder` is in use (a held lease, a live process, or a process list that cannot be read), or None when it is idle."""
+def activity(folder: Path, marker: dict, manager: lease.LeaseManager, processes: "_Processes", exclude_caller: bool = True) -> str | None:
+    """Why `folder` is in use (a held lease, a live process, or a process list that cannot be read), or None when it is idle. See
+    `using_processes` for `exclude_caller`."""
     leases = held_leases(folder, marker, manager)
     if leases:
         return "a lease refers to it: " + "; ".join(leases)
     listed = processes.get()
     if listed is None:
         return "the process list cannot be read (or is incomplete), so a process using it cannot be ruled out"
-    pids = using_processes(folder, listed)
+    pids = using_processes(folder, listed, exclude_caller)
     if pids:
         return "a live process uses it (pid " + ", ".join(str(pid) for pid in pids) + ")"
     return None
@@ -507,6 +526,12 @@ def listing(roots: workroot.WorkRoots, clock: Callable[[], float] = time.time) -
         return []
     items = []
     for entry in sorted(base.iterdir()):
+        match = TOMBSTONE.fullmatch(entry.name)
+        if match:
+            items.append({"name": entry.name, "path": str(entry), "valid": False, "interruptedRemovalOf": match.group(1),
+                          "problem": f"an interrupted removal of {match.group(1)}; `valtrion workroot scratch release {match.group(1)}` "
+                                     "or the sweep finishes it under the usual checks"})
+            continue
         try:
             folder = locate(roots, entry.name)
             marker = read_marker(folder)
@@ -574,12 +599,59 @@ def _remove_checked(roots: workroot.WorkRoots, scratch_id: str) -> Path:
     return folder
 
 
+def tombstones(roots: workroot.WorkRoots, scratch_id: str | None = None) -> list[tuple[Path, str]]:
+    """The interrupted removals in `scratch/` (`.removing-<id>-<hex>`, left by a crash during a removal), with their id; only those of
+    `scratch_id` when given. Each must still pass the path and marker checks before anything is done with it."""
+    try:
+        base = _scratch_root(roots)
+    except ScratchError:
+        return []
+    if not base.is_dir():
+        return []
+    found = []
+    for entry in sorted(base.iterdir()):
+        match = TOMBSTONE.fullmatch(entry.name)
+        if match and (scratch_id is None or match.group(1) == scratch_id):
+            found.append((entry, match.group(1)))
+    return found
+
+
+def _finish_tombstone(roots: workroot.WorkRoots, tombstone: Path, scratch_id: str, who: Caller, any_owner: bool,
+                      manager: lease.LeaseManager, processes: "_Processes", exclude_caller: bool, dry_run: bool) -> str:
+    """Finish an interrupted removal under the same guards as a release (path, marker naming `scratch_id`, owner, use)."""
+    base = _scratch_root(roots)
+    _check_place(base, tombstone)
+    marker = read_marker(tombstone, scratch_id)
+    problem = owner_problem(tombstone, marker, who, any_owner)
+    if problem:
+        raise ScratchError(f"{tombstone} {problem}")
+    busy = activity(tombstone, marker, manager, processes, exclude_caller)
+    if busy:
+        raise ScratchError(f"{tombstone} is in use: {busy}; it is kept")
+    if not dry_run:
+        _check_place(base, tombstone)
+        read_marker(tombstone, scratch_id)
+        _remove_contents(tombstone)
+    return str(tombstone)
+
+
 def release(roots: workroot.WorkRoots, scratch_id: str, who: Caller, *, any_owner: bool = False, dry_run: bool = False,
             manager: lease.LeaseManager | None = None, processes: ProcessList | None = None,
             run: workroot.Runner = workroot.run_git) -> str:
-    """Remove exactly the scratch folder `scratch_id`, after every guard of the module text. Returns its path; raises ScratchError
-    with the reason when it is refused."""
-    folder = locate(roots, scratch_id)
+    """Remove exactly the scratch folder `scratch_id`, after every guard of the module text, or finish an interrupted removal of it
+    (a tombstone `.removing-<id>-<hex>`). Returns its path; raises ScratchError with the reason when it is refused."""
+    try:
+        folder = locate(roots, scratch_id)
+    except ScratchError:
+        left = tombstones(roots, scratch_id) if isinstance(scratch_id, str) and SCRATCH_ID.fullmatch(scratch_id) else []
+        if not left:
+            raise
+        listed = _Processes(processes)
+        done = [_finish_tombstone(roots, path, scratch_id, who, any_owner, manager or lease.LeaseManager(), listed, True, dry_run)
+                for path, _ in left]
+        if not dry_run:
+            workroot.prune_mirrors(roots, run)
+        return done[0]
     marker = read_marker(folder)
     problem = owner_problem(folder, marker, who, any_owner)
     if problem:
@@ -672,10 +744,12 @@ def due(marker: dict, active_jobs: Sequence[str], now: float, job_state_of: JobS
 def sweep(roots: workroot.WorkRoots, who: Caller, active_jobs: Sequence[str], idle_sec: float, *, any_owner: bool = False,
           dry_run: bool = False, manager: lease.LeaseManager | None = None, processes: ProcessList | None = None,
           clock: Callable[[], float] = time.time, run: workroot.Runner = workroot.run_git, job_state_of: JobState | None = None,
-          walk_budget_sec: float = IDLE_WALK_BUDGET_SEC) -> SweepReport:
+          walk_budget_sec: float = IDLE_WALK_BUDGET_SEC, protected: Sequence["Path | str"] = ()) -> SweepReport:
     """Remove the scratch folders that are due (`due`) and in which nothing changed for `idle_sec` (`newest_change`), under every
-    guard of the module text. An active or unexpired one, one in use, one that cannot be shown idle and one of another owner
-    (unless `any_owner`) or host user stay, each with its reason."""
+    guard of the module text. An active or unexpired one, one in use (the calling process and its ancestors count as users here),
+    one that is, holds or lies inside a `protected` path or the current working directory, one that cannot be shown idle and one
+    of another owner (unless `any_owner`) or host user stay, each with its reason. Interrupted removals (tombstones) are finished
+    under the same guards."""
     report = SweepReport()
     try:
         base = _scratch_root(roots)
@@ -687,7 +761,28 @@ def sweep(roots: workroot.WorkRoots, who: Caller, active_jobs: Sequence[str], id
     listed = _Processes(processes)
     leases = manager or lease.LeaseManager()
     now = clock()
+    guarded = [_real(Path(path)) for path in [*protected, os.getcwd()]]
+
+    def overlaps(folder: Path) -> str | None:
+        real = _real(folder)
+        for path in guarded:
+            if _inside(path, real) or _inside(real, path):
+                return path
+        return None
+
     for entry in sorted(base.iterdir()):
+        match = TOMBSTONE.fullmatch(entry.name)
+        if match:
+            if overlaps(entry):
+                report.kept.append((str(entry), "an interrupted removal that a protected path or the working directory overlaps"))
+                continue
+            try:
+                done = _finish_tombstone(roots, entry, match.group(1), who, any_owner, leases, listed, False, dry_run)
+            except (OSError, ScratchError) as error:
+                report.kept.append((str(entry), f"an interrupted removal, kept: {error}"))
+                continue
+            report.removed.append(f"{done} (scratch, finishing an interrupted removal of {match.group(1)})")
+            continue
         try:
             folder = locate(roots, entry.name)
             marker = read_marker(folder)
@@ -703,6 +798,11 @@ def sweep(roots: workroot.WorkRoots, who: Caller, active_jobs: Sequence[str], id
         if problem:
             report.kept.append((str(folder), problem))
             continue
+        overlap = overlaps(folder)
+        if overlap:
+            report.kept.append((str(folder), f"{why}, but it overlaps {overlap} (a protected path, the project of the running job "
+                                             "or the working directory)"))
+            continue
         changed = newest_change(folder, walk_budget_sec)
         if changed is None:
             report.kept.append((str(folder), f"{why}, but its tree could not be walked within {walk_budget_sec:g} s, so it counts as in use"))
@@ -710,7 +810,7 @@ def sweep(roots: workroot.WorkRoots, who: Caller, active_jobs: Sequence[str], id
         if changed > now - idle_sec:
             report.kept.append((str(folder), f"{why}, but something in it changed within the last {idle_sec / 3600:g} h"))
             continue
-        busy = activity(folder, marker, leases, listed)
+        busy = activity(folder, marker, leases, listed, exclude_caller=False)
         if busy:
             report.kept.append((str(folder), f"in use: {busy}"))
             continue
@@ -769,8 +869,13 @@ def unowned(roots: workroot.WorkRoots, manager: lease.LeaseManager | None = None
         base = None  # a linked scratch folder is itself listed above
     if base is not None and base.is_dir():
         for item in sorted(base.iterdir()):
+            match = TOMBSTONE.fullmatch(item.name)
             try:
-                read_marker(locate(roots, item.name))
+                if match:  # an interrupted removal with a valid marker is valtrion's: release or the sweep finish it
+                    _check_place(base, item)
+                    read_marker(item, match.group(1))
+                else:
+                    read_marker(locate(roots, item.name))
             except ScratchError as error:
                 entries.append((f"scratch/{item.name}", item, str(error)))
     if not entries:
@@ -809,33 +914,83 @@ def describe_unowned(item: dict) -> str:
     elif item["processes"]:
         use.append("used by pid " + ", ".join(str(pid) for pid in item["processes"]))
     state = ", ".join(use) if use else "no lease or process refers to it"
-    return (f"unowned work-root entry {item['name']} ({item['kind']}, {amount}, idle {item['ageHours']:g} h, {state}): valtrion never "
-            "removes it; its owner either removes it or, after checking it holds nothing to keep, confirms `valtrion workroot adopt` "
-            "for it so it expires as a scratch directory")
+    head = f"unowned work-root entry {item['name']} ({item['kind']}, {amount}, idle {item['ageHours']:g} h, {state}): valtrion never removes it; "
+    if str(item["name"]).startswith("scratch/"):  # adopt takes only direct entries of the work root
+        return head + f"it has no valid scratch marker ({item.get('reason', 'unknown')}), so only its owner can remove it"
+    return head + ("its owner either removes it or, after checking it holds nothing to keep, confirms `valtrion workroot adopt` for it "
+                   "so it expires as a scratch directory")
 
 
-def unsaved_work(folder: Path, run: workroot.Runner = workroot.run_git) -> list[str]:
-    """What would be lost in the git repositories of `folder` (the folder itself and its direct subfolders): uncommitted or untracked
-    changes, stashes, commits that are on no remote. A repository git cannot answer for counts as unsaved."""
-    repos = [folder]
-    try:
-        repos += [child for child in sorted(folder.iterdir()) if child.is_dir() and not is_link(child)]
-    except OSError as error:
-        return [f"{folder} cannot be read: {error}"]
+def _looks_bare(path: Path) -> bool:
+    """A folder laid out like a bare repository (`HEAD` file, `objects/` and `refs/`)."""
+    return (path / "HEAD").is_file() and (path / "objects").is_dir() and (path / "refs").is_dir()
+
+
+def find_repositories(folder: Path, budget_sec: float = ADOPT_SEARCH_BUDGET_SEC,
+                      monotonic: Callable[[], float] = time.monotonic) -> tuple[list[Path], list[Path]] | None:
+    """The git repositories anywhere in the tree of `folder` (links not followed): (working trees, which have a `.git` folder or
+    file; bare repositories). None when the search did not finish within `budget_sec` or a folder cannot be read."""
+    deadline = monotonic() + budget_sec
+    trees: list[Path] = []
+    bare: list[Path] = []
+    pending = [folder]
+    while pending:
+        if monotonic() > deadline:
+            return None
+        current = pending.pop()
+        if _looks_bare(current):
+            bare.append(current)
+            continue  # its objects and refs are not working trees
+        try:
+            with os.scandir(current) as entries:
+                children = list(entries)
+        except OSError:
+            return None
+        if any(child.name == ".git" for child in children):
+            trees.append(current)
+        for child in children:
+            try:
+                if child.name != ".git" and child.is_dir(follow_symlinks=False) and not is_link(Path(child.path)):
+                    pending.append(Path(child.path))
+            except OSError:
+                return None
+    return sorted(trees), sorted(bare)
+
+
+def unsaved_work(folder: Path, run: workroot.Runner = workroot.run_git,
+                 budget_sec: float = ADOPT_SEARCH_BUDGET_SEC) -> list[str]:
+    """What would be lost in the git repositories anywhere in `folder`: in a working tree uncommitted or untracked changes,
+    stashes and commits that are on no remote; in a bare repository any branch or tag that is on no remote, or no remote at all. A
+    repository git cannot answer for, and a tree that cannot be searched within `budget_sec`, count as unsaved. Ignored files
+    (`Library/`, build output) are not counted: they are what the repository says can be made again."""
+    found = find_repositories(folder, budget_sec)
+    if found is None:
+        return [f"{folder} could not be searched for git repositories within {budget_sec:g} s"]
+    trees, bare = found
     problems = []
-    for repo in repos:
-        if not (repo / ".git").exists():
-            continue
-        checks = (("status", ["status", "--porcelain"], "uncommitted or untracked changes"),
-                  ("stash", ["stash", "list"], "stashed changes"),
-                  ("rev-list", ["rev-list", "--max-count=1", "HEAD", "--branches", "--not", "--remotes"], "commits that are on no remote"))
+
+    def check(repo: Path, checks) -> None:
         for name, argv, meaning in checks:
             code, output = run(argv, repo)
             if code != 0:
                 problems.append(f"{repo}: git {name} failed ({' '.join(output.split())[:120]})")
-                break
-            if output.strip():
-                problems.append(f"{repo}: {meaning}")
+                return
+            if (output.strip() != "") if meaning else (output.strip() == ""):
+                problems.append(f"{repo}: {meaning or 'a bare repository without any remote'}")
+
+    for repo in trees:
+        check(repo, (("status", ["status", "--porcelain"], "uncommitted or untracked changes"),
+                     ("stash", ["stash", "list"], "stashed changes"),
+                     ("rev-list", ["rev-list", "--max-count=1", "HEAD", "--branches", "--tags", "--not", "--remotes"],
+                      "commits that are on no remote")))
+    for repo in bare:
+        code, output = run(["rev-parse", "--is-bare-repository"], repo)
+        if code != 0 or output.strip() != "true":
+            problems.append(f"{repo}: looks like a bare git repository but git cannot read it")
+            continue
+        check(repo, (("remote", ["remote"], ""),
+                     ("rev-list", ["rev-list", "--max-count=1", "--branches", "--tags", "--not", "--remotes"],
+                      "branches or tags that are on no remote")))
     return problems
 
 

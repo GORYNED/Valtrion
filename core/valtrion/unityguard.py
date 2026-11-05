@@ -210,9 +210,23 @@ Runner = Callable[[Sequence[str], float], "str | None"]
 PROBE_TIMEOUT_SEC = 30.0
 
 
+def utf8_environment(os_name: str | None = None) -> dict | None:
+    """The environment for a probe whose output must be UTF-8 on POSIX: `LC_ALL` set to a UTF-8 locale (macOS `en_US.UTF-8`,
+    elsewhere `C.UTF-8`). Over SSH or under launchd the locale is often `C`, and then `ps` prints non-ASCII bytes vis-encoded
+    (`M-P...`) and lsof as `\\xNN`, so a path with such characters would match nothing. None (inherit) on Windows."""
+    os_name = os_name or core.local_os()
+    if os_name == "windows":
+        return None
+    return {**os.environ, "LC_ALL": "en_US.UTF-8" if os_name == "macos" else "C.UTF-8"}
+
+
 def run_text(argv: Sequence[str], timeout_sec: float = PROBE_TIMEOUT_SEC) -> str | None:
+    """Run a probe and return its standard output as text (UTF-8), or None when it failed. On Windows the child gets a console of
+    its own (`CREATE_NO_WINDOW`): PowerShell switching its output encoding to UTF-8 must not switch the caller's console code page,
+    which it shares otherwise and which stays switched after it exits."""
+    options: dict = {"creationflags": subprocess.CREATE_NO_WINDOW} if os.name == "nt" else {"env": utf8_environment()}
     try:
-        result = subprocess.run(list(argv), capture_output=True, timeout=timeout_sec, check=False)
+        result = subprocess.run(list(argv), capture_output=True, timeout=timeout_sec, check=False, **options)
     except (OSError, subprocess.SubprocessError):
         return None
     if result.returncode != 0:
@@ -242,7 +256,8 @@ class SystemProbe(Probe):
     def _powershell(self, command: str) -> str | None:
         shell = shutil.which("powershell") or shutil.which("pwsh") or "powershell"
         # Without this, redirected output is in the console's OEM code page, and every character outside it (a Cyrillic user
-        # folder, so the default work root) arrives as `?`: a command line that names such a folder would match nothing.
+        # folder, so the default work root) arrives as `?`: a command line that names such a folder would match nothing. The
+        # setting changes the code page of the console PowerShell runs in, so `run_text` gives it a console of its own.
         utf8 = "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; "
         return self._run([shell, "-NoProfile", "-NonInteractive", "-Command", utf8 + command], self.timeout_sec)
 

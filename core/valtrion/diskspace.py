@@ -118,11 +118,12 @@ def largest_consumers(settings: config.HostSettings, home: Path | None, limit: i
 
 
 def ensure_free(settings: config.HostSettings, home: Path | None, protected: Sequence[str] = (),
-                free: Callable[[Path], int] | None = None, keep_incremental: bool = False) -> Outcome:
+                free: Callable[[Path], int] | None = None, keep_incremental: bool = False, busy: Sequence["str | Path"] = ()) -> Outcome:
     """Make sure the work root's volume has `settings.min_free_gib` free; clean up when it has not. Returns `ok` when there is enough
     space (or no threshold is set), otherwise the BLOCKED reason. `free` is injectable for tests (a fake volume). With
     `keep_incremental` the persistent build folders are left alone (a job that is only waiting for space does not hold its checkout's
-    lease, so its own folder would look idle)."""
+    lease, so its own folder would look idle). `busy` are folders the calling job works in (its project folder): no scratch copy that
+    is, holds or lies inside one of them, or inside a `protected` path, is removed."""
     if not settings.min_free_gib:
         return Outcome(True)
     free = free or free_bytes
@@ -145,7 +146,8 @@ def ensure_free(settings: config.HostSettings, home: Path | None, protected: Seq
         # use, unexpired or not shown idle always stays.
         ("expired scratch directories", lambda: scratch.sweep(
             settings.roots, scratch.caller(), active, PRESSURE_STALE_SEC, any_owner=True,
-            manager=lease.LeaseManager(home or core.valtrion_home()), job_state_of=lambda job: scratch.job_state(job, home)).removed),
+            manager=lease.LeaseManager(home or core.valtrion_home()), job_state_of=lambda job: scratch.job_state(job, home),
+            protected=[*protected, *busy]).removed),
         ("expired run folders", lambda: artifacts.gc(settings.artifacts_root, settings.keep_days_under_pressure,
                                                     protected=protected_paths).removed),
         ("expired builds", lambda: buildcache.gc(buildcache.builds_root(home), protect=active_build_keys(home, active),
@@ -184,7 +186,8 @@ def releasable_bytes(settings: config.HostSettings, home: Path | None, own_job_i
 
 def wait_for_space(settings: config.HostSettings, home: Path | None, protected: Sequence[str], wait_sec: float, own_job_id: str,
                    on_wait: Callable[[Outcome, float], None] | None = None, cancelled: Callable[[], bool] = lambda: False,
-                   free: Callable[[Path], int] | None = None, poll_sec: float | None = None) -> Outcome:
+                   free: Callable[[Path], int] | None = None, poll_sec: float | None = None,
+                   busy: Sequence["str | Path"] = ()) -> Outcome:
     """Like `ensure_free`, but when the space is still short after the cleanup, wait up to `wait_sec` for it, cleaning up and
     checking again every `poll_sec`. Ends at once, without waiting, when the space could not suffice even if every other active job
     finished (`releasable_bytes`) and the idle persistent build folders were released: waiting cannot help then. Those folders are
@@ -198,7 +201,7 @@ def wait_for_space(settings: config.HostSettings, home: Path | None, protected: 
     while True:
         if cancelled():
             return Outcome(False, "cancelled by request", tuple(removed), cancelled=True)
-        outcome = ensure_free(settings, home, protected, free, keep_incremental=True)
+        outcome = ensure_free(settings, home, protected, free, keep_incremental=True, busy=busy)
         removed.extend(outcome.removed)
         if outcome.ok:
             return Outcome(True, None, tuple(removed), outcome.free_before, outcome.free_after)
