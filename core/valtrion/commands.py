@@ -1281,9 +1281,13 @@ def _workroot(arguments: argparse.Namespace) -> int:
                 return _blocked("workroot", "adopt moves the folder into scratch/ and lets valtrion remove it once it expires; the owner "
                                             "confirms that with --yes")
             hours = settings.scratch_max_age_hours if arguments.ttl_hours is None else arguments.ttl_hours
+            adopt_warnings: list[str] = []
             folder, marker = scratch.adopt(roots, arguments.path, scratch.caller(), max_age_hours=hours, name=arguments.name,
-                                           discard_unsaved_work=arguments.discard_unsaved_work)
-            _out({"scratch": str(folder), "id": marker["id"], "expiresUtc": marker["expiresUtc"], "adoptedFrom": marker["adoptedFrom"]})
+                                           discard_unsaved_work=arguments.discard_unsaved_work, warnings=adopt_warnings)
+            data = {"scratch": str(folder), "id": marker["id"], "expiresUtc": marker["expiresUtc"], "adoptedFrom": marker["adoptedFrom"]}
+            if adopt_warnings:
+                data["warnings"] = adopt_warnings
+            _out(data)
             return constants.EXIT_PASS
         if arguments.action == "inbox":
             folder = roots.inbox()

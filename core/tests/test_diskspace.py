@@ -112,6 +112,20 @@ class DiskTests(unittest.TestCase):
         self.assertTrue(other.is_dir(), "the project folder of another active job stays")
         self.assertTrue(own.is_dir(), "an expired copy of a job that still runs stays")
 
+    def test_the_scratch_step_removes_nothing_when_an_active_jobs_spec_cannot_be_read(self):
+        from valtrion import scratch
+        folder = self.expired_scratch("any", 4)
+        run_dir = self.base / "runs" / "job-b"
+        run_dir.mkdir(parents=True)
+        (run_dir / "spec.json").write_text("{broken", encoding="utf-8")
+        core.atomic_write_json(jobs.index_path("job-b", self.home), {"dir": str(run_dir)})
+        me = [mock.Mock(pid=os.getpid(), ppid=0, path="python", command="python", cwd=None)]
+        with mock.patch.object(scratch, "system_processes", lambda: me), \
+                mock.patch.object(jobs, "active_job_ids", return_value=["job-b"]):
+            outcome = diskspace.ensure_free(self.settings, self.home, free=self.volume)
+        self.assertTrue(folder.is_dir(), outcome.removed)
+        self.assertFalse(any("scratch" in item for item in outcome.removed))
+
     def test_the_scratch_step_keeps_a_copy_the_calling_process_runs_in(self):
         from valtrion import scratch
         folder = self.expired_scratch("mine", 4)

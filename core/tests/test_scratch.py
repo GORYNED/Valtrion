@@ -889,9 +889,10 @@ class ActiveJobTests(ScratchBase):
         self.assertIsNone(scratch.due(core.read_json(folder / scratch.MARKER), ["job-b"], time.time() + 10 ** 6))
 
     def test_the_folders_of_active_jobs_are_read_from_their_specs(self):
-        self.index_job("job-b", {"projectDir": "/x/project", "cwd": "/x/cwd"})
+        project, cwd = str(self.base / "x" / "project"), str(self.base / "x" / "cwd")
+        self.index_job("job-b", {"projectDir": project, "cwd": cwd})
         self.index_job("job-c", {})
-        self.assertEqual(["/x/project", "/x/cwd"], jobs.active_job_folders(self.home, ["job-b", "job-c", "job-missing"]))
+        self.assertEqual([project, cwd], jobs.active_job_folders(self.home, ["job-b", "job-c", "job-missing"]))
 
     def test_the_cli_sweep_keeps_the_project_of_another_active_job(self):
         folder, _ = self.make("other")
@@ -938,12 +939,81 @@ class ActiveJobTests(ScratchBase):
 
     def test_a_tree_too_large_to_search_for_projects_counts_as_in_use(self):
         folder, marker = self.make("big")
-        with mock.patch.object(scratch, "PROJECT_SEARCH_BUDGET_SEC", -1), \
-                mock.patch.object(scratch.project_folders, "__defaults__", (-1, time.monotonic)):
+        elsewhere = self.base / "OtherProject"
+        self.manager.acquire(lease.unity_project_resource(elsewhere), "agent", "s1", 600, "by hand", os.getpid())  # no worktree
+        with mock.patch.object(scratch.project_folders, "__defaults__", (-1, time.monotonic)):
             with self.assertRaises(scratch.ScratchError) as caught:
                 self.release(marker["id"])
         self.assertIn("could not be searched", str(caught.exception))
         self.assertTrue(folder.is_dir())
+
+    def test_without_a_held_project_lease_lacking_a_worktree_nothing_is_searched(self):
+        folder, marker = self.make("quick")
+        (self.roots.root / "stray").mkdir()
+        recorded = self.base / "Recorded"
+        self.manager.acquire(lease.unity_project_resource(recorded), "agent", "s1", 600, "job", os.getpid(), worktree=str(recorded))
+        with mock.patch.object(scratch.project_folders, "__defaults__", (-1, time.monotonic)):
+            entries = scratch.unowned(self.roots, self.manager, no_processes)
+            self.assertEqual([], entries[0]["leases"], "no search, no false 'unknown'")
+            self.release(marker["id"])
+        self.assertFalse(folder.exists())
+
+    def test_a_held_project_lease_under_temp_is_found(self):
+        folder, marker = self.make("temp")
+        project = folder / "checkout" / "Temp" / "Proj"
+        (project / "ProjectSettings").mkdir(parents=True)
+        self.manager.acquire(lease.unity_project_resource(project), "agent", "s1", 600, "build", os.getpid())
+        with self.assertRaises(scratch.ScratchError):
+            self.release(marker["id"])
+        self.assertTrue(folder.is_dir())
+
+    def test_an_active_job_with_a_broken_or_missing_spec_keeps_everything(self):
+        folder, _ = self.make("x")
+        self.expire(folder)
+        for text in ("{not json", None):
+            directory = self.base / "runs" / "job-b"
+            directory.mkdir(parents=True, exist_ok=True)
+            spec = directory / "spec.json"
+            if text is None:
+                if spec.exists():
+                    os.replace(spec, directory / "spec.moved")
+            else:
+                spec.write_text(text, encoding="utf-8")
+            core.atomic_write_json(jobs.index_path("job-b", self.home), {"dir": str(directory)})
+            report = self.sweep(active=["job-b"])
+            self.assertEqual([], report.removed)
+            self.assertIn("nothing is swept", " ".join(reason for _, reason in report.kept))
+            self.assertTrue(folder.is_dir())
+        self.assertEqual(1, len(self.sweep(active=["job-gone"]).removed), "an id without an index entry has ended: skipped")
+
+    def test_a_relative_job_cwd_resolves_against_the_jobs_own_folder(self):
+        folder, _ = self.make("rel")
+        (folder / "checkout").mkdir()
+        self.expire(folder)
+        run_dir = self.base / "runs" / "job-r"
+        run_dir.mkdir(parents=True)
+        relative = os.path.relpath(folder / "checkout", run_dir)
+        core.atomic_write_json(run_dir / "spec.json", {"jobId": "job-r", "payload": {"cwd": relative}})
+        core.atomic_write_json(jobs.index_path("job-r", self.home), {"dir": str(run_dir)})
+        self.assertEqual([], self.sweep(active=["job-r"]).removed)
+        self.assertTrue(folder.is_dir())
+
+    def test_an_expired_copy_of_an_active_job_says_why_it_stays(self):
+        self.jobs["job-a"] = "running"
+        folder, _ = self.make("why", job="job-a")
+        self.expire(folder)
+        self.assertEqual("its job job-a is still active", dict(self.sweep(active=["job-a"]).kept)[str(folder)])
+
+    @unittest.skipIf(os.name == "nt", "POSIX modes")
+    def test_a_chmod_failure_during_adopt_is_a_warning_and_nothing_is_lost(self):
+        stray = self.roots.root / "stray"
+        stray.mkdir()
+        warnings = []
+        with mock.patch.object(scratch.os, "chmod", side_effect=PermissionError("no modes here")):
+            folder, marker = scratch.adopt(self.roots, stray, self.me, max_age_hours=1, manager=self.manager,
+                                           processes=no_processes, warnings=warnings)
+        self.assertTrue((folder / scratch.MARKER).is_file())
+        self.assertIn("owner-only", warnings[0])
 
     def test_the_job_runner_records_the_project_folder_on_its_project_lease(self):
         project = self.base / "proj"

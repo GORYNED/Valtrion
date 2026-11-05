@@ -67,7 +67,8 @@ SCRATCH_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,39}-[0-9a-f]{8}")
 #: How long the search for Unity projects (folders with `ProjectSettings/`, for their `unity-project:` lease) in one folder may take;
 #: a folder not searched within it counts as in use.
 PROJECT_SEARCH_BUDGET_SEC = 30.0
-_SKIP_WHEN_LOOKING_FOR_PROJECTS = {".git", "library", "temp", "logs", "obj", "node_modules"}
+#: Only folders that never hold a Unity project of their own: a project under `Temp/` or `obj/` is unusual but possible.
+_SKIP_WHEN_LOOKING_FOR_PROJECTS = {".git", "library"}
 #: The characters a scratch id (and so the last part of a scratch path) can contain; any other character ends a path's name.
 _NAME_CHARACTERS = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-")
 TOMBSTONE = re.compile(re.escape(".removing-") + r"([A-Za-z0-9][A-Za-z0-9._-]{0,39}-[0-9a-f]{8})-[0-9a-f]{8}")
@@ -352,15 +353,18 @@ def _inside(path: str, folder: str) -> bool:
 def held_leases(folder: Path, marker: dict, manager: lease.LeaseManager) -> list[str]:
     """The held leases that refer to `folder`: the `unity-project:` lease of the folder or a Unity project in it, a lease whose
     worktree lies inside it, and the lease the marker depends on. A stale lease (dead holder, expired TTL) does not count."""
-    wanted = {lease.unity_project_resource(path) for path in project_folders(folder)}
+    held = [status for status in manager.list_all() if status.state == "held"]
+    # A project lease that names its folder (`worktree`, as jobs and `unity run` record it) is matched below without any search. Only
+    # a held project lease without one (taken by hand, or by an older valtrion) needs the search for the projects in the folder.
+    blind = any(status.resource.startswith("unity-project:") and not (status.record and status.record.worktree) for status in held)
+    places = project_folders(folder) if blind else [folder, folder / CHECKOUT]
+    wanted = {lease.unity_project_resource(path) for path in places}
     depends = marker.get("lease")
     if isinstance(depends, str) and depends:
         wanted.add(depends)
     real = _real(folder)
     found = []
-    for status in manager.list_all():
-        if status.state != "held":
-            continue
+    for status in held:
         record = status.record
         inside = bool(record and record.worktree and _inside(_real(Path(record.worktree)), real))
         if status.resource in wanted or inside:
@@ -825,6 +829,10 @@ def sweep(roots: workroot.WorkRoots, who: Caller, active_jobs: Sequence[str], id
             continue
         why = due(marker, active_jobs, now, job_state_of)
         if why is None:
+            job = marker.get("job")
+            if isinstance(job, str) and job and job in set(active_jobs):
+                report.kept.append((str(folder), f"its job {job} is still active"))
+                continue
             until = marker.get("expiresUtc") if _expires(marker) is not None else "never: no readable expiry"
             report.kept.append((str(folder), f"not expired (until {until})"))
             continue
@@ -1032,7 +1040,8 @@ def unsaved_work(folder: Path, run: workroot.Runner = workroot.run_git,
 
 def adopt(roots: workroot.WorkRoots, path: Path, who: Caller, *, max_age_hours: float, name: str | None = None,
           discard_unsaved_work: bool = False, manager: lease.LeaseManager | None = None, processes: ProcessList | None = None,
-          clock: Callable[[], datetime] = core.now, run: workroot.Runner = workroot.run_git) -> tuple[Path, dict]:
+          clock: Callable[[], datetime] = core.now, run: workroot.Runner = workroot.run_git,
+          warnings: "list[str] | None" = None) -> tuple[Path, dict]:
     """Make the unowned folder `path` (a direct entry of the work root; a relative path is taken below the work root) a scratch
     folder: move it to `scratch/<name>-<hex>` and write its marker, so the normal expiry applies. Refused for a link or junction, a
     path that resolves anywhere else, one of Valtrion's folders, another host user's folder, a folder in use and, unless
@@ -1062,12 +1071,17 @@ def adopt(roots: workroot.WorkRoots, path: Path, who: Caller, *, max_age_hours: 
             raise ScratchError(f"{candidate} holds work that exists nowhere else ({'; '.join(unsaved)}); save it first, or pass "
                                "--discard-unsaved-work to adopt it anyway (it is then removed when it expires)")
     label = name if name is not None else (core.safe_segment(candidate.name, "adopted", 40).rstrip(".") or "adopted")
-    folder, scratch_id = _new_folder(roots, label)
-    os.replace(candidate, folder)  # the same volume: scratch/ is inside the work root
     if os.name != "nt":
         # Owner-only, like a created copy: the process checks cannot see what other host users run (lsof and /proc show only the
-        # caller's processes), so nobody else should be able to work in it unseen.
-        os.chmod(folder, 0o700)
+        # caller's processes), so nobody else should be able to work in it unseen. Done before the move, so a failure leaves the
+        # folder where it was; a file system without POSIX modes (SMB, exFAT) only earns a warning.
+        try:
+            os.chmod(candidate, 0o700)
+        except OSError as error:
+            if warnings is not None:
+                warnings.append(f"{candidate} could not be made owner-only ({error}); other host users may work in it unseen")
+    folder, scratch_id = _new_folder(roots, label)
+    os.replace(candidate, folder)  # the same volume: scratch/ is inside the work root
     marker = _marker(scratch_id, label, who, "workroot adopt", clock(), hours, adoptedFrom=str(candidate))
     try:
         core.atomic_write_json(folder / MARKER, marker)
