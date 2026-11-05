@@ -81,7 +81,8 @@ Install and integrate
    project: ?path=integrations/unity/com.goryned.valtrion.unity#unity-vX.Y.Z (a release
    tag whose compat.json range includes the installed Core) or #<full SHA>. A local file: path is acceptable for a disposable verification but do
    not commit an absolute path. Preserve existing dependencies and testables.
-   Add com.goryned.valtrion.unity to testables for PlanTest; use the project's
+   For package 0.10.0 and earlier add com.goryned.valtrion.unity to testables for
+   PlanTest; from 0.11.0 on PlanTest needs no testables entry (remove it). Use the project's
    compatible Test Framework version (Valtrion's test project uses 1.8.0).
 5. Reuse suitable existing tests, or copy examples/unity-smoke into a dedicated
    Assets/Validation test folder. Its assembly is Valtrion.SmokeTests. Copy
@@ -111,7 +112,7 @@ Verify in Unity
    the intended plan ID, target.evidence=editor and expected steps. Report every
    unverified field. This smoke proves wiring, not game correctness or physical
    device performance. Run the project's relevant existing regression tests too.
-   With the package in testables, its deliberately malformed test.badsignature
+   With package 0.10.0 in testables, its deliberately malformed test.badsignature
    fixture can also appear as an ignored registration warning under unverified.
    Record that diagnostic and unknown candidate/host metadata explicitly; do not
    hide them or treat unrelated warnings as expected. They do not replace the

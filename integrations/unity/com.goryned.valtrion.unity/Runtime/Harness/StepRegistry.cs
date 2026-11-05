@@ -55,13 +55,17 @@ namespace Valtrion.Unity.Harness
 
         public bool TryGet(string type, out StepHandler handler) => _handlers.TryGetValue(type, out handler);
 
-        /// <summary>Registers every <see cref="ValidationStepAttribute"/> method of the loaded assemblies except this one.</summary>
+        /// <summary>The package's plan test helper; it holds no steps and references the Test Framework, so discovery never loads its types.</summary>
+        internal const string PlanTestHelperAssembly = "Valtrion.Unity.PlayModeTests";
+
+        /// <summary>Registers every <see cref="ValidationStepAttribute"/> method of the loaded assemblies except this one and the package's plan test helper.</summary>
         public int Discover()
         {
             var found = 0;
             foreach (var assembly in AppDomain.CurrentDomain.GetAssemblies())
             {
-                if (assembly.IsDynamic || assembly == typeof(StepRegistry).Assembly || IsPlatformAssembly(assembly.GetName().Name))
+                if (assembly.IsDynamic || assembly == typeof(StepRegistry).Assembly || IsPlatformAssembly(assembly.GetName().Name)
+                    || assembly.GetName().Name == PlanTestHelperAssembly)
                     continue;
                 try
                 {
