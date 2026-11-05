@@ -1,7 +1,7 @@
 # Valtrion Unity
 
 Unity is Valtrion's first and currently only ready application integration. Valtrion manages repeatable checks and their
-execution evidence; Core also supervises ordinary processes without Unity. This package (0.11.1) ships the **contracts** (C# readers and writers for the Valtrion JSON documents) and the
+execution evidence; Core also supervises ordinary processes without Unity. This package (0.11.2) ships the **contracts** (C# readers and writers for the Valtrion JSON documents) and the
 development-only Runtime **harness** (plan inbox, runner, steps, probes, result writer). The host CLI, the JSON Schemas and the
 golden fixtures live in the repository root (`core/` and `contracts/`); see the repository `docs/` for the CLI.
 
@@ -33,7 +33,7 @@ same reviewed checkout as Core. Add a local path to `Packages/manifest.json` for
 
 For a shared project, use `https://github.com/GORYNED/Valtrion.git?path=integrations/unity/com.goryned.valtrion.unity#<full-reviewed-commit-sha>`
 with the full SHA substituted; do not commit an absolute local path. Public HTTPS Git installation needs no GitHub account or token; private forks require existing access. This package is
-MIT licensed; the notice is included in `LICENSE.md`. Core 0.14.0 and this package 0.11.1 are paired by `compat.json`; identical
+MIT licensed; the notice is included in `LICENSE.md`. Core 0.14.0 and this package 0.11.2 are paired by `compat.json`; identical
 version numbers are not required. The repository tests use Unity Test Framework 1.8.0; the repository's test Editor is specified in
 `integrations/unity/UnityProject/ProjectSettings/ProjectVersion.txt`.
 
@@ -42,7 +42,7 @@ version numbers are not required. The repository tests use Unity Test Framework 
 | Path | Content |
 | --- | --- |
 | `Runtime/` | `Valtrion.Unity`: `Contracts/` (documents), `Json/` (value tree, parser, writer), `Harness/` (inbox, runner, steps, result writer, ledger) and `Probes/` |
-| `Runtime/link.xml` | preserves the `Valtrion.Unity` assembly from IL2CPP stripping |
+| `Runtime/AssemblyInfo.cs` | `[assembly: AlwaysLinkAssembly]`: keeps `Valtrion.Unity` in IL2CPP players although nothing references it (see below) |
 | `Editor/` | `Valtrion.Unity.Editor`: `PlanTestBuildAssemblyFilter`, which keeps the plan test helper out of player builds that do not include test assemblies |
 | `Testing/` | `Valtrion.Unity.PlayModeTests` (namespace `Valtrion.Unity.Testing`): `PlanTest.Run`, `NUnitXmlResultWriter`; an ordinary package assembly, no `testables` needed |
 
@@ -67,8 +67,8 @@ This package continues `com.goryned.unity.validation` 0.6.9. Consumers update as
 | namespaces `GORYNED.Validation[.Json\|.Contracts\|.Harness\|.Probes]` | `Valtrion.Unity[.Json\|.Contracts\|.Harness\|.Probes]` |
 
 Class names (`ValidationHarness`, `PlanTest`, `ValidationStepAttribute`, `PlanInbox`, ...) and all wire identifiers are unchanged.
-In asmdef references replace `GORYNED.Validation` by `Valtrion.Unity`; in a `link.xml` that preserves the assembly replace the
-`fullname` the same way.
+In asmdef references replace `GORYNED.Validation` by `Valtrion.Unity`; in a project `link.xml` that preserves the assembly replace the
+`fullname` the same way (from 0.11.2 such an entry is no longer needed for the harness itself).
 
 ## Statuses, evidence and exit codes
 
@@ -157,7 +157,10 @@ and returns. A Release player contains no type of the assembly. Start a run by h
   `gdv-out`; then, for the plan only, the inbox file `<persistentDataPath>/gdv/inbox/plan.json`. `-gdv-out`/`GDV_OUT_ROOT`/`gdv-out`
   replaces `<persistentDataPath>/gdv/out`: heartbeat, result, artifacts and the NUnit XML go to `<out>/<runId>/`. An explicit plan
   path that names no file ends the run as FAIL; it never falls back to another source. Without a run id it is `<plan id>-<utc>-<4 hex>`.
-  A consumed inbox file is renamed `<name>.done-<yyyyMMddTHHmmssZ>`. A legacy file is read only through an `ILegacyPlanConverter`
+  Every plan the harness runs is consumed: the file, whatever source named it (`-gdv-plan` included), is renamed
+  `<name>.done-<yyyyMMddTHHmmssZ>`. A second launch with the same `-gdv-plan` path therefore ends FAIL with `plan '<path>' given by
+  -gdv-plan does not exist: an earlier run already consumed it (renamed to '<name>.done-<utc>')`; give every launch, for example a
+  Mono and an IL2CPP player of the same project, its own fresh copy of the plan. A legacy file is read only through an `ILegacyPlanConverter`
   that the project adds to `PlanInbox.LegacyConverters`. A plan that fails the contract ends the run as FAIL with the reason.
 - **Run:** `setup` once, then `warmup` + `repeat` iterations of `steps`. Warm-up iterations run but contribute no metric samples and
   no recorded passing steps. Every step has its `timeoutSec` and the plan its `budgetSeconds`; the first non-PASS step ends the run
@@ -194,8 +197,15 @@ Probes: `FrameTimingProbe`, `ProfilerRecorderProbe` (`gc.allocBytes`, `mainThrea
 
 **Adding steps.** A project writes `[ValidationStep("app.openMenu")] static IEnumerator OpenMenu(StepContext context)`; the registry
 finds it by attribute in the loaded non-engine assemblies. In IL2CPP the method must survive stripping: preserve its assembly in a
-`link.xml` (this package's `Runtime/link.xml` preserves `Valtrion.Unity` itself), add `[UnityEngine.Scripting.Preserve]`, or skip
-reflection and call `StepRegistry.Register` from your own bootstrap.
+`link.xml` of the project (under `Assets/`; UnityLinker does not read a `link.xml` inside a package), add
+`[UnityEngine.Scripting.Preserve]`, or skip reflection and call `StepRegistry.Register` from your own bootstrap.
+
+**IL2CPP stripping of the harness itself.** No project code references `Valtrion.Unity`: the harness starts from its own
+`RuntimeInitializeOnLoadMethod`. UnityLinker removes an unreferenced assembly, and a `link.xml` shipped inside a package is not
+read (Unity manual, managed code stripping), so up to 0.11.1 an IL2CPP development player lost the harness unless the project
+preserved `Valtrion.Unity` in its own `Assets/link.xml`. From 0.11.2 the assembly is marked `[assembly: AlwaysLinkAssembly]`
+(`Runtime/AssemblyInfo.cs`): the linker always processes it and keeps the bootstrap and everything it reaches, the built-in steps
+and probes included. No project `link.xml` is needed for the harness; an existing one that preserves `Valtrion.Unity` does no harm.
 
 **Tests in the Unity Test Framework.** `Testing/` (`Valtrion.Unity.PlayModeTests`) holds `PlanTest.Run(planPath)` for
 `[UnityTest]` (Editor PlayMode and player test builds; fails unless PASS) and `NUnitXmlResultWriter`, a `TestRunCallback` that

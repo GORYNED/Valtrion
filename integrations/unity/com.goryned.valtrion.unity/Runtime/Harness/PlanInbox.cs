@@ -133,7 +133,7 @@ namespace Valtrion.Unity.Harness
                 // An explicit plan that names no file is an error to report, never a reason to run some other plan.
                 var found = File.Exists(explicitPlan)
                     ? Read(origin, explicitPlan, runId)
-                    : new PlanSource { Origin = origin, Path = explicitPlan, RunId = runId, Text = string.Empty, Error = $"plan '{explicitPlan}' given by {name} does not exist" };
+                    : new PlanSource { Origin = origin, Path = explicitPlan, RunId = runId, Text = string.Empty, Error = MissingPlanError(explicitPlan, name) };
                 found.OutRoot = outRoot;
                 return found;
             }
@@ -143,7 +143,7 @@ namespace Valtrion.Unity.Harness
             {
                 var found = File.Exists(fromIntent)
                     ? Read("intent", fromIntent, runId)
-                    : new PlanSource { Origin = "intent", Path = fromIntent, RunId = runId, Text = string.Empty, Error = $"plan '{fromIntent}' given by the intent extra {PlanExtra} does not exist" };
+                    : new PlanSource { Origin = "intent", Path = fromIntent, RunId = runId, Text = string.Empty, Error = MissingPlanError(fromIntent, "the intent extra " + PlanExtra) };
                 found.OutRoot = outRoot;
                 return found;
             }
@@ -207,13 +207,36 @@ namespace Valtrion.Unity.Harness
             return null;
         }
 
-        static bool AlreadyConsumed(string path)
+        static bool AlreadyConsumed(string path) => !File.Exists(path) && LatestConsumedCopy(path) != null;
+
+        /// <summary>The newest <c>&lt;name&gt;.done-&lt;utc&gt;</c> beside a plan path (the copy an earlier run left when it consumed the plan), or null.</summary>
+        static string LatestConsumedCopy(string path)
         {
-            if (File.Exists(path))
-                return false;
-            var directory = System.IO.Path.GetDirectoryName(path);
-            return !string.IsNullOrEmpty(directory) && Directory.Exists(directory)
-                && Directory.GetFiles(directory, System.IO.Path.GetFileName(path) + ".done-*").Length > 0;
+            try
+            {
+                var directory = System.IO.Path.GetDirectoryName(path);
+                if (string.IsNullOrEmpty(directory) || !Directory.Exists(directory))
+                    return null;
+                var copies = Directory.GetFiles(directory, System.IO.Path.GetFileName(path) + ".done-*");
+                if (copies.Length == 0)
+                    return null;
+                Array.Sort(copies, StringComparer.Ordinal);
+                return copies[copies.Length - 1];
+            }
+            catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException || ex is ArgumentException || ex is NotSupportedException)
+            {
+                return null;
+            }
+        }
+
+        /// <summary>Why an explicit plan path names no file. A plan the harness already consumed (renamed to <c>.done-&lt;utc&gt;</c> by an earlier
+        /// launch, for example a Mono player started with the same path) is named as such, so it is not mistaken for a path the player cannot read.</summary>
+        internal static string MissingPlanError(string path, string givenBy)
+        {
+            var consumed = LatestConsumedCopy(path);
+            return consumed == null
+                ? $"plan '{path}' given by {givenBy} does not exist"
+                : $"plan '{path}' given by {givenBy} does not exist: an earlier run already consumed it (renamed to '{System.IO.Path.GetFileName(consumed)}'); give every launch a fresh copy of the plan";
         }
 
         static PlanSource Read(string origin, string path, string runId)
