@@ -489,7 +489,7 @@ class UnownedAndAdoptTests(ScratchBase):
         for folder in (first, second):
             (folder / "sub").mkdir(parents=True)
             (folder / "sub" / "blob.bin").write_bytes(b"x" * 2048)
-        for name in ("jobs", "mirrors", "launchd", "tools"):
+        for name in ("jobs", "mirrors", "launchd", "tools", "lfs-cache"):
             (self.roots.root / name).mkdir()
         return first, second
 

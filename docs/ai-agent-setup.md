@@ -40,4 +40,4 @@ work in the folder it prints, and release them in the same task with
 `valtrion workroot scratch release <id>`. Never clone or copy elsewhere.
 ```
 
-For the full step-by-step version, including a Unity Editor smoke test, use the [detailed guide](ai-agent-setup-detailed.md). The [Quick Start](quick-start.md) shows the same flow by hand.
+For the full step-by-step version, including a Unity Editor smoke test, use the [detailed guide](ai-agent-setup-detailed.md). A Unity project that uses Git LFS needs no extra setup in an agent's worktree: `valtrion unity run` turns LFS pointer files into their content before Unity starts, from a cache shared by every checkout on the host (see [`unity run`](cli.md#unity-run)). The [Quick Start](quick-start.md) shows the same flow by hand.

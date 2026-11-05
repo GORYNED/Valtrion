@@ -1355,6 +1355,9 @@ def _configure_unity(parser: argparse.ArgumentParser) -> None:
     run.add_argument("--stall-sec", type=_finite_seconds, default=600.0, metavar="N",
                      help="STALL when the -logFile has not grown for N s (default 600; 0 = off; also off without -logFile)")
     run.add_argument("--purpose", default="", help="text recorded in the leases")
+    run.add_argument("--lfs-materialize", action=argparse.BooleanOptionalAction, default=None,
+                     help="turn Git LFS pointer files of the project into their content before Unity starts, from the host's shared LFS "
+                          "cache, fetching only missing objects (default: lfs.materialize of host.json, on)")
     run.add_argument(STOP_ON_STDIN_EOF, action="store_true", help=argparse.SUPPRESS)  # added by a caller that keeps this command's input open
     _add_host_options(run)
     run.add_argument("unity_args", nargs=argparse.REMAINDER, help="after `--`: the arguments passed to Unity")
@@ -1390,7 +1393,8 @@ def _unity(arguments: argparse.Namespace) -> int:
         except project.ProjectError as error:
             return _blocked("unity", str(error))
     return unityrun.run(unity_args, found or arguments.project_dir, arguments.unity, wait, arguments.timeout_sec,
-                        arguments.stall_sec, arguments.purpose, lifeline=sys.stdin.fileno() if arguments.stop_on_stdin_eof else None)
+                        arguments.stall_sec, arguments.purpose, lifeline=sys.stdin.fileno() if arguments.stop_on_stdin_eof else None,
+                        lfs_materialize=arguments.lfs_materialize)
 
 
 def register_all() -> None:
