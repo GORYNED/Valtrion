@@ -64,7 +64,7 @@ More: the [Quick Start](docs/quick-start.md) covers a real failure, a timeout an
 valtrion dashboard
 ```
 
-This opens a read-only page, with a tray icon on Windows. It shows the Unity Editor and device slots in use and free, running jobs, who holds memory, the leases and the recent jobs of this machine and of your SSH hosts. It listens on `127.0.0.1` only and can change nothing. Details: [`dashboard`](docs/cli.md#dashboard).
+A page opens (and, on Windows, an icon appears in the tray) that shows what is happening right now: which Unity runs and devices are busy, how far the tests have come, how much memory and disk are left, and who is waiting. It only shows; it changes nothing. [More](docs/cli.md#dashboard).
 
 <p align="center">
   <img src="docs/images/dashboard-overview.png" alt="The Valtrion dashboard during two Unity test runs: both Editor slots busy, two Android devices free, memory use and a progress bar for each running run." width="100%">
