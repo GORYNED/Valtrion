@@ -299,6 +299,50 @@ namespace Valtrion.Unity.Contracts
             .Set("kind", JsonValue.From(Kind)).Set("path", JsonValue.From(Path)).Set("sha256", JsonValue.From(Sha256));
     }
 
+    /// <summary>Which commit the project folder was at when the job's build stage settled it (<c>--sha</c>): the Unity project folder,
+    /// the commit, and for a managed checkout its id, whether it was reset from another commit, created, and whether the commit was
+    /// fetched from the remote first. An unmanaged folder is only verified (<see cref="Switched"/> false).</summary>
+    public sealed class ResultCheckout
+    {
+        public string Folder { get; set; }
+
+        public string Sha { get; set; }
+
+        public bool Switched { get; set; }
+
+        public bool Fetched { get; set; }
+
+        /// <summary>The managed checkout (host.json projects.&lt;name&gt;.checkouts[].id); null for an unmanaged folder.</summary>
+        public string Id { get; set; }
+
+        /// <summary>True when the build stage had to create the managed checkout; null when not recorded.</summary>
+        public bool? Created { get; set; }
+
+        /// <summary>The commit before the switch; null when not recorded.</summary>
+        public string PreviousSha { get; set; }
+
+        internal static ResultCheckout Read(ContractReader reader)
+        {
+            var checkout = new ResultCheckout
+            {
+                Folder = reader.Str("folder"),
+                Sha = reader.Hex("sha", 40),
+                Switched = reader.Bool("switched"),
+                Fetched = reader.Bool("fetched"),
+                Id = reader.OptStr("id", 1),
+                Created = reader.OptBool("created"),
+                PreviousSha = reader.Has("previousSha") ? reader.Hex("previousSha", 40) : null,
+            };
+            reader.Done();
+            return checkout;
+        }
+
+        internal JsonValue Write() => JsonValue.NewObject()
+            .Set("folder", JsonValue.From(Folder)).Set("sha", JsonValue.From(Sha))
+            .Set("switched", JsonValue.From(Switched)).Set("fetched", JsonValue.From(Fetched))
+            .SetIf("id", Id).SetIf("created", Created).SetIf("previousSha", PreviousSha);
+    }
+
     /// <summary>A declared output path and why it was kept or refused.</summary>
     public sealed class CleanupPathReason
     {
@@ -440,6 +484,9 @@ namespace Valtrion.Unity.Contracts
 
         public ResultComparison Comparison { get; set; }
 
+        /// <summary>The commit the build stage settled the project folder at; null when the job's build stage did not settle one.</summary>
+        public ResultCheckout Checkout { get; set; }
+
         /// <summary>The build the run was made with; null for a pipeline without a build.</summary>
         public ResultBuild Build { get; set; }
 
@@ -474,6 +521,7 @@ namespace Valtrion.Unity.Contracts
                 Steps = reader.Items("steps", ResultStep.Read),
                 Metrics = reader.Items("metrics", ResultMetric.Read),
                 Comparison = reader.OptObject("comparison") is ContractReader comparison ? ResultComparison.Read(comparison) : null,
+                Checkout = reader.OptObject("checkout") is ContractReader checkout ? ResultCheckout.Read(checkout) : null,
                 Build = reader.OptObject("build") is ContractReader build ? ResultBuild.Read(build) : null,
                 Cleanup = reader.OptObject("cleanup") is ContractReader cleanup ? OutputCleanup.Read(cleanup) : null,
                 Artifacts = reader.Items("artifacts", ResultArtifact.Read),
@@ -510,6 +558,7 @@ namespace Valtrion.Unity.Contracts
                 .Set("layers", Layers.Write()).Set("steps", JsonBuild.Array(Steps, step => step.Write()))
                 .Set("metrics", JsonBuild.Array(Metrics, metric => metric.Write()));
             if (Comparison != null) node.Set("comparison", Comparison.Write());
+            if (Checkout != null) node.Set("checkout", Checkout.Write());
             if (Build != null) node.Set("build", Build.Write());
             if (Cleanup != null) node.Set("cleanup", Cleanup.Write());
             // Both lists are always written: an empty list is a claim ("nothing was left unverified"), omission is not.

@@ -1,8 +1,15 @@
 # Changelog
 
-## Unreleased
+## 0.11.1 (2026-11-04)
 
+- **The contract readers accept every key Core 0.13.x writes.** Before, these documents were rejected with `unexpected property`:
+  - `PipelineStage.ExternalUi` (`PipelineExternalUi`: `externalUi` of a run stage, from Core 0.13.0): `Command` (the argv list, at least one non-empty item, required) and `TimeoutSec` (at least 1, optional);
+  - `ResultDocument.Checkout` (`ResultCheckout`: `checkout` of `gdv.result/1`, written when the job's build stage settled the project commit): `Folder`, `Sha`, `Switched`, `Fetched` (required), `Id`, `Created`, `PreviousSha` (optional);
+  - `HostEntry.Python` and `HostEntry.ValtrionCommand` (`python`, `valtrionCommand` of a `gdv.hosts/1` host, recorded by `valtrion hosts add` and `valtrion hosts sync`).
 - `JobDocument.Cleanup` and `ResultDocument.Cleanup` (`OutputCleanup` with `Base`, `Removed`, `Kept` and `Refused` of `CleanupPathReason`) and `PipelineStage.Cleanup`: the optional `cleanup` keys of `gdv.job/1`, `gdv.result/1` and the `gdv.pipeline/1` stage (Core: declared job outputs, #75) are read and written. Documents without them behave as before.
+- All additions are optional keys and the objects stay closed: an unknown key, a missing required key or a wrong type is still rejected, and documents without the new keys read and write as before.
+- New golden fixtures `valid/result-checkout.json`, `valid/hosts-sync-paths.json`, `invalid/result-checkout-missing-fetched.json` and `invalid/hosts-empty-valtrion-command.json`; every valid fixture, `valid/pipeline-external-ui.json` included, now round-trips in `ContractFixtureTests`.
+- The Runtime harness is unchanged. Compatible Core versions are listed in `compat.json` (package 0.11.x: Core 0.8.0 up to, not including, 0.14).
 
 ## 0.11.0 (2026-11-04)
 

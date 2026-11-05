@@ -112,6 +112,13 @@ namespace Valtrion.Unity.Contracts
 
         public string ArtifactsRoot { get; set; }
 
+        /// <summary>Absolute path of the Python (3.10 or newer) that <c>valtrion hosts sync</c> uses on an SSH host; null when not recorded.</summary>
+        public string Python { get; set; }
+
+        /// <summary>Absolute path of the valtrion command on an SSH host, recorded by <c>valtrion hosts sync</c> and used instead of a
+        /// PATH lookup; null when not recorded.</summary>
+        public string ValtrionCommand { get; set; }
+
         internal static HostEntry Read(ContractReader reader)
         {
             var host = new HostEntry
@@ -124,6 +131,8 @@ namespace Valtrion.Unity.Contracts
                 ProjectsRoot = reader.OptStr("projectsRoot", 1),
                 WorktreePolicy = reader.OptChoice("worktreePolicy", Enums.WorktreePolicies),
                 ArtifactsRoot = reader.Str("artifactsRoot"),
+                Python = reader.OptStr("python", 1),
+                ValtrionCommand = reader.OptStr("valtrionCommand", 1),
             };
             reader.Done();
             return host;
@@ -134,7 +143,8 @@ namespace Valtrion.Unity.Contracts
             var node = JsonValue.NewObject().Set("id", JsonValue.From(Id)).Set("transport", Transport.Write()).Set("os", JsonValue.From(Os));
             if (Roles != null) node.Set("roles", JsonBuild.Strings(Roles));
             if (Capabilities != null) node.Set("capabilities", Capabilities.Write());
-            return node.SetIf("projectsRoot", ProjectsRoot).SetIf("worktreePolicy", WorktreePolicy).Set("artifactsRoot", JsonValue.From(ArtifactsRoot));
+            return node.SetIf("projectsRoot", ProjectsRoot).SetIf("worktreePolicy", WorktreePolicy).Set("artifactsRoot", JsonValue.From(ArtifactsRoot))
+                .SetIf("python", Python).SetIf("valtrionCommand", ValtrionCommand);
         }
     }
 

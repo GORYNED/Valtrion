@@ -1,0 +1,12 @@
+{
+  "schema": "gdv.hosts/1",
+  "hosts": [
+    {
+      "id": "mac-build",
+      "transport": { "kind": "ssh", "sshTarget": "builder@mac-build.example" },
+      "os": "macos",
+      "artifactsRoot": "~/Documents/Projects/gdv-artifacts",
+      "valtrionCommand": ""
+    }
+  ]
+}
