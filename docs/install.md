@@ -25,7 +25,7 @@ The Unity package has its own version and is not on PyPI. Add it to `Packages/ma
 "com.goryned.valtrion.unity": "https://github.com/GORYNED/Valtrion.git?path=integrations/unity/com.goryned.valtrion.unity#unity-v0.10.0"
 ```
 
-Add `"testables": ["com.goryned.valtrion.unity"]` to run its tests, as in the [Unity Quick Start](unity-quick-start.md). Tags are `unity-vX.Y.Z`; pin a tag or a full commit SHA for shared projects, not a branch.
+With package 0.10.0 and earlier, add `"testables": ["com.goryned.valtrion.unity"]` so Unity compiles the `PlanTest` helper, as in the [Unity Quick Start](unity-quick-start.md). From package 0.11.0 on the helper is an ordinary package assembly and no `testables` entry is needed (remove it when upgrading); the package's own tests run only in the repository's verification project. Tags are `unity-vX.Y.Z`; pin a tag or a full commit SHA for shared projects, not a branch.
 
 ## Updating
 

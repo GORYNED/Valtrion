@@ -1,7 +1,7 @@
 # Valtrion Unity
 
 Unity is Valtrion's first and currently only ready application integration. Valtrion manages repeatable checks and their
-execution evidence; Core also supervises ordinary processes without Unity. This package (0.10.0) ships the **contracts** (C# readers and writers for the Valtrion JSON documents) and the
+execution evidence; Core also supervises ordinary processes without Unity. This package (0.11.0) ships the **contracts** (C# readers and writers for the Valtrion JSON documents) and the
 development-only Runtime **harness** (plan inbox, runner, steps, probes, result writer). The host CLI, the JSON Schemas and the
 golden fixtures live in the repository root (`core/` and `contracts/`); see the repository `docs/` for the CLI.
 
@@ -11,8 +11,10 @@ golden fixtures live in the repository root (`core/` and `contracts/`); see the 
   `screenshot` step). Any Unity project can take it alone.
 - **Development only.** `Valtrion.Unity` (Runtime) is constrained by `DEVELOPMENT_BUILD || UNITY_EDITOR`; a release player
   contains no type of it. The assembly is auto-referenced, so a project's `Assembly-CSharp` can hold validation steps; that code
-  must sit under `#if DEVELOPMENT_BUILD || UNITY_EDITOR`, because in a Release build the assembly does not exist. The Editor and
-  test assemblies reference only the Runtime assembly.
+  must sit under `#if DEVELOPMENT_BUILD || UNITY_EDITOR`, because in a Release build the assembly does not exist. The Editor
+  assembly references only the Runtime assembly; the plan test helper `Valtrion.Unity.PlayModeTests` references the Runtime
+  assembly and, only when the project has `com.unity.test-framework`, NUnit and `UnityEngine.TestRunner` (it is not a package
+  dependency: without the Test Framework the helper is simply not compiled).
 - **JSON** in the Runtime uses `Valtrion.Unity.Json.JsonValue`, a small reader and writer with no reflection and no external
   package, so it is safe for IL2CPP and stripping. Free-form parts (step arguments, event data) stay value trees.
 - **Wire identifiers are stable.** Schema ids (`gdv.plan/1`, `gdv.result/1`, ...), step type names, launch arguments (`-gdv-plan`,
@@ -31,8 +33,8 @@ same reviewed checkout as Core. Add a local path to `Packages/manifest.json` for
 
 For a shared project, use `https://github.com/GORYNED/Valtrion.git?path=integrations/unity/com.goryned.valtrion.unity#<full-reviewed-commit-sha>`
 with the full SHA substituted; do not commit an absolute local path. Public HTTPS Git installation needs no GitHub account or token; private forks require existing access. This package is
-MIT licensed; the notice is included in `LICENSE.md`. Core 0.11.0 and this package 0.10.0 are paired by `compat.json`; identical
-version numbers are not required. Package tests use Unity Test Framework 1.8.0; the repository's test Editor is specified in
+MIT licensed; the notice is included in `LICENSE.md`. Core 0.13.1 and this package 0.11.0 are paired by `compat.json`; identical
+version numbers are not required. The repository tests use Unity Test Framework 1.8.0; the repository's test Editor is specified in
 `integrations/unity/UnityProject/ProjectSettings/ProjectVersion.txt`.
 
 ## Layout
@@ -41,14 +43,15 @@ version numbers are not required. Package tests use Unity Test Framework 1.8.0; 
 | --- | --- |
 | `Runtime/` | `Valtrion.Unity`: `Contracts/` (documents), `Json/` (value tree, parser, writer), `Harness/` (inbox, runner, steps, result writer, ledger) and `Probes/` |
 | `Runtime/link.xml` | preserves the `Valtrion.Unity` assembly from IL2CPP stripping |
-| `Editor/` | `Valtrion.Unity.Editor` (empty until plan authoring tools arrive) |
-| `Tests/Editor/` | `Valtrion.Unity.Tests`: round trip of every valid fixture, rejection of every invalid one, plan inbox and runner |
-| `Tests/PlayMode/` | `Valtrion.Unity.PlayModeTests`: harness on the main thread, `PlanTest.Run`, NUnit XML writer |
+| `Editor/` | `Valtrion.Unity.Editor`: `PlanTestBuildAssemblyFilter`, which keeps the plan test helper out of player builds that do not include test assemblies |
+| `Testing/` | `Valtrion.Unity.PlayModeTests` (namespace `Valtrion.Unity.Testing`): `PlanTest.Run`, `NUnitXmlResultWriter`; an ordinary package assembly, no `testables` needed |
 
-The Editor contract tests read the golden fixtures from `contracts/fixtures/valid` and `contracts/fixtures/invalid` of the
-repository: the package folder must sit below a repository checkout (the tests search the parents of the package folder). Without
-a checkout, for example in a consumer project that has the package in `testables`, those tests end as Ignored with a message
-instead of failing. The test project is `integrations/unity/UnityProject`.
+The package contains no tests of its own. Valtrion's tests live in the repository verification project
+`integrations/unity/UnityProject` (`Assets/Tests/`), which references this package with `file:` and has no `testables` entry:
+`Valtrion.Unity.Tests` (EditMode: round trip of every valid fixture, rejection of every invalid one, plan inbox and runner) and
+`Valtrion.Unity.HarnessPlayModeTests` (PlayMode: harness on the main thread, `PlanTest.Run`, NUnit XML writer). The contract tests
+read the golden fixtures from `contracts/fixtures/valid` and `contracts/fixtures/invalid` of the repository checkout above the
+package folder; without one they end as Ignored with a message instead of failing.
 
 ## Renamed from the previous validation package
 
@@ -194,25 +197,30 @@ finds it by attribute in the loaded non-engine assemblies. In IL2CPP the method 
 `link.xml` (this package's `Runtime/link.xml` preserves `Valtrion.Unity` itself), add `[UnityEngine.Scripting.Preserve]`, or skip
 reflection and call `StepRegistry.Register` from your own bootstrap.
 
-**Tests in the Unity Test Framework.** `Tests/PlayMode` (`Valtrion.Unity.PlayModeTests`) holds `PlanTest.Run(planPath)` for
+**Tests in the Unity Test Framework.** `Testing/` (`Valtrion.Unity.PlayModeTests`) holds `PlanTest.Run(planPath)` for
 `[UnityTest]` (Editor PlayMode and player test builds; fails unless PASS) and `NUnitXmlResultWriter`, a `TestRunCallback` that
-writes `nunit-results.xml` into the run folder of the last plan test. A project test assembly references that assembly.
+writes `nunit-results.xml` into the run folder of the last plan test. A project test assembly references that assembly by name
+(it is not auto-referenced), and the profile's `editor.planAssembly` names the project's test assembly, not this one.
 
-**`testables` is required for `PlanTest`.** `Valtrion.Unity.PlayModeTests` (and `Valtrion.Unity.Tests`) are test assemblies, and
-Unity compiles the test assemblies of a package only when the package is listed in the consumer's `testables`. A project that
-references `PlanTest` or `NUnitXmlResultWriter` must therefore list the package in `Packages/manifest.json`:
+**No `testables` entry is needed (package 0.11.0 and later).** `Valtrion.Unity.PlayModeTests` is an ordinary package assembly,
+compiled whenever the project has `com.unity.test-framework`; the package's own tests are not part of the package, so a consumer's
+test runs contain only the consumer's tests. In player builds the helper follows the Test Framework's rule for
+`UnityEngine.TestRunner` and NUnit: `PlanTestBuildAssemblyFilter` (Editor) removes `Valtrion.Unity.PlayModeTests.dll` unless the
+build includes test assemblies or `PlayerSettings.playModeTestRunnerEnabled` is on, so an ordinary development player (device runs
+with `-gdv-plan`) does not contain it and a PlayMode test player does. A consumer manifest needs only:
 
 ```json
 {
   "dependencies": {
     "com.goryned.valtrion.unity": "file:../path/to/Valtrion/integrations/unity/com.goryned.valtrion.unity",
     "com.unity.test-framework": "1.8.0"
-  },
-  "testables": [
-    "com.goryned.valtrion.unity"
-  ]
+  }
 }
 ```
 
-With the package in `testables`, the package's own tests also appear in the consumer's test runs: the PlayMode and plan tests run
-there, and the fixture-based contract tests are Ignored when the project has no Valtrion repository checkout above the package.
+**Upgrading from 0.10.x or earlier.** Up to 0.10.x the helper was a test assembly that Unity compiled only with the package in
+`testables`, which also brought the package's own tests (and Ignored contract-fixture tests) into the consumer's runs. After the
+upgrade remove `com.goryned.valtrion.unity` from `testables` (and the `testables` key if it held nothing else), and drop any
+exclusion of `Valtrion.Unity.Tests` classes such as `ContractFixtureTests` from the project's test runs. Asmdef references to
+`Valtrion.Unity.PlayModeTests`, the namespace `Valtrion.Unity.Testing` and `editor.planAssembly` stay as they are. A stale
+`testables` entry is harmless: the package has no test assemblies left to compile.
