@@ -1,0 +1,26 @@
+{
+  "schema": "gdv.result/1",
+  "runId": "20261104T1530Z-ipad10-89abcde",
+  "status": "PASS",
+  "reason": null,
+  "candidate": { "repo": "ExampleApp", "sha": "89abcdef0123456789abcdef0123456789abcdef", "profile": "Internal", "unity": "6000.6.7f1", "dirty": false },
+  "target": { "platform": "ios", "deviceClass": "ipad-a14", "osMajor": 27, "evidence": "physical" },
+  "host": { "id": "mac-build", "transport": "ssh", "selectedBy": "capability" },
+  "plan": { "id": "example.smoke", "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" },
+  "startedUtc": "2026-11-04T15:30:00Z",
+  "finishedUtc": "2026-11-04T15:41:00Z",
+  "layers": { "compile": "PASS", "install": "PASS", "launch": "PASS", "scenario": "PASS" },
+  "steps": [],
+  "metrics": [],
+  "checkout": {
+    "folder": "~/Documents/Projects/ExampleApp-build",
+    "sha": "89abcdef0123456789abcdef0123456789abcdef",
+    "switched": true,
+    "fetched": true,
+    "id": "build-1",
+    "previousSha": "0123456789abcdef0123456789abcdef01234567",
+    "created": false
+  },
+  "artifacts": [],
+  "unverified": []
+}

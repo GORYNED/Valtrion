@@ -144,6 +144,32 @@ namespace Valtrion.Unity.Tests
         }
 
         [Test]
+        public void ExternalUiCheckoutAndHostSyncPathsAreReadAndWrittenBack()
+        {
+            var pipeline = PipelineDocument.Parse(File.ReadAllText(Path.Combine(FixtureRoot, "valid", "pipeline-external-ui.json")));
+            Assert.IsNull(pipeline.Stages[0].ExternalUi);
+            var externalUi = pipeline.Stages[2].ExternalUi;
+            CollectionAssert.AreEqual(new[] { "bash", "tools/touch/tap.sh", "{device}", "{arg:target}", "{app}" }, externalUi.Command);
+            Assert.AreEqual(120, externalUi.TimeoutSec);
+            var pipelineText = pipeline.ToJsonString();
+            Assert.Throws<ContractException>(() => PipelineDocument.Parse(pipelineText.Replace("\"timeoutSec\": 120", "\"timeoutSec\": 0")));
+            Assert.Throws<ContractException>(() => PipelineDocument.Parse(pipelineText.Replace("\"timeoutSec\": 120", "\"timeoutSec\": 120, \"shell\": true")));
+            externalUi.Command.Clear();
+            Assert.Throws<ContractException>(() => PipelineDocument.Parse(pipeline.ToJsonString()), "an empty command is rejected");
+
+            var result = ResultDocument.Parse(File.ReadAllText(Path.Combine(FixtureRoot, "valid", "result-checkout.json")));
+            Assert.AreEqual("build-1", result.Checkout.Id);
+            Assert.IsTrue(result.Checkout.Switched);
+            Assert.AreEqual(false, result.Checkout.Created);
+            Assert.AreEqual(40, result.Checkout.PreviousSha.Length);
+            Assert.IsNull(ResultDocument.Parse(File.ReadAllText(Path.Combine(FixtureRoot, "valid", "result.json"))).Checkout);
+
+            var hosts = HostsDocument.Parse(File.ReadAllText(Path.Combine(FixtureRoot, "valid", "hosts-sync-paths.json")));
+            Assert.AreEqual("/Users/builder/.local/bin/valtrion", hosts.Hosts[0].ValtrionCommand);
+            Assert.AreEqual("/opt/example/bin/python3.12", hosts.Hosts[0].Python);
+        }
+
+        [Test]
         public void ExitCodesFollowTheStatus()
         {
             Assert.AreEqual(0, ValidationStatus.ExitCode(ValidationStatus.Pass));
