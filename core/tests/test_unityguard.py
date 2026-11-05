@@ -5,6 +5,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from valtrion import config, unityguard
 from valtrion.unityguard import Proc
@@ -137,6 +138,33 @@ class AncestryTests(unittest.TestCase):
         unity = "/x/Unity.app/Contents/MacOS/Unity"
         loop = [Proc(1, 2, unity, unity), Proc(2, 1, unity, unity)]
         self.assertEqual([1, 2], [p.pid for p in unityguard.editors_outside_leases(loop, [], "macos")])
+
+
+class LocaleTests(unittest.TestCase):
+    def environment(self, os_name, locales):
+        with mock.patch.object(unityguard, "available_locales", return_value=locales):
+            return unityguard.utf8_locale(), unityguard.utf8_environment(os_name)["LC_ALL"]
+
+    def test_the_first_utf8_locale_the_host_has_is_used(self):
+        self.assertEqual(("en_US.UTF-8", "en_US.UTF-8"), self.environment("linux", frozenset({"c", "enusutf8", "cutf8"})))
+        # glibc lists C.UTF-8 as `C.utf8`; a host without en_US.UTF-8 gets it instead of a locale it does not have.
+        self.assertEqual(("C.UTF-8", "C.UTF-8"), self.environment("macos", frozenset({"c", "posix", "cutf8"})))
+
+    def test_a_host_without_a_utf8_locale_is_told_apart(self):
+        self.assertEqual((None, "C.UTF-8"), self.environment("linux", frozenset({"c", "posix"})))
+        self.assertEqual((None, "en_US.UTF-8"), self.environment("macos", None))
+
+    def test_the_locales_are_read_with_locale_a_once(self):
+        done = mock.Mock(returncode=0, stdout=b"C\nC.utf8\nPOSIX\nen_US.utf8\n")
+        with mock.patch.object(unityguard, "_available_locales", []), \
+                mock.patch.object(unityguard.subprocess, "run", return_value=done) as run:
+            self.assertEqual("en_US.UTF-8", unityguard.utf8_locale())
+            self.assertEqual("en_US.UTF-8", unityguard.utf8_locale())
+        self.assertEqual(1, run.call_count)
+        self.assertEqual(["locale", "-a"], run.call_args.args[0])
+        with mock.patch.object(unityguard, "_available_locales", []), \
+                mock.patch.object(unityguard.subprocess, "run", side_effect=OSError("no locale")):
+            self.assertIsNone(unityguard.available_locales())
 
 
 class SystemProbeTests(unittest.TestCase):

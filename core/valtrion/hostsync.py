@@ -9,7 +9,9 @@ versioned path) is left alone; otherwise the wheel is pushed through the transpo
   points to the newest version.
 
 The absolute path of the command is recorded in hosts.json, so non-interactive SSH sessions never depend on PATH. Version folders that
-no process uses are removed; one a running job uses stays, and a pipx environment that a running job uses is not replaced.
+no process uses are removed; one a running job uses stays, and a pipx environment that a running job uses is not replaced. The process
+list is read in a UTF-8 locale; when it cannot be read faithfully (it fails, is not UTF-8, is empty, or does not show the helper's own
+arguments) every version stays.
 """
 
 from __future__ import annotations
@@ -176,25 +178,169 @@ def _pipx_value(transport: Transport, pipx: tuple[str, ...], name: str) -> str |
 
 #: Copied to the host and run with the host's Python (`prune`, `link`, `relink`, `busy`, `path`). Nothing is removed unless the host is
 #: provably idle (no job whose runner is alive, no lease whose holder is alive, no process using the folder); when any of that cannot
-#: be established it changes nothing.
-HOST_SCRIPT = r'''import json, os, re, shutil, subprocess, sys, time
+#: be established it changes nothing. It is self-contained (it runs on the host, without the valtrion package): the UTF-8 locale of the
+#: process listing mirrors `unityguard.utf8_environment`.
+HOST_SCRIPT = r'''import json, os, re, shutil, subprocess, sys, time, unicodedata
+
+# The controller reads this output as UTF-8; a pipe on Windows would otherwise be in the ANSI code page, and printing a path outside
+# it would fail half way through a prune.
+for stream in (sys.stdout, sys.stderr):
+    try:
+        stream.reconfigure(encoding="utf-8", errors="backslashreplace")
+    except (AttributeError, ValueError):
+        pass
 
 VERSION = re.compile(r"^\d+\.\d+\.\d+$")
+#: Tried in this order; the first one the C library accepts is used, else the last one.
+UTF8_LOCALES = ("en_US.UTF-8", "C.UTF-8")
+POSIX_LISTING = ["ps", "-axww", "-o", "pid=,ppid=,args="]
+WINDOWS_LISTING = ["powershell", "-NoProfile", "-NonInteractive", "-Command", "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; Get-CimInstance Win32_Process | ForEach-Object { [string]$_.ProcessId + [char]9 + [string]$_.ParentProcessId + [char]9 + $_.CommandLine }"]
+LINE = re.compile(r"^\s*(\d+)\s+(\d+)(?:\s(.*))?$")
+VIS = re.compile(rb"\\?M(?:-([\x20-\x7e])|\^([@-_?]))")
+ESCAPE = re.compile(rb"\\(?:x([0-9a-fA-F]{2})|([0-3][0-7]{2}))")
+
+
+class Unreadable(Exception):
+    """The process list cannot be trusted; nothing may be removed."""
+
+
+def utf8_environment():
+    """The environment of the process listing on POSIX: `LC_ALL` set to a UTF-8 locale. Over SSH or under launchd the locale is often
+    `C`, and then ps prints a non-ASCII command line vis-encoded (macOS: `M-P...`) or with `?` (procps), which matches no path."""
+    if os.name == "nt":
+        return None
+    import locale
+    chosen = UTF8_LOCALES[-1]
+    try:
+        saved = locale.setlocale(locale.LC_CTYPE)
+        for name in UTF8_LOCALES:
+            try:
+                locale.setlocale(locale.LC_CTYPE, name)
+            except locale.Error:
+                continue
+            chosen = name
+            break
+        locale.setlocale(locale.LC_CTYPE, saved)
+    except locale.Error:
+        pass
+    environment = dict(os.environ)
+    environment["LC_ALL"] = chosen
+    return environment
+
+
+def fold(text):
+    """The form two spellings of one path share: NFC (APFS keeps names as given, so a command line may hold a path in NFD while the
+    folder is NFC; folding both can only make more processes count as users), and lower case on Windows."""
+    text = unicodedata.normalize("NFC", text)
+    return text.lower() if os.name == "nt" else text
+
+
+def decoded_forms(command):
+    r"""The command line as printed, and as it reads with vis (`M-x`, `M^X`) and `\xNN`/`\NNN` escapes undone (each kept only when the
+    result is valid UTF-8)."""
+    forms = [command]
+    data = command.encode("utf-8", "surrogateescape")
+    vis = VIS.sub(lambda m: bytes([0x80 | m.group(1)[0]]) if m.group(1) else bytes([0xFF if m.group(2) == b"?" else 0x80 | (m.group(2)[0] ^ 0x40)]), data)
+    unescape = lambda text: ESCAPE.sub(lambda m: bytes([int(m.group(1), 16) if m.group(1) else int(m.group(2), 8)]), text)
+    # macOS vis prints a meta space (0xA0) as `\240` even without backslashes elsewhere, so both kinds can mix in one path.
+    for candidate in (vis, unescape(data), unescape(vis)):
+        try:
+            forms.append(candidate.decode("utf-8"))
+        except UnicodeDecodeError:
+            pass
+    return list(dict.fromkeys(fold(form) for form in forms))
+
+
+def vis(data, slash):
+    out = []
+    for byte in data:
+        if byte == 0x5C:
+            out.append("\\\\" if slash else "\\")
+        elif 0x20 <= byte <= 0x7E:
+            out.append(chr(byte))
+        elif byte == 0xA0:
+            out.append("\\%03o" % byte)  # vis writes a meta space in octal in every style
+        else:
+            low = byte & 0x7F
+            code = "^" + ("?" if low == 0x7F else chr(low + 0x40)) if low < 0x20 or low == 0x7F else "-" + chr(low)
+            out.append(("\\" if slash else "") + ("M" if byte & 0x80 else "") + code)
+    return "".join(out)
+
+
+def encoded_forms(value):
+    r"""`value` as it is, and as ps or lsof print it outside a UTF-8 locale (vis with and without backslash, `\xNN`, `\NNN`)."""
+    forms = set()
+    for spelling in {value, unicodedata.normalize("NFC", value), unicodedata.normalize("NFD", value)}:
+        data = spelling.encode("utf-8", "surrogateescape")
+        forms.update((spelling, vis(data, False), vis(data, True)))
+        for pattern in ("\\x%02x", "\\x%02X", "\\%03o"):
+            forms.add("".join(chr(byte) if 0x20 <= byte <= 0x7E else pattern % byte for byte in data))
+    return list(dict.fromkeys(fold(form) for form in sorted(forms) if form))
+
+
+def mentions(command, value, strip=()):
+    """Whether the command line names `value` in any form; the forms of `strip` are taken out of it first, only where they stand as
+    whole words (so a program path that starts with one of them still counts)."""
+    wanted = encoded_forms(value)
+    removed = sorted({form for item in strip if item for form in encoded_forms(item)}, key=len, reverse=True)
+    for form in decoded_forms(command):
+        for item in removed:
+            form = re.sub("(?<![^\\s\"'=])" + re.escape(item) + "(?![^\\s\"'])", " ", form)
+        if any(item in form for item in wanted):
+            return True
+    return False
 
 
 def processes():
-    if os.name == "nt":
-        argv = ["powershell", "-NoProfile", "-Command", "Get-CimInstance Win32_Process | ForEach-Object { $_.CommandLine }"]
-    else:
-        argv = ["ps", "-axww", "-o", "args="]
-    done = subprocess.run(argv, capture_output=True, text=True, errors="replace", timeout=60)
+    """{pid: (ppid, command line)} of every process. Raises Unreadable when the listing fails, is not UTF-8, is empty, or does not
+    show this helper with its own arguments in a form `mentions` reads (then a path with the same characters would match nothing)."""
+    nt = os.name == "nt"
+    options = {"creationflags": 0x08000000} if nt else {"env": utf8_environment()}  # CREATE_NO_WINDOW: the caller's code page stays
+    try:
+        done = subprocess.run(WINDOWS_LISTING if nt else POSIX_LISTING, capture_output=True, timeout=60, **options)
+    except (OSError, subprocess.SubprocessError) as error:
+        raise Unreadable("cannot list processes: %s" % error)
     if done.returncode != 0:
-        raise SystemExit("cannot list processes: " + (done.stderr.strip() or "exit %d" % done.returncode))
-    return done.stdout.lower() if os.name == "nt" else done.stdout
+        detail = (done.stderr or b"").decode("utf-8", "replace").strip()
+        raise Unreadable("cannot list processes: " + (detail.splitlines()[-1] if detail else "exit %d" % done.returncode))
+    try:
+        text = (done.stdout or b"").decode("utf-8-sig")
+    except UnicodeDecodeError:
+        raise Unreadable("the process list is not valid UTF-8")
+    table, last = {}, None
+    for line in text.splitlines():
+        match = LINE.match(line)
+        if match:
+            last = int(match.group(1))
+            table[last] = (int(match.group(2)), match.group(3) or "")
+        elif last is not None and line.strip():
+            table[last] = (table[last][0], table[last][1] + "\n" + line)  # a command line with a line break
+    if not table:
+        raise Unreadable("the process list is empty")
+    me = table.get(os.getpid())
+    if me is None:
+        raise Unreadable("the process list does not show this helper (pid %d)" % os.getpid())
+    unread = [arg for arg in sys.argv[1:] if arg and not mentions(me[1], arg)]
+    if unread:
+        raise Unreadable("the process list does not show this helper's own argument %s in a readable form (locale %s)"
+                         % (ascii(unread[0]), (utf8_environment() or {}).get("LC_ALL", "default")))
+    return table
 
 
-def in_use(text, folder):
-    return (folder.lower() if os.name == "nt" else folder) in text
+def helper_family(table):
+    """This helper and the shells that started it (whose command line names this script): they name the folders as arguments only."""
+    family, pid = set(), os.getpid()
+    while pid in table and pid not in family:
+        if pid != os.getpid() and not mentions(table[pid][1], sys.argv[0]):
+            break
+        family.add(pid)
+        pid = table[pid][0]
+    return family
+
+
+def in_use(table, folder):
+    family = helper_family(table)
+    return any(mentions(command, folder, sys.argv[1:] if pid in family else ()) for pid, (_, command) in table.items())
 
 
 def alive(pid):
@@ -287,10 +433,14 @@ def prune(valtrion, below, protect):
     if reason:
         print("skipped=" + reason)
         return
-    text = processes()
+    try:
+        table = processes()
+    except Unreadable as error:
+        print("unreadable=%s" % error)  # every version stays
+        return
     for name in candidates:
         folder = os.path.join(core, name)
-        if in_use(text, folder):
+        if in_use(table, folder):
             print("busy=" + name)
             continue
         try:
@@ -323,8 +473,13 @@ def busy(valtrion, folder):
     reason = activity(valtrion)
     if reason:
         print("busy=" + reason)
-    elif os.path.isdir(folder) and in_use(processes(), folder):
-        print("busy=a process uses " + folder)
+    elif os.path.isdir(folder):
+        try:
+            table = processes()
+        except Unreadable as error:
+            raise SystemExit(str(error))  # the caller then replaces nothing
+        if in_use(table, folder):
+            print("busy=a process uses " + folder)
 
 
 def add_path(rc, directory):
@@ -383,6 +538,8 @@ def prune_versions(entry: HostEntry, transport: Transport, python: str, home: st
     parts = []
     if values("skipped"):
         parts.append(f"old versions were kept: {values('skipped')[0]}")
+    if values("unreadable"):
+        parts.append(f"old versions were kept: the process list could not be read ({values('unreadable')[0]})")
     if values("removed"):
         parts.append(f"removed old versions {', '.join(values('removed'))}")
     if values("busy"):

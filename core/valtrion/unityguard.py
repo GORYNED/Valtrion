@@ -210,14 +210,49 @@ Runner = Callable[[Sequence[str], float], "str | None"]
 PROBE_TIMEOUT_SEC = 30.0
 
 
+#: Tried in this order for the probes' `LC_ALL`.
+UTF8_LOCALES = ("en_US.UTF-8", "C.UTF-8")
+_available_locales: "list[frozenset[str] | None]" = []
+
+
+def _locale_key(name: str) -> str:
+    """`C.UTF-8`, `C.utf8` and `c.UTF8` alike (glibc lists its locales as `C.utf8`, `en_US.utf8`)."""
+    return re.sub(r"[^a-z0-9]", "", name.lower())
+
+
+def available_locales() -> "frozenset[str] | None":
+    """The locales this host has (`locale -a`, in a comparable form), read once; None when that cannot be told. Not
+    `locale.setlocale`, which would switch the locale of every thread of this process for a moment."""
+    if not _available_locales:
+        names = None
+        try:
+            done = subprocess.run(["locale", "-a"], capture_output=True, timeout=10, check=False)
+            if done.returncode == 0:
+                names = frozenset(_locale_key(line) for line in done.stdout.decode("utf-8", "replace").split())
+        except (OSError, subprocess.SubprocessError):
+            pass
+        _available_locales.append(names)
+    return _available_locales[0]
+
+
+def utf8_locale() -> str | None:
+    """The first of `UTF8_LOCALES` this host has, or None when it has none (or that cannot be told): then a POSIX probe may print a
+    non-ASCII command line as `?` or escapes, and a check that matches a non-ASCII path in it cannot be trusted."""
+    names = available_locales()
+    if not names:
+        return None
+    return next((name for name in UTF8_LOCALES if _locale_key(name) in names), None)
+
+
 def utf8_environment(os_name: str | None = None) -> dict | None:
-    """The environment for a probe whose output must be UTF-8 on POSIX: `LC_ALL` set to a UTF-8 locale (macOS `en_US.UTF-8`,
-    elsewhere `C.UTF-8`). Over SSH or under launchd the locale is often `C`, and then `ps` prints non-ASCII bytes vis-encoded
-    (`M-P...`) and lsof as `\\xNN`, so a path with such characters would match nothing. None (inherit) on Windows."""
+    """The environment for a probe whose output must be UTF-8 on POSIX: `LC_ALL` set to the first UTF-8 locale the host has
+    (`en_US.UTF-8`, else `C.UTF-8`; when neither is known to exist, macOS `en_US.UTF-8`, elsewhere `C.UTF-8`). Over SSH or under
+    launchd the locale is often `C`, and then `ps` prints non-ASCII bytes vis-encoded (`M-P...`) and lsof as `\\xNN`, so a path
+    with such characters would match nothing. None (inherit) on Windows."""
     os_name = os_name or core.local_os()
     if os_name == "windows":
         return None
-    return {**os.environ, "LC_ALL": "en_US.UTF-8" if os_name == "macos" else "C.UTF-8"}
+    return {**os.environ, "LC_ALL": utf8_locale() or ("en_US.UTF-8" if os_name == "macos" else "C.UTF-8")}
 
 
 def run_text(argv: Sequence[str], timeout_sec: float = PROBE_TIMEOUT_SEC) -> str | None:
