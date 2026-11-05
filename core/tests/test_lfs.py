@@ -411,11 +411,12 @@ class InterruptTests(LfsTestCase):
         project = make_repo(self.base / "repo", {"Assets/a.bin": self.texture})
         self.seed_cache(self.texture)
         real = os.replace
-        target = os.path.normcase(str(project / "Assets" / "a.bin"))
+        # Compared resolved: git names the tree by its real path (on macOS /private/var/... for a /var/... temporary folder).
+        target = os.path.normcase(os.path.realpath(project / "Assets" / "a.bin"))
 
         def replace(source, destination):
             real(source, destination)
-            if os.path.normcase(str(destination)) == target:
+            if os.path.normcase(os.path.realpath(destination)) == target:
                 raise KeyboardInterrupt
 
         with mock.patch.object(lfs.os, "replace", replace), self.assertRaises(KeyboardInterrupt):
@@ -438,10 +439,15 @@ class InterruptTests(LfsTestCase):
         self.assertClean(project.parent)
 
 
+#: The PATH the preflight itself gives git (with the Homebrew folders on macOS, where a non-interactive shell lacks them), so git-lfs is
+#: found for these tests exactly where `unity run` finds it.
+LFS_PATH = lfs._environment()["PATH"]  # noqa: SLF001
+
+
 def lfs_available():
     if not HAVE_GIT:
         return False
-    done = subprocess.run(["git", "lfs", "version"], capture_output=True, text=True)
+    done = subprocess.run(["git", "lfs", "version"], capture_output=True, text=True, env={**os.environ, "PATH": LFS_PATH})
     return done.returncode == 0
 
 
@@ -456,7 +462,7 @@ class RealGitLfsTests(unittest.TestCase):
         cls.root = Path(cls._folder.name)
         empty = cls.root / "gitconfig"
         empty.write_text("", encoding="utf-8")
-        cls._patch = mock.patch.dict(os.environ, {"GIT_CONFIG_GLOBAL": str(empty), "GIT_CONFIG_NOSYSTEM": "1", **IDENTITY})
+        cls._patch = mock.patch.dict(os.environ, {"GIT_CONFIG_GLOBAL": str(empty), "GIT_CONFIG_NOSYSTEM": "1", "PATH": LFS_PATH, **IDENTITY})
         cls._patch.start()
         source = cls.root / "src"
         source.mkdir()
