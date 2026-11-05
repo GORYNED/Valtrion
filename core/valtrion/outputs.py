@@ -211,10 +211,26 @@ def locate(base: Path, relative: str) -> tuple[Path | None, str]:
     return target, ""
 
 
+def base_refusal(base: Path, git: GitRunner = compare.run_git) -> str | None:
+    """Why nothing may be removed from the working directory `base` at all, or None: it is, or lies inside, a repository's own
+    folder (a `.git` part on its way, the git directory of a linked worktree, a bare repository), where an "output" would be the
+    repository's objects or refs."""
+    if any(name_key(part) == ".git" for part in (*base.parts, *base.resolve().parts)):
+        return f"the working directory {base} lies inside a .git folder"
+    if base.is_dir():
+        code, output = git(base, ["rev-parse", "--is-inside-git-dir", "--is-bare-repository"])
+        if code == 0 and "true" in output.split():
+            return f"the working directory {base} is a git directory or a bare repository"
+    return None
+
+
 def refusal(base: Path, relative: str, git: GitRunner = compare.run_git, walk: bool = True) -> str | None:
     """Why the normalized `relative` must never be removed from `base`, or None. Resolves links (symlinks, junctions) and file
     system aliases of the path as it exists now; a path that does not exist yet is judged by the part that does. The git and
     working-copy checks run on the path as found on disk."""
+    reason = base_refusal(base, git)
+    if reason:
+        return reason
     target, reason = locate(base, relative)
     if target is None:
         return reason
@@ -247,6 +263,9 @@ def declare(base: Path | None, paths: Iterable[object], git: GitRunner = compare
         return normalized
     if base is None:
         raise OutputError("cleanup paths need the job's working directory they are relative to")
+    problem = base_refusal(base, git)
+    if problem:
+        raise OutputError(f"cleanup paths are refused: {problem}")
     for item in items:
         relative = normalize(item)
         if relative in normalized:

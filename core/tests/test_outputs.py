@@ -222,6 +222,34 @@ class TrackedTests(OutputTestCase):
                 self.assertEqual([], outputs.remove_declared(self.base, [declared]).to_document()["removed"])
         self.assertTrue((self.base / nfd / "a.txt").is_file())
 
+    def test_a_working_directory_inside_a_git_folder_or_a_bare_repository_is_refused(self):
+        objects = self.base / ".git" / "objects"
+        bare = self.tmp / "bare-repo"  # no `.git` in its name: only git can tell
+        _git(self.tmp, "init", "-q", "--bare", str(bare))
+        for base, declared in ((self.base / ".git", "objects"), (bare, "objects"), (bare, "refs")):
+            with self.subTest(base=str(base)):
+                with self.assertRaises(outputs.OutputError) as raised:
+                    outputs.declare(base, [declared])
+                self.assertIn("working directory", str(raised.exception))
+                record = outputs.remove_declared(base, [declared]).to_document()
+                self.assertEqual([], record["removed"], record)
+                self.assertTrue((base / declared).is_dir())
+        self.assertTrue(objects.is_dir())
+
+    def test_a_git_folder_of_a_linked_worktree_is_refused(self):
+        _git(self.base, "-c", "user.name=a", "-c", "user.email=a@b", "commit", "-q", "-m", "i")
+        _git(self.base, "worktree", "add", "-q", "--detach", str(self.tmp / "linked"))
+        admin = next((self.base / ".git" / "worktrees").iterdir())
+        with self.assertRaises(outputs.OutputError):
+            outputs.declare(admin, ["HEAD"])
+        self.assertEqual([], outputs.remove_declared(admin, ["HEAD"]).to_document()["removed"])
+        self.assertTrue((admin / "HEAD").is_file())
+
+    def test_a_git_part_in_the_working_directory_is_refused_by_name_alone(self):
+        for base in (self.tmp / "x" / ".GIT" / "y", self.tmp / unicodedata.normalize("NFD", ".git")):
+            with self.subTest(base=str(base)):
+                self.assertIn("inside a .git folder", outputs.base_refusal(base, git=lambda folder, arguments: (128, "")))
+
     def test_a_path_inside_a_nested_repository_is_refused(self):
         inner = self.base / "inner"
         (inner / "Assets").mkdir(parents=True)

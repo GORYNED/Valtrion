@@ -663,8 +663,11 @@ class _Runner:
             record = clean_declared_outputs(self.spec, self.job_id, self.home, self.probe_lease)
         except Exception as error:  # noqa: BLE001 - the job must still end; the failure is recorded, not hidden
             base, paths = _declared(self.spec)
-            record = {"base": str(base), "removed": [], "refused": [],
-                      "kept": [{"path": item, "reason": f"output cleanup failed: {type(error).__name__}: {error}"} for item in paths]}
+            record = None if base is None else {
+                "base": str(base), "removed": [], "refused": [],
+                "kept": [{"path": item, "reason": f"output cleanup failed: {type(error).__name__}: {error}"} for item in paths]}
+            if record is None:
+                self.events.emit("log", f"output cleanup failed: {type(error).__name__}: {error}")
         if record is None:
             return
         self.output_cleanup = record
