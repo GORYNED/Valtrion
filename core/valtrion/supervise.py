@@ -23,7 +23,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Mapping, Sequence
 
-from . import constants, core
+from . import constants, core, hiddendesktop, nowindow
 
 DEFAULT_STALL_SEC = 600.0
 SHORT_STALL_SEC = 180.0
@@ -264,14 +264,23 @@ _CREATE_NEW_PROCESS_GROUP = 0x00000200
 _CREATE_NO_WINDOW = 0x08000000  # a console step started by a detached runner must not open a window
 
 
-def spawn(argv: Sequence[str], cwd: str | None, env: Mapping[str, str] | None, log, tree_grace_sec: float = 3.0):
-    """Start the step with its output in `log` and attach it to a process tree. Raises OSError when it cannot start."""
+def spawn(argv: Sequence[str], cwd: str | None, env: Mapping[str, str] | None, log, tree_grace_sec: float = 3.0,
+          hidden_desktop: bool = False):
+    """Start the step with its output in `log` and attach it to a process tree. Raises OSError when it cannot start. `hidden_desktop`
+    (Windows only, else ignored): the step runs on a desktop of its own, so the windows it opens never show on the user's screen."""
     environment = dict(env) if env is not None else None
     if os.name == "nt":
         # Started suspended, put into the Job Object, then resumed, so no descendant can ever escape the job.
-        process = subprocess.Popen(
-            list(argv), cwd=cwd, env=environment, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
-            creationflags=_CREATE_NEW_PROCESS_GROUP | _CREATE_SUSPENDED | _CREATE_NO_WINDOW)
+        flags = _CREATE_NEW_PROCESS_GROUP | _CREATE_SUSPENDED | _CREATE_NO_WINDOW
+        process = None
+        if hidden_desktop:
+            try:
+                process = hiddendesktop.start(argv, cwd, environment, log, flags)
+            except hiddendesktop.DesktopUnavailable:
+                process = None  # no desktop can be created here: run on the current one rather than not at all
+        if process is None:
+            process = subprocess.Popen(
+                list(argv), cwd=cwd, env=environment, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT, creationflags=flags)
         try:
             tree: ProcessTree = WindowsTree(process)
             _resume_process(process)
@@ -408,14 +417,16 @@ def classify_exit(
 def supervise(
         argv: Sequence[str], watchdog: Watchdog, log_path: Path, cwd: str | None = None, env: Mapping[str, str] | None = None,
         on_event: EventSink | None = None, contract_exit_codes: bool = False, exit_codes: Mapping[int, str] | None = None,
-        monotonic: Callable[[], float] = time.monotonic, sleep: Callable[[float], None] = time.sleep) -> SuperviseResult:
-    """Run `argv` under the watchdog; its output goes to `log_path`. Always returns, and never leaves processes behind."""
+        monotonic: Callable[[], float] = time.monotonic, sleep: Callable[[float], None] = time.sleep,
+        hidden_desktop: bool = False) -> SuperviseResult:
+    """Run `argv` under the watchdog; its output goes to `log_path`. Always returns, and never leaves processes behind. `hidden_desktop`:
+    see `spawn`."""
     emit = on_event or (lambda *_: None)
     log_path.parent.mkdir(parents=True, exist_ok=True)
     started = monotonic()
     with open(log_path, "ab") as log:
         try:
-            process, tree = spawn(argv, cwd, env, log)
+            process, tree = spawn(argv, cwd, env, log, hidden_desktop=hidden_desktop)
         except OSError as error:
             return SuperviseResult(constants.BLOCKED, f"cannot start {argv[0]!r}: {error}", None, 0.0, 0.0)
         tracker = ProgressTracker(watchdog, log_path, tree, monotonic)
@@ -456,6 +467,9 @@ def supervise(
                 tree.kill()
                 _reap(process)
             tree.close()
+            release = getattr(process, "close", None)  # a hidden-desktop process owns its handles
+            if release is not None:
+                release()
     elapsed = monotonic() - started
     marker = read_marker(log_path)
     if status is None:
@@ -542,7 +556,8 @@ def kill_process_tree(pid: int) -> bool:
     if pid <= 0:
         return False
     if os.name == "nt":
-        result = subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True, check=False, timeout=30)
+        result = subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True, check=False, timeout=30,
+                                **nowindow.OPTIONS)
         return result.returncode == 0
     try:
         os.killpg(pid, signal.SIGKILL)  # the runner leads its own session

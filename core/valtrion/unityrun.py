@@ -22,7 +22,7 @@ import time
 from pathlib import Path
 from typing import Callable, Sequence, TextIO
 
-from . import config, constants, core, lease, lfs, supervise, unityguard
+from . import config, constants, core, lease, lfs, progresswindow, supervise, unityguard
 from .providers.unity import support
 
 DEFAULT_LEASE_WAIT_SEC = 1800.0
@@ -232,11 +232,14 @@ def run(
         purpose: str = "", home: Path | None = None, out: TextIO | None = None, err: TextIO | None = None,
         ttl_sec: int = LEASE_TTL_SEC, poll_sec: float = 1.0, cancel_poll_sec: float = 1.0,
         probe: unityguard.Probe | None = None, guard_poll_sec: float | None = None, lifeline: int | None = None,
-        lfs_materialize: bool | None = None, lfs_call: lfs.LfsCall | None = None, lfs_free: Callable[[Path], int] | None = None) -> int:
+        lfs_materialize: bool | None = None, lfs_call: lfs.LfsCall | None = None, lfs_free: Callable[[Path], int] | None = None,
+        hidden_desktop: bool | None = None, progress_window: bool | None = None) -> int:
     """Run Unity with `unity_args`; returns the exit code of the final status (already printed as the last stdout line).
     `lifeline`: a file descriptor whose end of input means the caller is gone (the standard input of a command run over SSH); the run is then
     interrupted like by Ctrl+C. `lfs_materialize`: run the Git LFS preflight (None: `lfs.materialize` of host.json, default on);
-    `lfs_call` and `lfs_free` replace `git lfs` and the free-space probe in tests."""
+    `lfs_call` and `lfs_free` replace `git lfs` and the free-space probe in tests. `hidden_desktop`: start Unity on a desktop of its own
+    (None: `hiddenDesktop` of host.json, default off here; the command line turns it on by default; Windows only, ignored elsewhere), so
+    test windows do not appear on the screen. `progress_window`: show one window with the progress of the run (same rules, `progressWindow`)."""
     out = out or sys.stdout
     err = err or sys.stderr
     args = normalize_assembly_names(unity_args)
@@ -266,6 +269,8 @@ def run(
             args += config.unity_accelerator_args(home)
         guard_settings = unityguard.load_settings(home)
         materialize = config.lfs_materialize(home) if lfs_materialize is None else lfs_materialize
+        on_hidden_desktop = config.hidden_desktop(home) if hidden_desktop is None else hidden_desktop
+        show_progress = config.progress_window(home) if progress_window is None else progress_window
         lfs_cache = lfs.cache_root(config.load_host_settings(home).work_root) if materialize else None
 
         capacity = lease.unity_editor_capacity(home)
@@ -353,7 +358,15 @@ def run(
 
                 watcher = threading.Thread(target=watch_leases, name="valtrion-unity-lease-watch", daemon=True)
                 watcher.start()
-                outcome = supervise.supervise([editor, *args], watchdog, console, None, None, exit_codes=UNITY_EXIT_CODES)
+                title, detail = progresswindow.describe_run(args, project)
+                window = progresswindow.start(log_file or console, title, detail, show_progress)
+                outcome = None
+                try:
+                    outcome = supervise.supervise([editor, *args], watchdog, console, None, None, exit_codes=UNITY_EXIT_CODES,
+                                                  hidden_desktop=on_hidden_desktop)
+                finally:
+                    if window is not None and outcome is None:  # an interrupt: there is no result to show
+                        window.finish(constants.BLOCKED, "interrupted")
                 stop_watching.set()
                 watcher.join(timeout=5)
                 lost = f"the lease(s) {', '.join(keeper.lost)} were lost while Unity ran"
@@ -364,6 +377,8 @@ def run(
                     status, reason = classify(outcome, log_file if _log_is_new(log_file, before) else console)
                     if keeper.lost:  # Unity had already ended: its own result stands, with the note
                         reason = f"{reason}; note: {lost}" if reason else f"note: {lost}"
+                if window is not None:
+                    window.finish(status, reason)
                 text = log_tail(console, CONSOLE_TAIL_BYTES)
                 if text:
                     _say(err, text.rstrip("\n"))

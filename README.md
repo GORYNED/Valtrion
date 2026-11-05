@@ -58,6 +58,18 @@ The result is `STALL`: no progress for 5 seconds. The job directory printed at t
 
 More: the [Quick Start](docs/quick-start.md) covers a real failure, a timeout and how to read the results.
 
+## See what is running
+
+```sh
+valtrion dashboard
+```
+
+This opens a read-only page, with a tray icon on Windows. It shows the Unity Editor and device slots in use and free, running jobs, who holds memory, the leases and the recent jobs of this machine and of your SSH hosts. It listens on `127.0.0.1` only and can change nothing. Details: [`dashboard`](docs/cli.md#dashboard).
+
+<p align="center">
+  <img src="docs/images/dashboard-overview.png" alt="The Valtrion dashboard during two Unity test runs: both Editor slots busy, two Android devices free, memory use and a progress bar for each running run." width="100%">
+</p>
+
 ## Update
 
 ```sh

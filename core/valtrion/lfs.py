@@ -39,7 +39,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Iterable, Sequence
 
-from . import checkout, compare, diskspace
+from . import checkout, compare, diskspace, nowindow
 
 POINTER_MAX_BYTES = 1024
 POINTER_VERSION = b"version https://git-lfs.github.com/spec/v1"
@@ -109,7 +109,7 @@ def _run(command: Sequence[str], cwd: Path, stdin: bytes | None, timeout: float,
     raised again, unless `protect`: an index-writing git command is then waited for until it ends by itself (its timeout still
     applies) before the interrupt is raised. Returns (exit code, stdout, stderr); exit code 124 is a timeout (the child was killed)."""
     process = subprocess.Popen(list(command), cwd=cwd, stdin=subprocess.PIPE if stdin is not None else subprocess.DEVNULL,
-                               stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=_environment())
+                               stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=_environment(), **nowindow.OPTIONS)
     deadline = time.monotonic() + timeout
     pending = stdin
     interrupt: BaseException | None = None

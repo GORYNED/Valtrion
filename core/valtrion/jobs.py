@@ -28,7 +28,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, ContextManager, Mapping, Sequence
 
-from . import artifacts, constants, core, lease, outputs, remote, supervise, unityguard, workroot
+from . import artifacts, constants, core, lease, nowindow, outputs, remote, supervise, unityguard, workroot
 from .artifacts import RunLayout
 
 EVENT_TYPES = (
@@ -1114,7 +1114,7 @@ def _launch_launchd(argv, directory, log, domain, spec, run_command, work_roots=
 
 
 def _run(command: Sequence[str]) -> tuple[int, str]:
-    done = subprocess.run(list(command), capture_output=True, text=True, timeout=60, check=False)
+    done = subprocess.run(list(command), capture_output=True, text=True, timeout=60, check=False, **nowindow.OPTIONS)
     return done.returncode, (done.stdout + done.stderr).strip()
 
 

@@ -353,6 +353,35 @@ def lfs_materialize(home: Path | None = None) -> bool:
     return materialize
 
 
+def _host_flag(key: str, default: bool, home: Path | None) -> bool:
+    base = home or core.valtrion_home()
+    try:
+        document = core.read_json(host_json_path(base))
+    except FileNotFoundError:
+        return default
+    except (OSError, ValueError) as error:
+        raise ConfigError(f"cannot read {host_json_path(base)}: {error}") from error
+    value = document.get(key) if isinstance(document, dict) else None
+    if value is None:
+        return default
+    if not isinstance(value, bool):
+        raise ConfigError(f"host.json: {key} must be true or false")
+    return value
+
+
+def hidden_desktop(home: Path | None = None, default: bool = False) -> bool:
+    """`hiddenDesktop` of host.json: whether `unity run` starts Unity on a desktop of its own (Windows only), so the windows that tests open
+    never show on the user's screen or take the keyboard and the mouse. `default` when host.json does not set it (the command line of
+    `unity run` passes True)."""
+    return _host_flag("hiddenDesktop", default, home)
+
+
+def progress_window(home: Path | None = None, default: bool = False) -> bool:
+    """`progressWindow` of host.json: whether `unity run` shows one small window with the progress of the run (Windows only). `default`
+    when host.json does not set it (the command line of `unity run` passes True)."""
+    return _host_flag("progressWindow", default, home)
+
+
 def check_launch_timeout(value: Any, where: str) -> float:
     """A `launchTimeoutSec` value: a finite number from 1 to `constants.LAUNCH_TIMEOUT_MAX_SEC`. Larger values are refused, never clamped:
     a launch wait has a hard upper limit, and a typo must not turn into a silent shorter or longer wait."""

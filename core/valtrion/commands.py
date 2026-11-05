@@ -1475,6 +1475,12 @@ STOP_ON_STDIN_EOF = "--stop-on-stdin-eof"
 
 def _configure_unity(parser: argparse.ArgumentParser) -> None:
     sub = parser.add_subparsers(dest="action", required=True)
+    window = sub.add_parser("_progress", help=argparse.SUPPRESS)  # the progress window of a `unity run`, started by it
+    window.add_argument("--log", type=Path, required=True)
+    window.add_argument("--done", type=Path, required=True)
+    window.add_argument("--parent-pid", type=int, required=True)
+    window.add_argument("--title", default="")
+    window.add_argument("--detail", default="")
     run = sub.add_parser("run", help="run Unity in batch mode under the host's unity-project and unity-editor leases and the watchdog",
                          description="valtrion unity run [options] -- <Unity arguments>. The last stdout line is STATUS <name>; "
                                      "exit codes: PASS 0, FAIL 1, BLOCKED 2, STALL and TIMEOUT 3.")
@@ -1489,6 +1495,11 @@ def _configure_unity(parser: argparse.ArgumentParser) -> None:
     run.add_argument("--lfs-materialize", action=argparse.BooleanOptionalAction, default=None,
                      help="turn Git LFS pointer files of the project into their content before Unity starts, from the host's shared LFS "
                           "cache, fetching only missing objects (default: lfs.materialize of host.json, on)")
+    run.add_argument("--hidden-desktop", action=argparse.BooleanOptionalAction, default=None,
+                     help="Windows only: start Unity on a desktop of its own, so the windows that tests open do not appear on your screen "
+                          "or take the keyboard and the mouse (default: hiddenDesktop of host.json, on)")
+    run.add_argument("--progress-window", action=argparse.BooleanOptionalAction, default=None,
+                     help="Windows only: show one small window with the progress of the run (default: progressWindow of host.json, on)")
     run.add_argument(STOP_ON_STDIN_EOF, action="store_true", help=argparse.SUPPRESS)  # added by a caller that keeps this command's input open
     _add_host_options(run)
     run.add_argument("unity_args", nargs=argparse.REMAINDER, help="after `--`: the arguments passed to Unity")
@@ -1503,8 +1514,10 @@ def _unity_arguments(arguments: argparse.Namespace) -> list[str]:
 
 
 def _unity(arguments: argparse.Namespace) -> int:
-    from . import unityrun
+    from . import progresswindow, unityrun
 
+    if arguments.action == "_progress":
+        return progresswindow.run_window(arguments.log, arguments.done, arguments.parent_pid, arguments.title, arguments.detail)
     entry = _entry(arguments)
     try:  # the remote host applies its own host.json when no wait was given; here the wait only sizes the transport timeout
         wait = _lease_wait(arguments.lease_wait, unityrun.DEFAULT_LEASE_WAIT_SEC)
@@ -1516,6 +1529,11 @@ def _unity(arguments: argparse.Namespace) -> int:
         return _forward(arguments, entry, timeout=int(wait + limit + REMOTE_UNITY_MARGIN_SEC), retry=False,
                         lost_hint=REMOTE_UNITY_LOST_HINT, lifeline=True, extra=(STOP_ON_STDIN_EOF,))
 
+    try:  # both are on unless the command line or host.json says otherwise (they only act on Windows)
+        hidden = config.hidden_desktop(None, True) if arguments.hidden_desktop is None else arguments.hidden_desktop
+        progress = config.progress_window(None, True) if arguments.progress_window is None else arguments.progress_window
+    except config.ConfigError as error:
+        return _blocked("unity", str(error))
     unity_args = _unity_arguments(arguments)
     found = None
     if unityrun.option_value(unity_args, "-projectPath") is None:  # -projectPath wins; a broken valtrion.json must not block such a run
@@ -1525,11 +1543,30 @@ def _unity(arguments: argparse.Namespace) -> int:
             return _blocked("unity", str(error))
     return unityrun.run(unity_args, found or arguments.project_dir, arguments.unity, wait, arguments.timeout_sec,
                         arguments.stall_sec, arguments.purpose, lifeline=sys.stdin.fileno() if arguments.stop_on_stdin_eof else None,
-                        lfs_materialize=arguments.lfs_materialize)
+                        lfs_materialize=arguments.lfs_materialize, hidden_desktop=hidden, progress_window=progress)
+
+
+def _configure_dashboard(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--no-open", action="store_true", help="do not open the page in the browser")
+    parser.add_argument("--no-tray", action="store_true", help="no tray icon (Windows)")
+    parser.add_argument("--port", type=int, default=47821, help="first port to try on 127.0.0.1 (default 47821)")
+    parser.add_argument("--stop", action="store_true", help="stop the running dashboard")
+    parser.add_argument("--foreground", action="store_true", help="run the dashboard in this process (what the tray and Windows startup use)")
+    parser.add_argument("--open", action="store_true", help="with --foreground: also open the page")
+    parser.add_argument("--snapshot", action="store_true",
+                        help="print the snapshot of this machine as JSON and exit (what the dashboard of another host asks over SSH)")
+
+
+def _dashboard(arguments: argparse.Namespace) -> int:
+    from . import dashboardcmd
+
+    return dashboardcmd.run(arguments)
 
 
 def register_all() -> None:
     table: list[tuple[str, str, Callable, Callable]] = [
+        ("dashboard", "a read-only local page (and tray icon) with the leases, jobs, Unity Editors and memory of this machine", _dashboard,
+         _configure_dashboard),
         ("hosts", "list or add hosts", _hosts, _configure_hosts),
         ("doctor", "probe what this host can do (read-only)", _doctor, _configure_doctor),
         ("devices", "list or refresh attached devices", _devices, _configure_devices),

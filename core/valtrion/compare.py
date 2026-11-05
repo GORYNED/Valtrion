@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
-from . import constants, core
+from . import constants, core, nowindow
 from .schema import Validator, validate_document
 
 DEFAULT_MIN_SAMPLES = 3
@@ -192,7 +192,7 @@ def run_git(folder: Path, arguments: Sequence[str], timeout: float = 60) -> tupl
     import subprocess
     try:
         done = subprocess.run(["git", *arguments], cwd=folder, capture_output=True, text=True, encoding="utf-8", errors="replace",
-                              timeout=timeout, check=False, env=git_environment(), stdin=subprocess.DEVNULL)
+                              timeout=timeout, check=False, env=git_environment(), stdin=subprocess.DEVNULL, **nowindow.OPTIONS)
     except subprocess.TimeoutExpired:
         return 124, f"git {arguments[0] if arguments else ''} timed out after {timeout:g} s"
     except (OSError, subprocess.SubprocessError) as error:

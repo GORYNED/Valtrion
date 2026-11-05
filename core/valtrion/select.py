@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from . import constants, project
+from . import constants, nowindow, project
 from .schema import SchemaError, UnreadableInput, Validator, parse_json, validate_file
 
 LEVELS = ("L0", "L1", "L2", "L3", "L4")
@@ -371,7 +371,8 @@ def classify(
 
 def _git(root: Path, *arguments: str) -> bytes:
     try:
-        completed = subprocess.run(["git", "-C", str(root), *arguments], capture_output=True, timeout=_GIT_TIMEOUT_SEC, check=False)
+        completed = subprocess.run(["git", "-C", str(root), *arguments], capture_output=True, timeout=_GIT_TIMEOUT_SEC, check=False,
+                                   **nowindow.OPTIONS)
     except (OSError, subprocess.SubprocessError) as error:
         raise GitError(f"git {' '.join(arguments)}: {error}") from error
     if completed.returncode != 0:
