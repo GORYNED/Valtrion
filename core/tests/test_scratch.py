@@ -751,17 +751,69 @@ class EncodingTests(unittest.TestCase):
 
     def test_posix_probes_run_in_a_utf8_locale(self):
         from valtrion import unityguard
-        self.assertEqual("en_US.UTF-8", unityguard.utf8_environment("macos")["LC_ALL"])
-        self.assertEqual("C.UTF-8", unityguard.utf8_environment("linux")["LC_ALL"])
+        with mock.patch.object(unityguard, "available_locales", return_value=None):  # unknown: the per-system default
+            self.assertEqual("en_US.UTF-8", unityguard.utf8_environment("macos")["LC_ALL"])
+            self.assertEqual("C.UTF-8", unityguard.utf8_environment("linux")["LC_ALL"])
         self.assertIsNone(unityguard.utf8_environment("windows"))
         done = SimpleNamespace(returncode=0, stdout=b"ok")
-        with mock.patch.object(unityguard.subprocess, "run", return_value=done) as run:
+        with mock.patch.object(unityguard, "available_locales", return_value=frozenset({"c", "posix", "cutf8"})), \
+                mock.patch.object(unityguard.subprocess, "run", return_value=done) as run:
             self.assertEqual("ok", unityguard.run_text(["ps"]))
         options = run.call_args.kwargs
         if os.name == "nt":
             self.assertEqual(subprocess.CREATE_NO_WINDOW, options["creationflags"], "PowerShell gets a console of its own")
         else:
             self.assertIn("UTF-8", options["env"]["LC_ALL"])
+
+    def listed(self, *commands, argv=("release", "x-0123abcd")):
+        own = SimpleNamespace(pid=os.getpid(), ppid=1, path="python", command="python -m valtrion workroot scratch " + " ".join(argv),
+                              cwd=None)
+        return [own, *(SimpleNamespace(pid=900 + i, ppid=1, path="p", command=c, cwd=None) for i, c in enumerate(commands))]
+
+    def test_a_listing_with_undecodable_bytes_or_without_the_callers_own_arguments_is_unreadable(self):
+        scratch.check_readable(self.listed("/bin/sleep 9 /w/Пользователь/scratch/x"), ["release", "x-0123abcd"])
+        with self.assertRaisesRegex(scratch.ProcessListUnreadable, "pid 900 is not valid UTF-8"):
+            scratch.check_readable(self.listed("/bin/sleep 9 /w/��/scratch/x"), ["release", "x-0123abcd"])
+        with self.assertRaisesRegex(scratch.ProcessListUnreadable, "own argument"):
+            # procps in a locale it does not have prints `?` for every non-ASCII byte of the caller's own arguments too
+            scratch.check_readable(self.listed(argv=("release", "/w/" + "?" * 24)), ["release", "/w/Пользователь"])
+        with self.assertRaisesRegex(scratch.ProcessListUnreadable, "does not show this process"):
+            scratch.check_readable(self.listed()[1:], [])
+        nfd = "/w/" + __import__("unicodedata").normalize("NFD", "Ünïcode")
+        scratch.check_readable(self.listed(argv=("release", nfd)), ["release", "/w/Ünïcode"])
+
+    @contextlib.contextmanager
+    def system_probe(self, processes, locales):
+        """`system_processes` on a Linux host whose ps prints `processes` and that has the locales `locales`."""
+        from valtrion import unityguard
+        procs = [unityguard.Proc(p.pid, p.ppid, p.command, p.command) for p in processes]
+        with mock.patch.object(unityguard.SystemProbe, "processes", return_value=procs), \
+                mock.patch.object(scratch, "_working_directories", return_value={}), \
+                mock.patch.object(unityguard, "available_locales", return_value=locales), \
+                mock.patch.object(core, "local_os", return_value="linux"), \
+                mock.patch.object(sys, "argv", ["valtrion", "release", "x-0123abcd"]):
+            yield
+
+    def test_the_system_listing_reports_why_it_is_unreadable(self):
+        with self.system_probe(self.listed("/bin/sleep �"), frozenset({"cutf8"})):
+            source = scratch._Processes(None)
+            self.assertIsNone(source.get())
+        self.assertIn("not valid UTF-8", source.reason)
+
+    def test_without_a_utf8_locale_a_non_ascii_folder_is_never_ruled_free(self):
+        # glibc without C.UTF-8 or en_US.UTF-8: ps prints `?` for the folder's letters, so a holder would not be found.
+        base = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        self.addCleanup(base.cleanup)
+        manager = lease.LeaseManager(Path(base.name))
+        for locales, folder, expected in ((frozenset({"c", "posix"}), "/w/Пользователь/scratch/x-0123abcd", "no UTF-8 locale"),
+                                          (frozenset({"c", "posix"}), "/w/plain/scratch/x-0123abcd", None),
+                                          (frozenset({"c", "cutf8"}), "/w/Пользователь/scratch/x-0123abcd", None)):
+            with self.system_probe(self.listed("/bin/sleep 9 /w/" + "?" * 24 + "/scratch/x-0123abcd"), locales):
+                reason = scratch.activity(Path(folder), {}, manager, scratch._Processes(None))
+            if expected is None:
+                self.assertIsNone(reason)
+            else:
+                self.assertIn(expected, reason)
 
     @unittest.skipUnless(os.name == "nt", "the console code page is a Windows matter")
     def test_the_process_probe_leaves_the_callers_console_code_page_alone(self):

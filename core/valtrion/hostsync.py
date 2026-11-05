@@ -180,7 +180,15 @@ def _pipx_value(transport: Transport, pipx: tuple[str, ...], name: str) -> str |
 #: provably idle (no job whose runner is alive, no lease whose holder is alive, no process using the folder); when any of that cannot
 #: be established it changes nothing. It is self-contained (it runs on the host, without the valtrion package): the UTF-8 locale of the
 #: process listing mirrors `unityguard.utf8_environment`.
-HOST_SCRIPT = r'''import json, os, re, shutil, subprocess, sys, time
+HOST_SCRIPT = r'''import json, os, re, shutil, subprocess, sys, time, unicodedata
+
+# The controller reads this output as UTF-8; a pipe on Windows would otherwise be in the ANSI code page, and printing a path outside
+# it would fail half way through a prune.
+for stream in (sys.stdout, sys.stderr):
+    try:
+        stream.reconfigure(encoding="utf-8", errors="backslashreplace")
+    except (AttributeError, ValueError):
+        pass
 
 VERSION = re.compile(r"^\d+\.\d+\.\d+$")
 #: Tried in this order; the first one the C library accepts is used, else the last one.
@@ -221,6 +229,9 @@ def utf8_environment():
 
 
 def fold(text):
+    """The form two spellings of one path share: NFC (APFS keeps names as given, so a command line may hold a path in NFD while the
+    folder is NFC; folding both can only make more processes count as users), and lower case on Windows."""
+    text = unicodedata.normalize("NFC", text)
     return text.lower() if os.name == "nt" else text
 
 
@@ -230,8 +241,9 @@ def decoded_forms(command):
     forms = [command]
     data = command.encode("utf-8", "surrogateescape")
     vis = VIS.sub(lambda m: bytes([0x80 | m.group(1)[0]]) if m.group(1) else bytes([0xFF if m.group(2) == b"?" else 0x80 | (m.group(2)[0] ^ 0x40)]), data)
-    escaped = ESCAPE.sub(lambda m: bytes([int(m.group(1), 16) if m.group(1) else int(m.group(2), 8)]), data)
-    for candidate in (vis, escaped):
+    unescape = lambda text: ESCAPE.sub(lambda m: bytes([int(m.group(1), 16) if m.group(1) else int(m.group(2), 8)]), text)
+    # macOS vis prints a meta space (0xA0) as `\240` even without backslashes elsewhere, so both kinds can mix in one path.
+    for candidate in (vis, unescape(data), unescape(vis)):
         try:
             forms.append(candidate.decode("utf-8"))
         except UnicodeDecodeError:
@@ -246,6 +258,8 @@ def vis(data, slash):
             out.append("\\\\" if slash else "\\")
         elif 0x20 <= byte <= 0x7E:
             out.append(chr(byte))
+        elif byte == 0xA0:
+            out.append("\\%03o" % byte)  # vis writes a meta space in octal in every style
         else:
             low = byte & 0x7F
             code = "^" + ("?" if low == 0x7F else chr(low + 0x40)) if low < 0x20 or low == 0x7F else "-" + chr(low)
@@ -255,11 +269,13 @@ def vis(data, slash):
 
 def encoded_forms(value):
     r"""`value` as it is, and as ps or lsof print it outside a UTF-8 locale (vis with and without backslash, `\xNN`, `\NNN`)."""
-    data = value.encode("utf-8", "surrogateescape")
-    forms = {value, vis(data, False), vis(data, True)}
-    for pattern in ("\\x%02x", "\\x%02X", "\\%03o"):
-        forms.add("".join(chr(byte) if 0x20 <= byte <= 0x7E else pattern % byte for byte in data))
-    return [fold(form) for form in forms if form]
+    forms = set()
+    for spelling in {value, unicodedata.normalize("NFC", value), unicodedata.normalize("NFD", value)}:
+        data = spelling.encode("utf-8", "surrogateescape")
+        forms.update((spelling, vis(data, False), vis(data, True)))
+        for pattern in ("\\x%02x", "\\x%02X", "\\%03o"):
+            forms.add("".join(chr(byte) if 0x20 <= byte <= 0x7E else pattern % byte for byte in data))
+    return list(dict.fromkeys(fold(form) for form in sorted(forms) if form))
 
 
 def mentions(command, value, strip=()):

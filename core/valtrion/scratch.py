@@ -16,7 +16,8 @@ Removal is the only dangerous step, so every removal (`release`, `sweep`, the pr
 - nothing uses it: no held `unity-project:` lease of the folder or of a Unity project inside it, no held lease whose worktree lies
   inside it, the lease the marker depends on is not held, and no process names the folder on its command line or has its working
   directory there (Linux: `/proc`, macOS: `lsof`; Windows does not expose it). When the process list cannot be read, or it does
-  not even contain this process, nothing is removed. The working directories and, without privileges, often the command lines of
+  not even contain this process, holds a command line that is not valid UTF-8, does not show this process's own arguments as
+  they are, or (for a non-ASCII folder) was read on a host without a UTF-8 locale, nothing is removed and the reason is given. The working directories and, without privileges, often the command lines of
   other host users' processes are not visible; scratch folders are therefore owner-only (mode 0700 on POSIX, also after `adopt`),
   so no other host user can work in one unseen. On Windows the folder keeps the ACL it inherits from the work root.
 
@@ -46,6 +47,7 @@ import os
 import re
 import stat
 import subprocess
+import sys
 import time
 import unicodedata
 import uuid
@@ -186,19 +188,48 @@ def _working_directories(os_name: str) -> "dict[int, str] | None":
     return {}
 
 
+class ProcessListUnreadable(Exception):
+    """The process list was read but cannot be trusted to show a path as it is; every folder is then kept, and the reason reported."""
+
+
+class ProcessListing(list):
+    """A process list; `ascii_only` when the host has no UTF-8 locale for the probe, so only an ASCII path can be matched in it."""
+
+    ascii_only = False
+
+
+def check_readable(processes: "Sequence[Any]", argv: "Sequence[str]") -> None:
+    """Raise ProcessListUnreadable when a command line holds bytes that were not UTF-8 (U+FFFD from the decoding), or when this
+    process is missing or its own arguments `argv` do not appear in its command line as they are (NFC on both sides): a path with
+    the same characters would then match nothing either."""
+    for proc in processes:
+        if "�" in (getattr(proc, "command", "") or ""):
+            raise ProcessListUnreadable(f"the command line of pid {proc.pid} is not valid UTF-8")
+    own = next((proc for proc in processes if getattr(proc, "pid", None) == os.getpid()), None)
+    if own is None:
+        raise ProcessListUnreadable(f"the process list does not show this process (pid {os.getpid()})")
+    command = unicodedata.normalize("NFC", own.command or "")
+    for arg in argv:
+        if arg and unicodedata.normalize("NFC", arg) not in command:
+            raise ProcessListUnreadable(f"the process list does not show this process's own argument {ascii(arg)} as it is")
+
+
 def system_processes() -> "list[Any] | None":
     """The host's processes with their working directory where available. The list itself comes from the Unity guard's probe
-    (`ps` on POSIX, Win32_Process in UTF-8 on Windows)."""
+    (`ps` on POSIX, Win32_Process in UTF-8 on Windows). Raises ProcessListUnreadable (see `check_readable`)."""
     from . import unityguard
     os_name = core.local_os()
     listed = unityguard.SystemProbe(os_name).processes()
     if listed is None:
         return None
+    check_readable(listed, sys.argv[1:])
     cwds = _working_directories(os_name)
     if cwds is None:
         return None
-    return [SimpleNamespace(pid=proc.pid, ppid=proc.ppid, path=proc.path, command=proc.command, cwd=cwds.get(proc.pid))
-            for proc in listed]
+    found = ProcessListing(SimpleNamespace(pid=proc.pid, ppid=proc.ppid, path=proc.path, command=proc.command, cwd=cwds.get(proc.pid))
+                           for proc in listed)
+    found.ascii_only = os_name != "windows" and unityguard.utf8_locale() is None
+    return found
 
 
 # -- paths ------------------------------------------------------------------------------------------------------------------
@@ -431,12 +462,16 @@ class _Processes:
         self._source = source  # None: `system_processes`, looked up when needed
         self._read = False
         self._value: "Sequence[Any] | None" = None
+        #: Why the list counts as unreadable, when that is known.
+        self.reason = ""
 
     def get(self) -> "Sequence[Any] | None":
         if not self._read:
             self._read = True
             try:
                 value = (self._source or system_processes)()
+            except ProcessListUnreadable as error:
+                value, self.reason = None, str(error)
             except Exception:  # noqa: BLE001 - an unreadable process list means "unknown", which keeps every folder
                 value = None
             if value is not None and not any(getattr(proc, "pid", None) == os.getpid() for proc in value):
@@ -456,7 +491,11 @@ def activity(folder: Path, marker: dict, manager: lease.LeaseManager, processes:
         return "a lease refers to it: " + "; ".join(leases)
     listed = processes.get()
     if listed is None:
-        return "the process list cannot be read (or is incomplete), so a process using it cannot be ruled out"
+        why = f": {processes.reason}" if processes.reason else ""
+        return f"the process list cannot be read (or is incomplete){why}, so a process using it cannot be ruled out"
+    if getattr(listed, "ascii_only", False) and not str(folder).isascii():
+        return ("the process list cannot be read (this host has no UTF-8 locale, en_US.UTF-8 or C.UTF-8, so a command line naming "
+                "this non-ASCII path cannot be recognized), so a process using it cannot be ruled out")
     pids = using_processes(folder, listed, exclude_caller)
     if pids:
         return "a live process uses it (pid " + ", ".join(str(pid) for pid in pids) + ")"

@@ -7,6 +7,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import unicodedata
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -121,6 +122,37 @@ class PruneTests(unittest.TestCase):
         self.assertIn("removed=0.8.5", done.stdout)
         self.assertTrue((home / "core" / "0.8.4").is_dir())
 
+    def test_keeps_a_version_a_process_names_in_nfd_in_the_c_locale(self):
+        # APFS keeps names as given: a process may hold the path in NFD while the helper gets it in NFC. In the C locale macOS ps also
+        # prints the byte 0xA0 (the second byte of `Р`) as `\240` among `M-x` sequences.
+        self.root = self.root / unicodedata.normalize("NFC", "Ünïcode Р x")
+        self.root.mkdir()
+        home = self.make_home(("0.8.3", "0.8.4"))
+        held = unicodedata.normalize("NFD", str(home / "core" / "0.8.3"))
+        holder = subprocess.Popen([sys.executable, "-c", "import time;time.sleep(60)", held])
+        self.addCleanup(holder.wait)
+        self.addCleanup(holder.kill)
+        environment = {key: value for key, value in os.environ.items() if not key.startswith("LC_")}
+        environment.update(LC_ALL="C", LANG="C")
+        done = subprocess.run([sys.executable, str(self.script), "prune", str(home), "0.8.6"], capture_output=True, text=True,
+                              encoding="utf-8", env=environment, check=False)
+        self.assertEqual(0, done.returncode, done.stderr)
+        self.assertIn("busy=0.8.3", done.stdout)
+        self.assertIn("removed=0.8.4", done.stdout)
+
+    def test_output_is_utf8_whatever_the_encoding_of_the_pipe(self):
+        # On Windows a pipe is in the ANSI code page; a non-ASCII path in `busy=` must not end the helper with UnicodeEncodeError.
+        home = self.make_home(())
+        venv = self.root / "Пользователь" / "venvs" / "valtrion"
+        venv.mkdir(parents=True)
+        holder = subprocess.Popen([sys.executable, "-c", "import time;time.sleep(60)", str(venv)])
+        self.addCleanup(holder.wait)
+        self.addCleanup(holder.kill)
+        done = subprocess.run([sys.executable, str(self.script), "busy", str(home), str(venv)], capture_output=True, check=False,
+                              env={**os.environ, "PYTHONIOENCODING": "ascii"})
+        self.assertEqual(0, done.returncode, done.stderr.decode("utf-8", "replace"))
+        self.assertIn("busy=a process uses " + str(venv), done.stdout.decode("utf-8"))
+
     def broken_listing(self):
         broken = hostsync.HOST_SCRIPT.replace('["ps", "-axww"', '["ps-does-not-exist", "-axww"').replace(
             'WINDOWS_LISTING = ["powershell", ', 'WINDOWS_LISTING = ["ps-does-not-exist", ')
@@ -227,6 +259,28 @@ class ListingTests(unittest.TestCase):
         self.assertIn(self.ns["fold"]("/Users/me/По/x"), self.ns["decoded_forms"](hexed))
         self.assertIn(self.ns["fold"]("/Users/me/По/x"), self.ns["decoded_forms"]("/Users/me/\\320\\237\\320\\276/x"))
         self.assertIn(self.ns["fold"](CYRILLIC_VIS), self.ns["encoded_forms"](CYRILLIC), "the folder is also searched for as ps encodes it")
+
+    def test_nfd_and_the_octal_meta_space_of_vis_are_matched(self):
+        fold, folder = self.ns["fold"], unicodedata.normalize("NFC", "/Users/me/Ünïcode Р x/.valtrion/core/0.8.3")
+        nfd = unicodedata.normalize("NFD", folder)
+        self.assertNotEqual(folder, nfd)
+        self.assertTrue(self.ns["mentions"]("python -c sleep " + nfd, folder), "an NFD command line names the NFC folder")
+        self.assertTrue(self.ns["mentions"]("python -c sleep " + folder, nfd))
+        # `Р` is D0 A0: vis prints it `M-P\240` even without backslashes elsewhere.
+        self.assertIn("M-P\\240", self.ns["vis"]("Р".encode(), False))
+        self.assertIn(fold("/x/Р/y"), self.ns["decoded_forms"]("/x/M-P\\240/y"))
+        printed = self.ns["vis"](nfd.encode(), False)
+        self.assertTrue(self.ns["mentions"]("python -c sleep " + printed, folder), "the NFD path as macOS ps prints it in the C locale")
+
+    def test_a_parallel_helper_that_names_the_folder_still_counts(self):
+        folder = "/h/.valtrion/core/0.8.4"
+        argv = ["/h/.valtrion/incoming/valtrion_host.py", "busy", "/h/.valtrion", folder]
+        me = f"{self.pid} 77 /usr/bin/python3 {' '.join(argv)}"
+        other = f"88 1 /usr/bin/python3 {' '.join(argv)}"  # the same helper started by another sync: not this one's ancestor
+        table, _ = self.listing(f"77 1 sshd: me\n{me}\n{other}\n".encode(), argv=argv)
+        with mock.patch.object(sys, "argv", argv):
+            self.assertEqual({self.pid}, self.ns["helper_family"](table))
+            self.assertTrue(self.ns["in_use"](table, folder))
 
     def test_a_vis_lookalike_that_is_not_utf8_keeps_only_the_text_as_printed(self):
         forms = self.ns["decoded_forms"]("emacs M-x")
