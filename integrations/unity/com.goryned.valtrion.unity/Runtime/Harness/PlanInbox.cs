@@ -214,14 +214,23 @@ namespace Valtrion.Unity.Harness
         {
             try
             {
-                var directory = System.IO.Path.GetDirectoryName(path);
-                if (string.IsNullOrEmpty(directory) || !Directory.Exists(directory))
+                // A bare file name (`-gdv-plan smoke.plan.json`) is resolved like File.Exists resolves it: against the working directory.
+                var full = System.IO.Path.GetFullPath(path);
+                var directory = System.IO.Path.GetDirectoryName(full);
+                if (string.IsNullOrEmpty(directory))
+                    directory = ".";
+                if (!Directory.Exists(directory))
                     return null;
-                var copies = Directory.GetFiles(directory, System.IO.Path.GetFileName(path) + ".done-*");
-                if (copies.Length == 0)
-                    return null;
-                Array.Sort(copies, StringComparer.Ordinal);
-                return copies[copies.Length - 1];
+                // Filtered by name, not by a search pattern: a file name may itself hold the wildcard characters * and ? (POSIX).
+                var prefix = System.IO.Path.GetFileName(full) + ".done-";
+                string latest = null;
+                foreach (var candidate in Directory.GetFiles(directory))
+                {
+                    var name = System.IO.Path.GetFileName(candidate);
+                    if (name.StartsWith(prefix, StringComparison.Ordinal) && (latest == null || string.CompareOrdinal(candidate, latest) > 0))
+                        latest = candidate;
+                }
+                return latest;
             }
             catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException || ex is ArgumentException || ex is NotSupportedException)
             {
@@ -230,7 +239,9 @@ namespace Valtrion.Unity.Harness
         }
 
         /// <summary>Why an explicit plan path names no file. A plan the harness already consumed (renamed to <c>.done-&lt;utc&gt;</c> by an earlier
-        /// launch, for example a Mono player started with the same path) is named as such, so it is not mistaken for a path the player cannot read.</summary>
+        /// launch, for example a Mono player started with the same path) is named as such, so it is not mistaken for a path the player cannot read.
+        /// The consumed hint can appear only for the launch argument <c>-gdv-plan</c>: a consumed <c>GDV_PLAN</c> or intent extra is ignored earlier
+        /// (<see cref="AlreadyConsumed"/>), because both outlive their plan by design.</summary>
         internal static string MissingPlanError(string path, string givenBy)
         {
             var consumed = LatestConsumedCopy(path);

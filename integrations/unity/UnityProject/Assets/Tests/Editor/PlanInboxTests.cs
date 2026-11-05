@@ -218,6 +218,60 @@ namespace Valtrion.Unity.Tests
             StringAssert.Contains("smoke.plan.json.done-20261029T153000Z", relaunch.Error);
         }
 
+        [Test]
+        public void ConsumedHintAlsoForABareRelativeFileName()
+        {
+            var directory = Path.Combine(_root, "cwd");
+            Write(Path.Combine(directory, "smoke.plan.json.done-20261029T153000Z"), PlanText("old"));
+            var previous = Directory.GetCurrentDirectory();
+            try
+            {
+                Directory.SetCurrentDirectory(directory);
+                _environment.CommandLineArgs = new[] { "app.exe", PlanInbox.PlanArgument, "smoke.plan.json" };
+
+                var source = new PlanInbox(_environment, new ILegacyPlanConverter[0]).Find();
+
+                StringAssert.Contains("already consumed", source.Error);
+                StringAssert.Contains("smoke.plan.json.done-20261029T153000Z", source.Error);
+            }
+            finally
+            {
+                Directory.SetCurrentDirectory(previous);
+            }
+        }
+
+        [Test]
+        public void ConsumedCopiesOfOtherPlansGiveNoHint()
+        {
+            var directory = Path.Combine(_root, "validation");
+            Write(Path.Combine(directory, "other.plan.json.done-20261029T153000Z"), PlanText("other"));
+            Write(Path.Combine(directory, "xsmoke.plan.json.done-20261029T153000Z"), PlanText("other"));
+            _environment.CommandLineArgs = new[] { "app.exe", PlanInbox.PlanArgument, Path.Combine(directory, "smoke.plan.json") };
+
+            var source = new PlanInbox(_environment, new ILegacyPlanConverter[0]).Find();
+
+            StringAssert.Contains("does not exist", source.Error);
+            StringAssert.DoesNotContain("consumed", source.Error);
+        }
+
+        [Test]
+        public void WildcardCharactersInThePlanNameAreNotASearchPattern()
+        {
+            if (UnityEngine.Application.platform == UnityEngine.RuntimePlatform.WindowsEditor)
+                Assert.Ignore("'*' and '?' are not valid in Windows file names");
+            var directory = Path.Combine(_root, "validation");
+            // Matched as a pattern, "s*.json.done-*" would also find this unrelated plan's consumed copy.
+            Write(Path.Combine(directory, "smoke.json.done-20261029T153000Z"), PlanText("other"));
+            _environment.CommandLineArgs = new[] { "app.exe", PlanInbox.PlanArgument, Path.Combine(directory, "s*.json") };
+
+            var missing = new PlanInbox(_environment, new ILegacyPlanConverter[0]).Find();
+            StringAssert.DoesNotContain("consumed", missing.Error);
+
+            Write(Path.Combine(directory, "s*.json.done-20261029T153000Z"), PlanText("old"));
+            var consumed = new PlanInbox(_environment, new ILegacyPlanConverter[0]).Find();
+            StringAssert.Contains("s*.json.done-20261029T153000Z", consumed.Error);
+        }
+
         [TestCase("plan with spaces.json")]
         [TestCase("План-Ωβ.json")]
         public void ArgumentPlanIsReadFromPathsWithSpacesAndNonAsciiCharacters(string fileName)
