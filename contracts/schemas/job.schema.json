@@ -27,6 +27,10 @@
       "description": "What a running pipeline job is doing: waiting-disk, waiting-build, building, waiting-device or on-device. Absent otherwise and once the job ends.",
       "enum": ["waiting-disk", "waiting-build", "building", "waiting-device", "on-device"]
     },
+    "cleanup": {
+      "$ref": "common.schema.json#/$defs/outputCleanup",
+      "description": "Present once a job that declared output paths (job start --cleanup, run stage cleanup) has ended: what was removed, kept and refused."
+    },
     "watchdog": {
       "type": "object",
       "required": ["stallSec", "timeoutSec", "lastProgressUtc"],

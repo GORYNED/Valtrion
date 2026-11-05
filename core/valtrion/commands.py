@@ -18,7 +18,7 @@ import tempfile
 from pathlib import Path
 from typing import Any, Callable, Sequence
 
-from . import artifacts, buildcache, compare as comparing, config, constants, core, diskspace, doctor, hostsync, jobs, lease, project, providers, remote, scratch, submit, supervise, wheel, workroot
+from . import artifacts, buildcache, compare as comparing, config, constants, core, diskspace, doctor, hostsync, jobs, lease, outputs, project, providers, remote, scratch, submit, supervise, wheel, workroot
 from . import __version__
 from .adapter import DeviceInfo
 from .cli import Command, register
@@ -506,6 +506,8 @@ def _configure_job(parser: argparse.ArgumentParser) -> None:
     start.add_argument("--lease-wait", type=float, default=None, help="seconds to wait for a leased resource; default: leaseWaitSec of host.json, 0")
     start.add_argument("--lease-ttl", type=int, default=jobs.DEFAULT_LEASE_TTL_SEC)
     start.add_argument("--cwd")
+    start.add_argument("--cleanup", action="append", default=[], metavar="PATH",
+                       help="output path, relative to --cwd, to remove when the job ends (repeatable; never a tracked file or a path outside --cwd)")
     start.add_argument("--domain", choices=("auto", "user", "gui"), default="auto",
                        help="macOS launchd domain: auto tries user, then gui; gui is required for signing steps")
     start.add_argument("--foreground", action="store_true", help="run in this process, not in a launchd domain (debugging only; not for signing: over SSH it cannot reach the login keychain; cannot be combined with --domain user|gui)")
@@ -585,13 +587,27 @@ def _job_start(arguments: argparse.Namespace, entry: config.HostEntry | None) ->
         return constants.EXIT_PASS
     settings = config.load_host_settings()
     host = {"id": core.local_host_id(), "transport": arguments.transport, "selectedBy": arguments.selected_by}
+    cwd, cleanup_paths = arguments.cwd, []
+    if arguments.cleanup:
+        # Declared outputs are checked now, on the host that runs the job: a refused path is an error, the job does not start.
+        if not arguments.cwd:
+            return _blocked("job", "--cleanup needs --cwd: the working directory its paths are relative to")
+        base = Path(arguments.cwd).resolve()
+        if not base.is_dir():
+            return _blocked("job", f"--cwd {arguments.cwd} is not a folder on this host")
+        try:
+            cleanup_paths = outputs.declare(base, arguments.cleanup)
+        except outputs.OutputError as error:
+            return _blocked("job", str(error))
+        cwd = str(base)  # the command runs where the paths are judged, whatever the runner's own working directory is
     request = jobs.JobRequest(
         kind=arguments.kind, project=arguments.project, sha=arguments.sha, label=arguments.label,
-        payload={"type": "command", "argv": command_line, "cwd": arguments.cwd}, host=host, stall_sec=arguments.stall_sec,
+        payload={"type": "command", "argv": command_line, "cwd": cwd}, host=host, stall_sec=arguments.stall_sec,
         timeout_sec=arguments.timeout_sec, progress_files=tuple(arguments.progress_file), heartbeat=arguments.heartbeat,
         cpu_counts=arguments.cpu_progress, contract_exit_codes=arguments.contract_exit_codes,
         leases=tuple(_split_lease(item) for item in arguments.lease), lease_wait_sec=_lease_wait(arguments.lease_wait), lease_ttl_sec=arguments.lease_ttl,
-        owner=_owner(), purpose=f"valtrion job {arguments.label}")
+        owner=_owner(), purpose=f"valtrion job {arguments.label}", cleanup_paths=tuple(cleanup_paths),
+        cleanup_base=cwd if cleanup_paths else None)
     info = jobs.start_job(request, settings.artifacts_root, domain=arguments.domain, foreground=arguments.foreground,
                           work_roots=settings.roots)
     _out(info)
@@ -773,10 +789,20 @@ def _start_pipeline(arguments: argparse.Namespace, pipeline: dict, payload: dict
     problem = _preflight(pipeline, base, payload, project_dir)
     if problem:
         return _blocked(arguments.command, problem)  # before the job exists: nothing was leased and nothing waits in a queue
+    try:
+        # Run stages' `cleanup`: outputs relative to the project folder, removed when the job ends; a refused path stops the job here.
+        declared = outputs.stage_paths(pipeline["stages"])
+        if declared and project_dir is None:
+            return _blocked(arguments.command, "a run stage's `cleanup` needs the project folder its paths are relative to "
+                                               "(--project-dir, --remote-project or --checkout)")
+        cleanup_paths = outputs.declare(project_dir, declared) if declared else []
+    except outputs.OutputError as error:
+        return _blocked(arguments.command, str(error))
     request = jobs.JobRequest(
         kind="pipeline", project=candidate["repo"], sha=sha, label=label, payload=payload, host=host,
         stall_sec=arguments.stall_sec, timeout_sec=arguments.timeout_sec, owner=_owner(), purpose=f"valtrion {arguments.command} {label}",
-        lease_wait_sec=_lease_wait(arguments.lease_wait), protected_paths=tuple(arguments.protect), disk_wait_sec=getattr(arguments, "disk_wait", None))
+        lease_wait_sec=_lease_wait(arguments.lease_wait), protected_paths=tuple(arguments.protect), disk_wait_sec=getattr(arguments, "disk_wait", None),
+        cleanup_paths=tuple(cleanup_paths), cleanup_base=str(project_dir.resolve()) if cleanup_paths and project_dir is not None else None)
     domain = arguments.domain
     if domain == "auto" and _request_for(pipeline, base, project_dir).platform in SIGNING_PLATFORMS:
         domain = "gui"  # signing needs the login keychain, which only the GUI session has

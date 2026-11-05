@@ -1,0 +1,9 @@
+{
+  "schema": "gdv.pipeline/1",
+  "id": "example.smoke-with-cleanup",
+  "candidate": { "repo": "ExampleApp", "profile": "Validation" },
+  "device": { "platform": "ios" },
+  "stages": [
+    { "stage": "run", "plan": "plans/smoke.plan.json", "cleanup": ["DerivedData", "Tools/Helper/out", "Helper.xcodeproj"] }
+  ]
+}

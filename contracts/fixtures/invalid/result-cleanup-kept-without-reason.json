@@ -1,0 +1,18 @@
+{
+  "schema": "gdv.result/1",
+  "runId": "20261104T1530Z-smoke-with-cleanup-0123abcd",
+  "status": "PASS",
+  "reason": null,
+  "candidate": { "repo": "ExampleApp", "sha": "0123456789abcdef0123456789abcdef01234567", "profile": "Validation", "unity": "6000.6.7f1", "dirty": false },
+  "target": { "platform": "ios", "deviceClass": "ipad-a14", "osMajor": 27, "evidence": "physical" },
+  "host": { "id": "mac-build", "transport": "ssh", "selectedBy": "pinned" },
+  "plan": { "id": "example.smoke", "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" },
+  "startedUtc": "2026-11-04T15:30:00Z",
+  "finishedUtc": "2026-11-04T15:41:10.250Z",
+  "layers": {},
+  "steps": [],
+  "metrics": [],
+  "cleanup": { "base": "/Users/builder/projects/ExampleApp", "removed": [], "kept": [ { "path": "DerivedData" } ], "refused": [] },
+  "artifacts": [],
+  "unverified": []
+}

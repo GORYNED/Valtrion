@@ -299,6 +299,52 @@ namespace Valtrion.Unity.Contracts
             .Set("kind", JsonValue.From(Kind)).Set("path", JsonValue.From(Path)).Set("sha256", JsonValue.From(Sha256));
     }
 
+    /// <summary>A declared output path and why it was kept or refused.</summary>
+    public sealed class CleanupPathReason
+    {
+        public string Path { get; set; }
+
+        public string Reason { get; set; }
+
+        internal static CleanupPathReason Read(ContractReader reader)
+        {
+            var item = new CleanupPathReason { Path = reader.Str("path"), Reason = reader.Str("reason") };
+            reader.Done();
+            return item;
+        }
+
+        internal JsonValue Write() => JsonValue.NewObject().Set("path", JsonValue.From(Path)).Set("reason", JsonValue.From(Reason));
+    }
+
+    /// <summary>What became of the output paths a job declared for removal (<c>cleanup</c> of <c>gdv.job/1</c> and <c>gdv.result/1</c>):
+    /// paths are relative to <see cref="Base"/>, and each declared path is in exactly one list.</summary>
+    public sealed class OutputCleanup
+    {
+        public string Base { get; set; }
+
+        public List<string> Removed { get; set; } = new List<string>();
+
+        public List<CleanupPathReason> Kept { get; set; } = new List<CleanupPathReason>();
+
+        public List<CleanupPathReason> Refused { get; set; } = new List<CleanupPathReason>();
+
+        internal static OutputCleanup Read(ContractReader reader)
+        {
+            var cleanup = new OutputCleanup
+            {
+                Base = reader.Str("base"),
+                Removed = reader.Strings("removed"),
+                Kept = reader.Items("kept", CleanupPathReason.Read),
+                Refused = reader.Items("refused", CleanupPathReason.Read),
+            };
+            reader.Done();
+            return cleanup;
+        }
+
+        internal JsonValue Write() => JsonValue.NewObject().Set("base", JsonValue.From(Base)).Set("removed", JsonBuild.Strings(Removed))
+            .Set("kept", JsonBuild.Array(Kept, item => item.Write())).Set("refused", JsonBuild.Array(Refused, item => item.Write()));
+    }
+
     /// <summary>The build artifact a run was made with, published outside the job's work folder: built by the job, reused from the build
     /// cache or installed by key. Absent for a pipeline without a build.</summary>
     public sealed class ResultBuild
@@ -397,6 +443,9 @@ namespace Valtrion.Unity.Contracts
         /// <summary>The build the run was made with; null for a pipeline without a build.</summary>
         public ResultBuild Build { get; set; }
 
+        /// <summary>What became of the outputs the run stages declared for removal; null when they declared none.</summary>
+        public OutputCleanup Cleanup { get; set; }
+
         public List<ResultArtifact> Artifacts { get; set; } = new List<ResultArtifact>();
 
         /// <summary>What remains unverified; required, and an empty list claims that nothing does.</summary>
@@ -426,6 +475,7 @@ namespace Valtrion.Unity.Contracts
                 Metrics = reader.Items("metrics", ResultMetric.Read),
                 Comparison = reader.OptObject("comparison") is ContractReader comparison ? ResultComparison.Read(comparison) : null,
                 Build = reader.OptObject("build") is ContractReader build ? ResultBuild.Read(build) : null,
+                Cleanup = reader.OptObject("cleanup") is ContractReader cleanup ? OutputCleanup.Read(cleanup) : null,
                 Artifacts = reader.Items("artifacts", ResultArtifact.Read),
                 Unverified = reader.Strings("unverified"),
             };
@@ -461,6 +511,7 @@ namespace Valtrion.Unity.Contracts
                 .Set("metrics", JsonBuild.Array(Metrics, metric => metric.Write()));
             if (Comparison != null) node.Set("comparison", Comparison.Write());
             if (Build != null) node.Set("build", Build.Write());
+            if (Cleanup != null) node.Set("cleanup", Cleanup.Write());
             // Both lists are always written: an empty list is a claim ("nothing was left unverified"), omission is not.
             node.Set("artifacts", JsonBuild.Array(Artifacts, artifact => artifact.Write()));
             node.Set("unverified", JsonBuild.Strings(Unverified));

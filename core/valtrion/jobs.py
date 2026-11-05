@@ -28,7 +28,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, ContextManager, Mapping, Sequence
 
-from . import artifacts, constants, core, lease, remote, supervise, unityguard, workroot
+from . import artifacts, constants, core, lease, outputs, remote, supervise, unityguard, workroot
 from .artifacts import RunLayout
 
 EVENT_TYPES = (
@@ -115,6 +115,73 @@ def kept_work_reason(job_id: str, home: Path | None = None) -> str | None:
         return None
 
 
+def _declared(spec: Mapping[str, Any]) -> tuple[Path | None, list[str]]:
+    """The working directory and the output paths a job declared for removal (`cleanupPaths`), or (None, [])."""
+    declared = spec.get("cleanupPaths") or {}
+    base = declared.get("base")
+    return (Path(base) if base else None), [str(item) for item in declared.get("paths") or []]
+
+
+def output_users(target: Path, job_id: str, home: Path | None = None, probe: Callable[[str], "str | None"] | None = None) -> str | None:
+    """Why something other than job `job_id` uses `target` right now, or None: a live `unity-project:` lease of `target` or of a folder
+    it lies in held by another session, another active job whose working directory is `target`, lies inside it or contains it, or another active
+    job that declared an overlapping output path (that job removes it itself)."""
+    resolved = target.resolve()
+    if probe is None:
+        manager = lease.LeaseManager(home)
+
+        def probe(resource: str) -> str | None:
+            status = manager.status(resource)
+            if status.state != "held" or status.record is None or status.record.session == job_id:
+                return None
+            return f"{resource} is {status.record.describe()}"
+    for folder in (target, *target.parents):
+        reason = probe(lease.unity_project_resource(folder))
+        if reason:
+            return f"the lease {reason}"
+    for other in active_job_ids(home):
+        if other == job_id:
+            continue
+        try:
+            spec = JobStore(find_job_directory(other, home)).read_spec()
+        except (JobError, OSError, KeyError):
+            continue
+        payload = spec.get("payload") or {}
+        base, paths = _declared(spec)
+        for folder in filter(None, (payload.get("cwd"), payload.get("projectDir"), base)):
+            used = Path(folder).resolve()
+            # Its working directory is the path, lies inside it, or contains it (it may be writing into the path right now).
+            if used == resolved or artifacts._is_within(used, resolved) or artifacts._is_within(resolved, used):
+                return f"the running job {other} works in {folder}"
+        for item in paths if base is not None else []:
+            declared = (base / item).resolve()
+            if declared == resolved or artifacts._is_within(declared, resolved) or artifacts._is_within(resolved, declared):
+                return f"the running job {other} declares {item} as an output too"
+    return None
+
+
+def clean_declared_outputs(spec: Mapping[str, Any], job_id: str, home: Path | None = None,
+                           probe: Callable[[str], "str | None"] | None = None) -> dict | None:
+    """Remove the outputs the job declared (`job start --cleanup`, run stage `cleanup`) when it ends; returns the record for job.json
+    and result.json (`{base, removed, kept, refused}`), or None when the job declared none."""
+    base, paths = _declared(spec)
+    if base is None or not paths:
+        return None
+    keep = None
+    if not spec.get("cleanup", True):
+        keep = "cleanup is disabled for this job"
+    else:
+        try:
+            run = RunLayout(Path(spec["artifactsRoot"]), spec["project"], spec["sha8"], job_id).directory
+            if (run / artifacts.RETAINED_MARKER).exists():
+                keep = "the run is retained"
+        except KeyError:
+            pass
+    record = outputs.remove_declared(base, paths, lambda target: output_users(target, job_id, home, probe), keep,
+                                     [Path(item) for item in spec.get("protectedPaths", [])])
+    return record.to_document()
+
+
 def active_job_ids(home: Path | None = None, now: Callable[[], datetime] = core.now) -> list[str]:
     """Ids of jobs whose runner is verifiably alive, or that were created moments ago and are still starting (their work
     directories must not be swept). A job left `running` by a killed runner or a reboot is not active."""
@@ -199,7 +266,7 @@ def new_job_id(label: str, sha8: str, moment: datetime | None = None) -> str:
 def job_document(
         job_id: str, kind: str, state: str, status: str | None, reason: str | None, created: str, updated: str, host: str,
         command: Sequence[str], stall_sec: float, timeout_sec: float, last_progress: str, events_offset: int, pid: int | None = None,
-        result_path: str | None = None, phase: str | None = None) -> dict:
+        result_path: str | None = None, phase: str | None = None, cleanup: Mapping[str, Any] | None = None) -> dict:
     document: dict[str, Any] = {
         "schema": "gdv.job/1", "jobId": job_id, "kind": kind, "state": state, "status": status, "reason": reason,
         "createdUtc": created, "updatedUtc": updated, "host": host, "command": [part for part in command if part] or ["-"],
@@ -211,6 +278,8 @@ def job_document(
         document["resultPath"] = result_path
     if phase:
         document["phase"] = phase
+    if cleanup is not None:
+        document["cleanup"] = dict(cleanup)
     return document
 
 
@@ -383,6 +452,8 @@ class _Runner:
         self.taken: dict[str, str] = {}
         #: Resources the job was started with (`spec.leases`): held for the whole job, never released by a stage.
         self.pinned: set[str] = set()
+        #: What became of the declared outputs (`cleanupPaths`) when the job ended; recorded in job.json and result.json.
+        self.output_cleanup: dict | None = None
 
     def set_phase(self, phase: str | None) -> None:
         """What the job is doing now, in job.json (`phase`) and as a `progress` event with `data.phase`. Cleared with None."""
@@ -445,7 +516,7 @@ class _Runner:
         core.atomic_write_json(self.store.job_json, job_document(
             self.job_id, self.spec["kind"], self.state, self.status, self.reason, self.created, core.utc_now(),
             self.spec["host"]["id"], self.command(), self.stall_sec, self.timeout_sec, self.last_progress, self.events.offset,
-            os.getpid(), result, self.phase if self.state == "running" else None))
+            os.getpid(), result, self.phase if self.state == "running" else None, self.output_cleanup))
 
     def on_supervise_event(self, event_type: str, message: str, data: dict) -> None:
         if event_type in ("progress", "log"):
@@ -605,7 +676,26 @@ class _Runner:
         self.events.emit("job.finished", self.reason, status=self.status or "BLOCKED", data={"state": self.state})
         self.flush(force=True)
 
+    def cleanup_outputs(self) -> None:
+        """Remove the outputs the job declared; record what was removed, kept and refused in job.json, result.json and an event."""
+        try:
+            record = clean_declared_outputs(self.spec, self.job_id, self.home, self.probe_lease)
+        except Exception as error:  # noqa: BLE001 - the job must still end; the failure is recorded, not hidden
+            base, paths = _declared(self.spec)
+            record = None if base is None else {
+                "base": str(base), "removed": [], "refused": [],
+                "kept": [{"path": item, "reason": f"output cleanup failed: {type(error).__name__}: {error}"} for item in paths]}
+            if record is None:
+                self.events.emit("log", f"output cleanup failed: {type(error).__name__}: {error}")
+        if record is None:
+            return
+        self.output_cleanup = record
+        self.events.emit("log", "output cleanup: " + _cleanup_summary(record), data={"cleanup": record})
+        _record_in_result(self.store.result, record)
+        self.flush(force=True)
+
     def cleanup(self) -> None:
+        self.cleanup_outputs()
         if not self.spec.get("cleanup", True):
             return
         layout = RunLayout(Path(self.spec["artifactsRoot"]), self.spec["project"], self.spec["sha8"], self.job_id)
@@ -651,6 +741,25 @@ class _Runner:
         if removed:
             self.events.emit("log", "work cleanup", data={"removed": removed})
             self.flush(force=True)
+
+
+def _cleanup_summary(record: Mapping[str, Any]) -> str:
+    return f"{len(record['removed'])} removed, {len(record['kept'])} kept, {len(record['refused'])} refused"
+
+
+def _record_in_result(path: Path, record: Mapping[str, Any]) -> None:
+    """Add the output cleanup to a saved result.json (a pipeline job's); a result that would no longer validate is left as it is."""
+    try:
+        document = core.read_json(path)
+    except (OSError, ValueError):
+        return
+    if not isinstance(document, dict) or document.get("schema") != "gdv.result/1":
+        return
+    from .schema import Validator
+    updated = {**document, "cleanup": dict(record)}
+    if Validator().validate(updated, "gdv.result/1"):
+        return
+    core.atomic_write_json(path, updated)
 
 
 class _PipelineWatch:
@@ -827,6 +936,9 @@ class JobRequest:
     protected_paths: tuple[str, ...] = ()
     #: Seconds a build waits for free disk space (`--disk-wait`); None leaves it to `disk.waitSec` of host.json.
     disk_wait_sec: float | None = None
+    #: Output paths (relative to `cleanup_base`, checked with `outputs.declare`) that the job removes when it ends.
+    cleanup_paths: tuple[str, ...] = ()
+    cleanup_base: str | None = None
     extra: dict = field(default_factory=dict)
 
 
@@ -861,6 +973,8 @@ def create_job(request: JobRequest, artifacts_root: Path, home: Path | None = No
         "protectedPaths": list(request.protected_paths), **request.extra}
     if request.disk_wait_sec is not None:
         spec["diskWaitSec"] = request.disk_wait_sec
+    if request.cleanup_paths:
+        spec["cleanupPaths"] = {"base": request.cleanup_base, "paths": list(request.cleanup_paths)}
     if work_roots is not None:
         dirs = work_roots.job(job_id)
         dirs.create()
@@ -1136,8 +1250,16 @@ def _close_orphaned(store: JobStore, job: dict, remove_temporaries: bool = True)
         if item.record and item.record.session == job["jobId"]:
             manager.release(item.resource, job["jobId"], item.record.pid)
             events.emit("lease.released", item.resource, data={"resource": item.resource, "ok": True})
+    record = None
     if remove_temporaries:
         _remove_orphaned_temporaries(spec, job["jobId"], events, store.directory)
+        try:
+            record = clean_declared_outputs(spec, job["jobId"])
+        except Exception as error:  # noqa: BLE001 - closing the job must not fail on it
+            events.emit("log", f"output cleanup failed: {type(error).__name__}: {error}")
+        if record is not None:
+            events.emit("log", "output cleanup: " + _cleanup_summary(record), data={"cleanup": record})
+            _record_in_result(store.result, record)
     else:
         events.emit("log", "the process of the job's pid is alive but not shown to be its runner: its temporary paths are left")
     if spec.get("workRoot"):
@@ -1156,6 +1278,8 @@ def _close_orphaned(store: JobStore, job: dict, remove_temporaries: bool = True)
     events.emit("job.finished", "cancelled; the runner was gone", status=constants.BLOCKED, data={"state": "cancelled"})
     job = dict(job)
     job.update({"state": "cancelled", "status": None, "reason": "cancelled by request", "updatedUtc": core.utc_now(), "eventsOffset": events.offset})
+    if record is not None:
+        job["cleanup"] = record
     core.atomic_write_json(store.job_json, job)
 
 
