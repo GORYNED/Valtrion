@@ -1,6 +1,6 @@
 {
   "schema": "gdv.lease/1",
-  "resource": "device:ios:00008101-000000000000001E",
+  "resource": "device:ios:00008000-0000000000000001",
   "owner": "agent-a",
   "session": "session-1",
   "worktree": "/work/example",

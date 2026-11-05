@@ -22,7 +22,7 @@ HERE = Path(__file__).resolve().parent
 FAKE_ADB = HERE / "fake_adb.py"
 SHA = "d" * 40
 PACKAGE = "com.example.app"
-PHONE_PROPS = {"ro.product.model": "moto g power 5G - 2024", "ro.build.version.release": "15", "ro.product.cpu.abi": "arm64-v8a",
+PHONE_PROPS = {"ro.product.model": "Example Phone 5G", "ro.build.version.release": "15", "ro.product.cpu.abi": "arm64-v8a",
                "ro.hardware": "mt6855"}
 EMULATOR_PROPS = {"ro.product.model": "sdk_gphone64_x86_64", "ro.build.version.release": "17", "ro.product.cpu.abi": "x86_64",
                   "ro.kernel.qemu": "1"}
@@ -68,11 +68,11 @@ class AndroidTestCase(unittest.TestCase):
         patcher = mock.patch.dict(os.environ, {"FAKE_ADB_STATE": str(self.state), core.HOME_ENV: str(self.base / "home")})
         patcher.start()
         self.addCleanup(patcher.stop)
-        self.set_state(devices=[{"serial": "ZY22", "state": "device", "model": "moto_g_power_5G___2024", "props": PHONE_PROPS}])
+        self.set_state(devices=[{"serial": "A1B2", "state": "device", "model": "Example_Phone_5G", "props": PHONE_PROPS}])
         self.clock = FakeClock()
         self.adapter = AndroidAdapter([sys.executable, str(FAKE_ADB)], sleep=self.clock.sleep, monotonic=self.clock.monotonic,
                                       unity_editors=lambda: [])
-        self.addCleanup(self.adapter._stop_logcat, "ZY22")  # noqa: SLF001 - never leave a fake logcat behind
+        self.addCleanup(self.adapter._stop_logcat, "A1B2")  # noqa: SLF001 - never leave a fake logcat behind
 
     def set_state(self, **values):
         path = self.state / "state.json"
@@ -88,7 +88,7 @@ class AndroidTestCase(unittest.TestCase):
         return path.read_text(encoding="utf-8").splitlines() if path.exists() else []
 
     def device(self):
-        return next(d for d in self.adapter.discover() if d.id == "android:ZY22")
+        return next(d for d in self.adapter.discover() if d.id == "android:A1B2")
 
     def device_file(self, relative):
         return self.state / "sdcard" / "Android" / "data" / PACKAGE / "files" / relative
@@ -140,8 +140,8 @@ class FixtureStateTests(AndroidTestCase):
 class DiscoveryTests(AndroidTestCase):
     def test_a_physical_phone_is_described_with_a_stable_class(self):
         device = self.device()
-        self.assertEqual(("android", "android-moto-g-power-5g-2024", "physical"), (device.platform, device.device_class, device.evidence))
-        self.assertEqual(("moto g power 5G - 2024", "Android 15", 15), (device.model, device.os_version, device.os_major))
+        self.assertEqual(("android", "android-example-phone-5g", "physical"), (device.platform, device.device_class, device.evidence))
+        self.assertEqual(("Example Phone 5G", "Android 15", 15), (device.model, device.os_version, device.os_major))
         self.assertIn("touch", device.capabilities)
         self.assertIn("abi.arm64-v8a", device.capabilities)
 
@@ -151,7 +151,7 @@ class DiscoveryTests(AndroidTestCase):
         self.assertEqual(("android-emulator", constants.EVIDENCE_EMULATOR), (device.device_class, device.evidence))
 
     def test_an_unauthorized_phone_is_listed_as_waiting_for_the_owner(self):
-        self.set_state(devices=[{"serial": "ZY22", "state": "unauthorized", "props": {}}])
+        self.set_state(devices=[{"serial": "A1B2", "state": "unauthorized", "props": {}}])
         (device,) = self.adapter.discover()
         self.assertEqual("android-unknown", device.device_class, "real adb prints no model for an unauthorized device")
         self.assertIn("adb.unauthorized", device.capabilities)
@@ -159,31 +159,31 @@ class DiscoveryTests(AndroidTestCase):
 
     def test_a_notice_before_the_device_list_is_not_a_device(self):
         self.set_state(mismatch_notice=True)
-        self.assertEqual(["android:ZY22"], [d.id for d in self.adapter.discover()])
+        self.assertEqual(["android:A1B2"], [d.id for d in self.adapter.discover()])
         self.assertEqual([], android.parse_devices("adb server is out of date.  killing...\nList of devices attached\nabc\tweird\n"))
 
     def test_other_emulators_and_a_device_that_does_not_answer_are_not_physical_evidence(self):
         for props in ({"ro.boot.qemu": "1"}, {"ro.hardware": "vbox86"}, {"ro.build.characteristics": "emulator,nosdcard"},
                       {"ro.product.manufacturer": "Genymotion"}):
-            self.set_state(devices=[{"serial": "ZY22", "state": "device", "props": {**PHONE_PROPS, **props}}])
+            self.set_state(devices=[{"serial": "A1B2", "state": "device", "props": {**PHONE_PROPS, **props}}])
             self.assertEqual(constants.EVIDENCE_EMULATOR, self.adapter.discover()[0].evidence, props)
         self.set_state(devices=[{"serial": "127.0.0.1:5555", "state": "device", "props": PHONE_PROPS}])
         self.assertEqual(constants.EVIDENCE_EMULATOR, self.adapter.discover()[0].evidence)
-        self.set_state(devices=[{"serial": "ZY22", "state": "device", "props": {}}])
+        self.set_state(devices=[{"serial": "A1B2", "state": "device", "props": {}}])
         self.assertEqual(constants.EVIDENCE_HOST, self.adapter.discover()[0].evidence)
 
     def test_a_restarted_adb_server_is_retried_not_reported_as_a_failure(self):
         self.set_state(down=2)
-        self.assertEqual("android:ZY22", self.device().id[:12])
+        self.assertEqual("android:A1B2", self.device().id[:12])
         self.assertEqual(0, self.read_state()["down"])
         starts = [c for c in self.calls() if c.startswith("start-server")]
         self.assertGreaterEqual(len(starts), 3, "each retry starts the server again outside the supervised call")
 
     def test_cuttlefish_and_virtual_device_serials_and_products_are_emulators(self):
         for serial, props in (("localhost:6520", PHONE_PROPS), ("0.0.0.0:6520", PHONE_PROPS),
-                              ("ZY22", {**PHONE_PROPS, "ro.hardware": "cutf_cvm"}),
-                              ("ZY22", {**PHONE_PROPS, "ro.product.device": "emu64xa"}),
-                              ("ZY22", {**PHONE_PROPS, "ro.product.name": "sdk_gphone64_arm64"})):
+                              ("A1B2", {**PHONE_PROPS, "ro.hardware": "cutf_cvm"}),
+                              ("A1B2", {**PHONE_PROPS, "ro.product.device": "emu64xa"}),
+                              ("A1B2", {**PHONE_PROPS, "ro.product.name": "sdk_gphone64_arm64"})):
             self.set_state(devices=[{"serial": serial, "state": "device", "props": props}])
             self.assertEqual(constants.EVIDENCE_EMULATOR, self.adapter.discover()[0].evidence, (serial, props))
         self.set_state(devices=[{"serial": "192.0.2.20:5555", "state": "device", "props": PHONE_PROPS}])
@@ -224,24 +224,24 @@ class HealthTests(AndroidTestCase):
         self.assertTrue(any("30.1" in note for note in health.notes))
 
     def test_unauthorized_asks_the_owner_to_allow_debugging(self):
-        self.set_state(devices=[{"serial": "ZY22", "state": "unauthorized", "model": "m", "props": {}}])
+        self.set_state(devices=[{"serial": "A1B2", "state": "unauthorized", "model": "m", "props": {}}])
         health = self.adapter.health(self.device())
         self.assertFalse(health.reachable)
         self.assertIn("Allow USB debugging", health.permission_needed)
 
     def test_offline_is_a_permission_problem_too(self):
-        self.set_state(devices=[{"serial": "ZY22", "state": "offline", "model": "m", "props": {}}])
+        self.set_state(devices=[{"serial": "A1B2", "state": "offline", "model": "m", "props": {}}])
         self.assertIn("offline", self.adapter.health(self.device()).permission_needed)
 
     def test_offline_right_after_a_server_restart_settles_before_it_is_reported(self):
-        self.set_state(devices=[{"serial": "ZY22", "state": "device", "model": "m", "props": PHONE_PROPS, "offline_polls": 2}])
-        health = self.adapter.health(self.adapter._describe({"serial": "ZY22", "state": "device", "model": "m"}))  # noqa: SLF001
+        self.set_state(devices=[{"serial": "A1B2", "state": "device", "model": "m", "props": PHONE_PROPS, "offline_polls": 2}])
+        health = self.adapter.health(self.adapter._describe({"serial": "A1B2", "state": "device", "model": "m"}))  # noqa: SLF001
         self.assertTrue(health.reachable, health)
         self.assertIsNone(health.permission_needed)
 
     def test_a_phone_stuck_authorizing_asks_the_owner(self):
-        self.set_state(devices=[{"serial": "ZY22", "state": "authorizing", "props": {}}])
-        health = self.adapter.health(self.adapter._describe({"serial": "ZY22", "state": "authorizing", "model": ""}))  # noqa: SLF001
+        self.set_state(devices=[{"serial": "A1B2", "state": "authorizing", "props": {}}])
+        health = self.adapter.health(self.adapter._describe({"serial": "A1B2", "state": "authorizing", "model": ""}))  # noqa: SLF001
         self.assertIn("Allow USB debugging", health.permission_needed)
 
     def test_the_adb_server_is_started_once_outside_the_supervised_calls(self):
@@ -252,7 +252,7 @@ class HealthTests(AndroidTestCase):
         self.assertTrue(self.calls()[0].startswith("start-server"))
 
     def test_an_unreadable_keyguard_is_unknown_not_unlocked(self):
-        self.set_state(devices=[{"serial": "ZY22", "state": "device", "model": "m", "props": PHONE_PROPS, "no_keyguard_keys": True}])
+        self.set_state(devices=[{"serial": "A1B2", "state": "device", "model": "m", "props": PHONE_PROPS, "no_keyguard_keys": True}])
         self.assertIsNone(self.adapter.health(self.device()).locked)
 
     def test_a_detached_phone_is_unreachable_not_a_permission_problem(self):
@@ -263,9 +263,9 @@ class HealthTests(AndroidTestCase):
         self.assertIsNone(health.permission_needed)
 
     def test_a_secure_lock_stays_locked_and_an_insecure_keyguard_is_dismissed(self):
-        self.set_state(devices=[{"serial": "ZY22", "state": "device", "model": "m", "props": PHONE_PROPS, "locked": True}])
+        self.set_state(devices=[{"serial": "A1B2", "state": "device", "model": "m", "props": PHONE_PROPS, "locked": True}])
         self.assertTrue(self.adapter.health(self.device()).locked)
-        self.set_state(devices=[{"serial": "ZY22", "state": "device", "model": "m", "props": PHONE_PROPS, "locked": True, "insecure": True}])
+        self.set_state(devices=[{"serial": "A1B2", "state": "device", "model": "m", "props": PHONE_PROPS, "locked": True, "insecure": True}])
         self.assertFalse(self.adapter.health(self.device()).locked)
 
 
@@ -283,7 +283,7 @@ class DeviceOperationTests(AndroidTestCase):
 
     def test_install_on_an_unauthorized_phone_needs_permission(self):
         device = self.device()
-        self.set_state(devices=[{"serial": "ZY22", "state": "unauthorized", "model": "m", "props": {}}])
+        self.set_state(devices=[{"serial": "A1B2", "state": "unauthorized", "model": "m", "props": {}}])
         outcome = self.adapter.install(device, self.apk())
         self.assertEqual(constants.NEEDS_PERMISSION, outcome.status)
         self.assertIn("Allow USB debugging", outcome.reason)
@@ -296,7 +296,7 @@ class DeviceOperationTests(AndroidTestCase):
 
     def test_a_path_that_contains_the_word_offline_is_not_a_device_state(self):
         outcome = self.adapter.classify(supervise.BoundedResult(constants.FAIL, "exit code 1", 1, r"adb: failed to stat D:\offline-buildpp.apk"),
-                                        "ZY22", "adb install")
+                                        "A1B2", "adb install")
         self.assertEqual(constants.FAIL, outcome.status)
 
     def test_an_old_adb_that_exits_zero_after_a_failure_is_still_a_failure(self):
@@ -340,10 +340,10 @@ class DeviceOperationTests(AndroidTestCase):
         self.adapter.prepare(self.device(), PACKAGE, None)
         console = self.base / "e" / "console.log"
         self.assertTrue(self.adapter.launch(self.device(), PACKAGE, [], console).ok)
-        self.wait_for(lambda: all(p.poll() is not None for p, _ in self.adapter._sessions["ZY22"].trees))  # noqa: SLF001
+        self.wait_for(lambda: all(p.poll() is not None for p, _ in self.adapter._sessions["A1B2"].trees))  # noqa: SLF001
         self.assertTrue(self.adapter.terminate(self.device(), PACKAGE).ok)
         self.assertIn("incomplete", (console.parent / "android" / "notes.txt").read_text(encoding="utf-8"))
-        late = self.adapter._start_logcat("ZY22", self.base / "late.log", self.base / "late-full.log")  # noqa: SLF001
+        late = self.adapter._start_logcat("A1B2", self.base / "late.log", self.base / "late-full.log")  # noqa: SLF001
         self.assertEqual(constants.BLOCKED, late.status, "a launch that finishes after terminate must not leave a capture running")
         self.assertEqual({}, self.adapter._sessions)  # noqa: SLF001
 
@@ -442,7 +442,7 @@ class DeviceOperationTests(AndroidTestCase):
 
     def test_launch_on_a_locked_out_phone_needs_permission(self):
         device = self.device()
-        self.set_state(devices=[{"serial": "ZY22", "state": "offline", "model": "m", "props": {}}])
+        self.set_state(devices=[{"serial": "A1B2", "state": "offline", "model": "m", "props": {}}])
         self.assertEqual(constants.NEEDS_PERMISSION, self.adapter.launch(device, PACKAGE, [], self.base / "c.log").status)
 
     def test_screenshot_is_saved_and_the_scratch_file_removed(self):
@@ -702,12 +702,12 @@ class SlowStartTests(AndroidTestCase):
                 mock.patch.object(self.adapter, "_stop_logcat", lambda *a, **k: stopped.append(a)):
             outcome = self.adapter.launch(self.device(), PACKAGE, [], self.console)
         self.assertEqual(constants.FAIL, outcome.status)
-        self.assertEqual([("ZY22",)], stopped, "only the stop before this launch's own capture; none at its failure")
+        self.assertEqual([("A1B2",)], stopped, "only the stop before this launch's own capture; none at its failure")
         self.adapter._sessions.pop("marker", None)  # noqa: SLF001
 
     def test_a_dead_adb_during_the_wait_is_reported_as_what_it_is(self):
         self.slow(60, alive_after=1)
-        self.set_state(devices=[{"serial": "ZY22", "state": "device", "model": "m", "props": PHONE_PROPS}])
+        self.set_state(devices=[{"serial": "A1B2", "state": "device", "model": "m", "props": PHONE_PROPS}])
         original = self.adapter._poll_shell  # noqa: SLF001
 
         def offline(serial, script):
@@ -934,13 +934,13 @@ class PipelineTests(AndroidTestCase):
     def test_the_smoke_plan_passes_with_physical_evidence_and_leaves_nothing_running(self):
         store, result = self.run_pipeline()
         self.assertEqual("PASS", store.read_job()["status"], store.read_job().get("reason"))
-        self.assertEqual(("physical", "android-moto-g-power-5g-2024", 15), (result["target"]["evidence"], result["target"]["deviceClass"],
+        self.assertEqual(("physical", "android-example-phone-5g", 15), (result["target"]["evidence"], result["target"]["deviceClass"],
                                                                          result["target"]["osMajor"]))
         paths = {a["path"] for a in result["artifacts"]}
         self.assertTrue(any(p.endswith("android/logcat.log") for p in paths), paths)
         self.assertTrue(any(p.endswith("android/meminfo.txt") for p in paths), paths)
         self.assertEqual([], self.read_state()["running"])
-        self.assertEqual("free", lease.LeaseManager(self.base / "home").status("device:android:ZY22").state)
+        self.assertEqual("free", lease.LeaseManager(self.base / "home").status("device:android:A1B2").state)
         self.assertEqual({}, self.adapter._sessions)  # noqa: SLF001
 
     def test_an_app_that_dies_mid_run_is_a_stall_with_logcat_and_a_screenshot_saved(self):
@@ -962,7 +962,7 @@ class PipelineTests(AndroidTestCase):
         self.assertEqual("FAIL", store.read_job()["status"])
 
     def test_a_second_request_for_the_phone_is_blocked_naming_the_holder(self):
-        lease.LeaseManager(self.base / "home").acquire("device:android:ZY22", "alice", "session-7", 600, "series", os.getpid())
+        lease.LeaseManager(self.base / "home").acquire("device:android:A1B2", "alice", "session-7", 600, "series", os.getpid())
         store, _ = self.run_pipeline()
         job = store.read_job()
         self.assertEqual("BLOCKED", job["status"])
@@ -973,8 +973,8 @@ class PipelineTests(AndroidTestCase):
         self.set_state(devices=[])
         store, _ = self.run_pipeline()
         self.assertEqual("BLOCKED", store.read_job()["status"])
-        self.set_state(devices=[{"serial": "ZY22", "state": "unauthorized", "model": "moto_g_power_5G___2024", "props": {}}])
-        store, _ = self.run_pipeline(device={"platform": "android", "class": "android-moto-g-power-5g-2024"})
+        self.set_state(devices=[{"serial": "A1B2", "state": "unauthorized", "model": "Example_Phone_5G", "props": {}}])
+        store, _ = self.run_pipeline(device={"platform": "android", "class": "android-example-phone-5g"})
         job = store.read_job()
         self.assertEqual("NEEDS_PERMISSION", job["status"], "a pinned class must not hide the permission problem")
         self.assertIn("Allow USB debugging", job["reason"])

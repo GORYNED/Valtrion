@@ -122,7 +122,7 @@ PLAN_WARM = {**PLAN, "id": "perf.warm", "metrics": {"openMs": {"unit": "ms", "di
 
 
 def phone(evidence="physical"):
-    return DeviceInfo("android:ZY22", "android", "phone-mid", evidence, "moto g", "Android 15", ("touch",))
+    return DeviceInfo("android:A1B2", "android", "phone-mid", evidence, "Example Phone", "Android 15", ("touch",))
 
 
 class PipelineTests(unittest.TestCase):
@@ -192,7 +192,7 @@ class PipelineTests(unittest.TestCase):
         self.assertIn("terminate", FakeAdapter.calls)
         self.assertNotIn("screenshot", FakeAdapter.calls, "no failure screenshot after a pass")
         self.assertFalse((store.directory / "build").exists(), "the temporary build is removed after a pass")
-        self.assertEqual("free", lease.LeaseManager(self.home).status("device:android:ZY22").state)
+        self.assertEqual("free", lease.LeaseManager(self.home).status("device:android:A1B2").state)
         self.assertEqual("free", lease.LeaseManager(self.home).status("unity-editor:slot1").state)
 
     def test_a_run_sent_over_ssh_records_the_plan_hash_and_the_project_folder_it_tested(self):
@@ -381,13 +381,13 @@ class PipelineTests(unittest.TestCase):
         self.assertNotIn("cleanup", FakeAdapter.calls)
 
     def test_a_leased_device_blocks_the_pipeline_naming_the_holder(self):
-        lease.LeaseManager(self.home).acquire("device:android:ZY22", "alice", "session-9", 600, "series", os.getpid())
+        lease.LeaseManager(self.home).acquire("device:android:A1B2", "alice", "session-9", 600, "series", os.getpid())
         _, store = self.run_pipeline(self.pipeline_document(self.stages()))
         job = store.read_job()
         self.assertEqual("BLOCKED", job["status"])
         self.assertIn("alice", job["reason"])
         self.assertNotIn("launch", FakeAdapter.calls)
-        self.assertEqual("session-9", lease.LeaseManager(self.home).status("device:android:ZY22").record.session)
+        self.assertEqual("session-9", lease.LeaseManager(self.home).status("device:android:A1B2").record.session)
 
     def prelaunch_stages(self, files):
         stages = self.stages()
@@ -489,7 +489,7 @@ class PipelineTests(unittest.TestCase):
         self.assertNotIn("launch", FakeAdapter.calls)
 
     def test_a_busy_device_blocks_before_the_long_build_not_after_it(self):
-        lease.LeaseManager(self.home).acquire("device:android:ZY22", "alice", "session-9", 600, "series", os.getpid())
+        lease.LeaseManager(self.home).acquire("device:android:A1B2", "alice", "session-9", 600, "series", os.getpid())
         _, store = self.run_pipeline(self.pipeline_document(self.stages()))
         self.assertEqual("BLOCKED", store.read_job()["status"])
         self.assertIn("alice", store.read_job()["reason"])
@@ -758,7 +758,7 @@ class PipelineTests(unittest.TestCase):
         plan = {"kind": "functional", "requires": {"capabilities": ["ble"]}}
         self.assertEqual("android:2", pipeline.select_device(devices, {}, plan)[0].id)
         self.assertIsNone(pipeline.select_device(devices, {"class": "tablet"}, plan)[0])
-        self.assertEqual("android:ZY22", pipeline.select_device(devices, {"id": "android:ZY22"}, {"kind": "smoke"})[0].id)
+        self.assertEqual("android:A1B2", pipeline.select_device(devices, {"id": "android:A1B2"}, {"kind": "smoke"})[0].id)
 
     def test_select_device_tells_an_offline_device_from_one_that_does_not_exist(self):
         tablet = DeviceInfo("ios:TABLET", "ios", "tablet", "physical", capabilities=("touch", "camera.fast"))
@@ -819,7 +819,7 @@ class PipelineTests(unittest.TestCase):
         _, store = self.run_pipeline(self.pipeline_document(stages))
         self.assertEqual({"gdv/inbox/reply-ui-1.json"}, set(replies), "one request is answered once")
         self.assertEqual("PASS", replies["gdv/inbox/reply-ui-1.json"]["status"])
-        self.assertIn("ZY22", replies["gdv/inbox/reply-ui-1.json"]["message"], "the platform's own id, not the prefixed one")
+        self.assertIn("A1B2", replies["gdv/inbox/reply-ui-1.json"]["message"], "the platform's own id, not the prefixed one")
         self.assertLess(FakeAdapter.calls.index("launch"), FakeAdapter.calls.index("push:gdv/inbox/reply-ui-1.json"))
         paths = [a["path"] for a in self.result_of(store)["artifacts"]]
         self.assertTrue(any(p.endswith("external-ui/reply-ui-1.json") for p in paths), paths)

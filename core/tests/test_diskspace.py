@@ -521,7 +521,7 @@ class PipelineDiskTests(unittest.TestCase):
         from valtrion.lease import LeaseManager
         self.settings({"disk": {"minFreeGiB": 10}})
         manager = LeaseManager(self.home)
-        device = "device:" + "android:ZY22"
+        device = "device:" + "android:A1B2"
         manager.acquire(device, "alice", "session-9", 600, "series", os.getpid())  # the device is busy: the job waits for it
         payload_job = {}
 

@@ -18,12 +18,12 @@ PLAN = {
     "schema": "gdv.plan/1", "id": "perf.open", "kind": "performance", "requires": {"platforms": ["android"], "capabilities": ["touch"]},
     "dataPolicy": "devdata", "budgetSeconds": 30, "warmup": 1, "steps": [{"type": "wait", "timeoutSec": 5}],
     "metrics": {"openMs": {"unit": "ms", "direction": "lower", "regressionPct": 10, "minSamples": 3}}}
-PHONE = "android:ZY22"
+PHONE = "android:A1B2"
 WAIT = 30  # seconds a test waits for another thread before it gives up and fails
 
 
 def phone(identifier=PHONE):
-    return DeviceInfo(identifier, "android", "phone-mid", "physical", "moto g", "Android 15", ("touch",))
+    return DeviceInfo(identifier, "android", "phone-mid", "physical", "Example Phone", "Android 15", ("touch",))
 
 
 class World:
