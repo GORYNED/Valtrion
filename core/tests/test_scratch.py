@@ -15,7 +15,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
-from valtrion import cli, config, core, diskspace, doctor, lease, scratch, workroot
+from valtrion import cli, config, core, diskspace, doctor, jobs, lease, scratch, workroot
 
 HOUR = 3600.0
 
@@ -870,6 +870,106 @@ class DeepAdoptGitTests(AdoptGitTests):
     def test_a_tree_not_searched_within_the_budget_is_refused(self):
         self.assertIsNone(scratch.find_repositories(self.clone, budget_sec=-1))
         self.assertTrue(scratch.unsaved_work(self.clone, budget_sec=-1))
+
+
+class ActiveJobTests(ScratchBase):
+    def index_job(self, job_id: str, payload: dict) -> None:
+        directory = self.base / "runs" / job_id
+        directory.mkdir(parents=True)
+        core.atomic_write_json(directory / "spec.json", {"jobId": job_id, "payload": payload})
+        core.atomic_write_json(jobs.index_path(job_id, self.home), {"dir": str(directory)})
+
+    def test_an_expired_copy_of_an_active_job_is_never_due(self):
+        self.jobs["job-b"] = "running"
+        folder, _ = self.make("b", job="job-b")
+        self.expire(folder)
+        report = self.sweep(active=["job-b"])
+        self.assertEqual([], report.removed)
+        self.assertTrue(folder.is_dir())
+        self.assertIsNone(scratch.due(core.read_json(folder / scratch.MARKER), ["job-b"], time.time() + 10 ** 6))
+
+    def test_the_folders_of_active_jobs_are_read_from_their_specs(self):
+        self.index_job("job-b", {"projectDir": "/x/project", "cwd": "/x/cwd"})
+        self.index_job("job-c", {})
+        self.assertEqual(["/x/project", "/x/cwd"], jobs.active_job_folders(self.home, ["job-b", "job-c", "job-missing"]))
+
+    def test_the_cli_sweep_keeps_the_project_of_another_active_job(self):
+        folder, _ = self.make("other")
+        (folder / "checkout").mkdir()
+        self.expire(folder)
+        core.atomic_write_json(config.host_json_path(self.home), {"workRoot": str(self.roots.root)})
+        self.index_job("job-b", {"projectDir": str(folder / "checkout")})
+        with mock.patch.object(scratch, "system_processes", no_processes), \
+                mock.patch.object(jobs, "active_job_ids", return_value=["job-b"]), \
+                mock.patch.dict(os.environ, {"GDV_OWNER": "me@host"}):
+            code, out, err = run_cli("workroot", "sweep")
+        self.assertEqual(0, code, err)
+        self.assertTrue(folder.is_dir(), out)
+        self.assertIn("overlaps", out)
+
+    def test_a_project_lease_deeper_than_the_search_is_seen_through_its_worktree(self):
+        folder, marker = self.make("deep")
+        project = folder / "checkout" / "a" / "b" / "c" / "Proj"
+        (project / "ProjectSettings").mkdir(parents=True)
+        held = self.manager.acquire(lease.unity_project_resource(project), "agent", "s1", 600, "build", os.getpid(), worktree=str(project))
+        self.assertTrue(held.acquired)
+        with self.assertRaises(scratch.ScratchError) as caught:
+            self.release(marker["id"])
+        self.assertIn("lease refers to it", str(caught.exception))
+
+    def test_the_sweep_itself_protects_the_folders_of_active_jobs(self):
+        folder, _ = self.make("b")
+        (folder / "checkout").mkdir()
+        self.expire(folder)
+        report = self.sweep(active=["job-b"], job_folders_of=lambda ids: [str(folder / "checkout")] if "job-b" in ids else [])
+        self.assertEqual([], report.removed)
+        self.index_job("job-b", {"projectDir": str(folder / "checkout")})
+        self.assertEqual([], self.sweep(active=["job-b"]).removed, "read from the job's spec by default")
+        self.assertTrue(folder.is_dir())
+
+    def test_a_project_lease_at_any_depth_is_found_without_a_worktree(self):
+        folder, marker = self.make("deeper")
+        project = folder / "checkout" / "a" / "b" / "c" / "d" / "Proj"
+        (project / "ProjectSettings").mkdir(parents=True)
+        self.manager.acquire(lease.unity_project_resource(project), "agent", "s1", 600, "build", os.getpid())
+        with self.assertRaises(scratch.ScratchError) as caught:
+            self.release(marker["id"])
+        self.assertIn("lease refers to it", str(caught.exception))
+
+    def test_a_tree_too_large_to_search_for_projects_counts_as_in_use(self):
+        folder, marker = self.make("big")
+        with mock.patch.object(scratch, "PROJECT_SEARCH_BUDGET_SEC", -1), \
+                mock.patch.object(scratch.project_folders, "__defaults__", (-1, time.monotonic)):
+            with self.assertRaises(scratch.ScratchError) as caught:
+                self.release(marker["id"])
+        self.assertIn("could not be searched", str(caught.exception))
+        self.assertTrue(folder.is_dir())
+
+    def test_the_job_runner_records_the_project_folder_on_its_project_lease(self):
+        project = self.base / "proj"
+        keeper = mock.Mock()
+        runner = SimpleNamespace(spec={"leaseTtlSec": 60}, keeper=keeper, leases=self.manager, home=self.home, job_id="job-x",
+                                 events=mock.Mock(), taken={}, _waited_sec=0.0, _wait_since=None)
+        reason = jobs._Runner.acquire_one(runner, {"resource": lease.unity_project_resource(project), "worktree": str(project)})
+        self.assertIsNone(reason)
+        status = self.manager.status(lease.unity_project_resource(project))
+        self.assertEqual(str(project), status.record.worktree)
+
+    def test_nfd_and_nfc_spellings_match_on_macos(self):
+        import unicodedata
+        nfc = unicodedata.normalize("NFC", "/Users/й/work/scratch/x-0123abcd")
+        nfd = unicodedata.normalize("NFD", nfc)
+        self.assertNotEqual(nfc, nfd)
+        with mock.patch.object(scratch.core, "local_os", return_value="macos"):
+            self.assertTrue(scratch._mentions(f"tool {nfd}", [scratch._key(nfc)]))
+
+    @unittest.skipUnless(hasattr(os, "getuid"), "POSIX modes")
+    def test_an_adopted_folder_is_owner_only(self):
+        stray = self.roots.root / "stray"
+        stray.mkdir(mode=0o755)
+        os.chmod(stray, 0o755)
+        folder, _ = scratch.adopt(self.roots, stray, self.me, max_age_hours=1, manager=self.manager, processes=no_processes)
+        self.assertEqual(0o700, os.stat(folder).st_mode & 0o777)
 
 
 class ConfigAndCliTests(ScratchBase):

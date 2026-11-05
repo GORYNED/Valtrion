@@ -1061,7 +1061,7 @@ def execute(pipeline: Mapping[str, Any], pipeline_path: Path | None, ctx: JobCon
                     except ValueError as error:
                         reason = str(error)
                     else:
-                        wanted = [{"resource": lease.unity_project_resource(project_dir)}]
+                        wanted = [{"resource": lease.unity_project_resource(project_dir), "worktree": str(project_dir)}]
                         if adapter.build_uses_editor:
                             wanted.append({"resource": lease.UNITY_EDITOR_RESOURCE, "slots": capacity})
                         for item in wanted:

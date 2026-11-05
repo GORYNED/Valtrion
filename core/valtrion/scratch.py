@@ -16,7 +16,9 @@ Removal is the only dangerous step, so every removal (`release`, `sweep`, the pr
 - nothing uses it: no held `unity-project:` lease of the folder or of a Unity project inside it, no held lease whose worktree lies
   inside it, the lease the marker depends on is not held, and no process names the folder on its command line or has its working
   directory there (Linux: `/proc`, macOS: `lsof`; Windows does not expose it). When the process list cannot be read, or it does
-  not even contain this process, nothing is removed.
+  not even contain this process, nothing is removed. The working directories and, without privileges, often the command lines of
+  other host users' processes are not visible; scratch folders are therefore owner-only (mode 0700 on POSIX, also after `adopt`),
+  so no other host user can work in one unseen. On Windows the folder keeps the ACL it inherits from the work root.
 
 A sweep removes only a folder that is due (its readable expiry passed, or the job it depends on is recorded as finished or
 cancelled) and in which nothing changed for the idle time; that is measured over the whole tree, and a tree that cannot be walked
@@ -44,6 +46,7 @@ import re
 import stat
 import subprocess
 import time
+import unicodedata
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -61,8 +64,9 @@ TOMBSTONE_PREFIX = ".removing-"
 RESERVED = ("jobs", "mirrors", "launchd", "scratch", "tools")
 NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,39}")
 SCRATCH_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,39}-[0-9a-f]{8}")
-#: How deep below a folder a Unity project (a folder with `ProjectSettings/`) is looked for, for its `unity-project:` lease.
-PROJECT_DEPTH = 3
+#: How long the search for Unity projects (folders with `ProjectSettings/`, for their `unity-project:` lease) in one folder may take;
+#: a folder not searched within it counts as in use.
+PROJECT_SEARCH_BUDGET_SEC = 30.0
 _SKIP_WHEN_LOOKING_FOR_PROJECTS = {".git", "library", "temp", "logs", "obj", "node_modules"}
 #: The characters a scratch id (and so the last part of a scratch path) can contain; any other character ends a path's name.
 _NAME_CHARACTERS = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-")
@@ -108,6 +112,11 @@ def caller(owner: str | None = None) -> Caller:
     user = current_user()
     return Caller(owner or os.environ.get("GDV_OWNER") or f"{user}@{core.local_host_id()}", user,
                   os.getuid() if hasattr(os, "getuid") else None)
+
+
+def _active_job_folders(active: Sequence[str]) -> list[str]:
+    from . import jobs
+    return jobs.active_job_folders(active=active)
 
 
 def job_state(job_id: str, home: Path | None = None) -> str | None:
@@ -201,6 +210,9 @@ def _key(text: str) -> str:
     text = os.path.normcase(text)
     if os.name == "nt":
         text = text.replace("/", "\\")
+    # File systems keep names as given (APFS, NTFS), so a command line may spell a folder in NFD while the work root is NFC. Folding
+    # both is conservative here: it can only make more processes count as users of a folder, never fewer.
+    text = unicodedata.normalize("NFC", text)
     return text.lower() if _folds_case() else text
 
 
@@ -297,31 +309,39 @@ def owner_problem(folder: Path, marker: dict, who: Caller, any_owner: bool = Fal
     return None
 
 
-def project_folders(folder: Path, depth: int = PROJECT_DEPTH) -> list[Path]:
-    """`folder`, its `checkout/` and every Unity project (a folder with `ProjectSettings/`) up to `depth` levels below it. Links are
-    not followed; `.git` and Unity's own folders are not searched."""
+class SearchIncomplete(ScratchError):
+    """A tree could not be searched within its time budget, so what it holds is unknown."""
+
+
+def project_folders(folder: Path, budget_sec: float = PROJECT_SEARCH_BUDGET_SEC,
+                    monotonic: Callable[[], float] = time.monotonic) -> list[Path]:
+    """`folder`, its `checkout/` and every Unity project (a folder with `ProjectSettings/`) at any depth below it. Links are not
+    followed; `.git` and Unity's own folders (`Library`, `Temp`, ...) are not searched. Raises SearchIncomplete when the search
+    does not finish within `budget_sec`: the caller must then treat the folder as in use."""
+    deadline = monotonic() + budget_sec
     found = [folder, folder / CHECKOUT]
-    level = [folder]
-    for _ in range(depth):
-        below: list[Path] = []
-        for parent in level:
+    pending = [folder]
+    while pending:
+        if monotonic() > deadline:
+            raise SearchIncomplete(f"{folder} could not be searched for Unity projects within {budget_sec:g} s")
+        parent = pending.pop()
+        try:
+            with os.scandir(parent) as entries:
+                children = list(entries)
+        except OSError:
+            continue
+        for child in children:
             try:
-                children = list(os.scandir(parent))
+                if not child.is_dir(follow_symlinks=False) or is_link(Path(child.path)):
+                    continue
             except OSError:
                 continue
-            for child in children:
-                try:
-                    if not child.is_dir(follow_symlinks=False) or is_link(Path(child.path)):
-                        continue
-                except OSError:
-                    continue
-                if child.name.lower() in _SKIP_WHEN_LOOKING_FOR_PROJECTS:
-                    continue
-                path = Path(child.path)
-                if (path / "ProjectSettings").is_dir():
-                    found.append(path)
-                below.append(path)
-        level = below
+            if child.name.lower() in _SKIP_WHEN_LOOKING_FOR_PROJECTS:
+                continue
+            path = Path(child.path)
+            if (path / "ProjectSettings").is_dir():
+                found.append(path)
+            pending.append(path)
     return found
 
 
@@ -422,7 +442,10 @@ class _Processes:
 def activity(folder: Path, marker: dict, manager: lease.LeaseManager, processes: "_Processes", exclude_caller: bool = True) -> str | None:
     """Why `folder` is in use (a held lease, a live process, or a process list that cannot be read), or None when it is idle. See
     `using_processes` for `exclude_caller`."""
-    leases = held_leases(folder, marker, manager)
+    try:
+        leases = held_leases(folder, marker, manager)
+    except SearchIncomplete as error:
+        return f"{error}, so a lease on a project inside it cannot be ruled out"
     if leases:
         return "a lease refers to it: " + "; ".join(leases)
     listed = processes.get()
@@ -728,13 +751,15 @@ def due(marker: dict, active_jobs: Sequence[str], now: float, job_state_of: JobS
     """Why the scratch folder of `marker` may be removed by a sweep, or None: its expiry passed, or the job it depends on is
     recorded here as ended. A marker without a readable expiry is never due (only `release` removes it), and an unknown job is not
     an ended one."""
+    job = marker.get("job")
+    if isinstance(job, str) and job and job in set(active_jobs):
+        return None  # the job it belongs to still runs: not even an expired copy goes
     expires = _expires(marker)
     if expires is None:
         return None
     if expires <= now:
         return f"it expired at {marker.get('expiresUtc')}"
-    job = marker.get("job")
-    if isinstance(job, str) and job and job not in set(active_jobs):
+    if isinstance(job, str) and job:
         state = (job_state_of or job_state)(job)
         if state in ENDED_JOB_STATES:
             return f"its job {job} has ended ({state})"
@@ -744,7 +769,8 @@ def due(marker: dict, active_jobs: Sequence[str], now: float, job_state_of: JobS
 def sweep(roots: workroot.WorkRoots, who: Caller, active_jobs: Sequence[str], idle_sec: float, *, any_owner: bool = False,
           dry_run: bool = False, manager: lease.LeaseManager | None = None, processes: ProcessList | None = None,
           clock: Callable[[], float] = time.time, run: workroot.Runner = workroot.run_git, job_state_of: JobState | None = None,
-          walk_budget_sec: float = IDLE_WALK_BUDGET_SEC, protected: Sequence["Path | str"] = ()) -> SweepReport:
+          walk_budget_sec: float = IDLE_WALK_BUDGET_SEC, protected: Sequence["Path | str"] = (),
+          job_folders_of: "Callable[[Sequence[str]], Sequence[str]] | None" = None) -> SweepReport:
     """Remove the scratch folders that are due (`due`) and in which nothing changed for `idle_sec` (`newest_change`), under every
     guard of the module text. An active or unexpired one, one in use (the calling process and its ancestors count as users here),
     one that is, holds or lies inside a `protected` path or the current working directory, one that cannot be shown idle and one
@@ -761,7 +787,15 @@ def sweep(roots: workroot.WorkRoots, who: Caller, active_jobs: Sequence[str], id
     listed = _Processes(processes)
     leases = manager or lease.LeaseManager()
     now = clock()
-    guarded = [_real(Path(path)) for path in [*protected, os.getcwd()]]
+    # The folders every active job works in (its project folder, its working directory) are protected too, read from the jobs'
+    # specs: such a job may build in a scratch copy without holding its lease yet (waiting for disk space) and without any process
+    # naming the folder.
+    try:
+        job_folders = list((job_folders_of or _active_job_folders)(list(active_jobs)))
+    except (OSError, ValueError) as error:
+        report.kept.append((str(base), f"the folders of the active jobs cannot be read ({error}); nothing is swept"))
+        return report
+    guarded = [_real(Path(path)) for path in [*protected, *job_folders, os.getcwd()]]
 
     def overlaps(folder: Path) -> str | None:
         real = _real(folder)
@@ -888,6 +922,8 @@ def unowned(roots: workroot.WorkRoots, manager: lease.LeaseManager | None = None
     for name, path, reason in entries:
         try:
             refers = held_leases(path, {}, leases) if path.is_dir() and not is_link(path) else []
+        except SearchIncomplete:
+            refers = ["unknown: the folder is too large to search for Unity projects in time"]
         except OSError:
             refers = []
         size, complete = _bytes(path, deadline) if sizes else (None, False)
@@ -1028,6 +1064,10 @@ def adopt(roots: workroot.WorkRoots, path: Path, who: Caller, *, max_age_hours: 
     label = name if name is not None else (core.safe_segment(candidate.name, "adopted", 40).rstrip(".") or "adopted")
     folder, scratch_id = _new_folder(roots, label)
     os.replace(candidate, folder)  # the same volume: scratch/ is inside the work root
+    if os.name != "nt":
+        # Owner-only, like a created copy: the process checks cannot see what other host users run (lsof and /proc show only the
+        # caller's processes), so nobody else should be able to work in it unseen.
+        os.chmod(folder, 0o700)
     marker = _marker(scratch_id, label, who, "workroot adopt", clock(), hours, adoptedFrom=str(candidate))
     try:
         core.atomic_write_json(folder / MARKER, marker)

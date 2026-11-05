@@ -1285,7 +1285,7 @@ def _workroot(arguments: argparse.Namespace) -> int:
         active = jobs.active_job_ids()
         removed = workroot.sweep(roots, active, arguments.max_age_hours * 3600, arguments.dry_run, keep=jobs.kept_work_reason)
         swept = scratch.sweep(roots, scratch.caller(), active, settings.scratch_max_age_hours * 3600, any_owner=arguments.any_owner,
-                              dry_run=arguments.dry_run)
+                              dry_run=arguments.dry_run)  # the folders of the active jobs are protected by the sweep itself
         removed.extend(swept.removed)
         verb = "would remove" if arguments.dry_run else "removed"
         for path in removed:

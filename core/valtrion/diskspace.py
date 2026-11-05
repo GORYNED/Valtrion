@@ -147,7 +147,7 @@ def ensure_free(settings: config.HostSettings, home: Path | None, protected: Seq
         ("expired scratch directories", lambda: scratch.sweep(
             settings.roots, scratch.caller(), active, PRESSURE_STALE_SEC, any_owner=True,
             manager=lease.LeaseManager(home or core.valtrion_home()), job_state_of=lambda job: scratch.job_state(job, home),
-            protected=[*protected, *busy]).removed),
+            protected=[*protected, *busy], job_folders_of=lambda ids: jobs.active_job_folders(home, ids)).removed),
         ("expired run folders", lambda: artifacts.gc(settings.artifacts_root, settings.keep_days_under_pressure,
                                                     protected=protected_paths).removed),
         ("expired builds", lambda: buildcache.gc(buildcache.builds_root(home), protect=active_build_keys(home, active),
