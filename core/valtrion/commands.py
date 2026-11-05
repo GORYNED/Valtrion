@@ -763,7 +763,7 @@ def _cache_status(pipeline: dict, base: Path, sha: str | None, project_dir: Path
         state = gitstate.read_state(project_dir, comparing.run_git, [settings.artifacts_root, settings.work_root])
         dirty = state.dirty or state.sha != sha
     platform = _request_for(pipeline, base, project_dir).platform
-    rows = pipelines.cache_status(pipeline, base, sha, dirty, platform, settings.work_root)
+    rows = pipelines.cache_status(pipeline, base, sha, dirty, platform, settings.work_root, project_dir)
     _out({"cache": str(pipelines.resultcache.cache_root(settings.work_root)), "reuseByDefault": settings.result_cache.reuse,
           "stages": rows})
     return constants.EXIT_PASS
@@ -815,7 +815,9 @@ def _start_pipeline(arguments: argparse.Namespace, pipeline: dict, payload: dict
         return _blocked(arguments.command, problem)  # before the job exists: nothing was leased and nothing waits in a queue
     guard_key = None
     if settings.repeat_guard_sec > 0:
-        guard_key = repeatguard.fingerprint(pipeline, payload, base, project_dir, comparing.run_git)
+        limits = {"timeoutSec": arguments.timeout_sec, "stallSec": arguments.stall_sec, "leaseWait": arguments.lease_wait,
+                  "diskWait": getattr(arguments, "disk_wait", None)}
+        guard_key = repeatguard.fingerprint(pipeline, payload, base, project_dir, comparing.run_git, limits)
         previous = None if getattr(arguments, "allow_repeat", False) else repeatguard.check(guard_key, settings.repeat_guard_sec)
         if previous is not None:
             return _blocked(arguments.command, previous.message(settings.repeat_guard_sec))

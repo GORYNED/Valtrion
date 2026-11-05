@@ -45,16 +45,26 @@ class _Harness(unittest.TestCase):
 
     @contextlib.contextmanager
     def scenarios(self, *names):
-        """Each launch takes the next scenario (`pass` or `hang`), then `pass`."""
+        """Each launch takes the next scenario (`pass`, `hang` or `fail`), then `pass`."""
         queue = list(names)
-        original = FakeAdapter.launch
+        original, original_pull = FakeAdapter.launch, FakeAdapter.pull
+        failing: list[bool] = [False]
 
         def launch(adapter, *arguments):
-            FakeAdapter.scenario = queue.pop(0) if queue else "pass"
+            scenario = queue.pop(0) if queue else "pass"
+            failing[0] = scenario == "fail"
+            FakeAdapter.scenario = "hang" if failing[0] else scenario  # a failing run reports FAIL before its heartbeat stalls
             return original(adapter, *arguments)
 
+        def pull(adapter, device, remote, local):
+            outcome = original_pull(adapter, device, remote, local)
+            if failing[0] and FakeAdapter.launched:
+                core.atomic_write_json(local / "run-1" / "result.json", {"status": "FAIL", "reason": "assert failed", "steps": [],
+                                                                         "metrics": [], "unverified": []})
+            return outcome
+
         try:
-            with mock.patch.object(FakeAdapter, "launch", launch):
+            with mock.patch.object(FakeAdapter, "launch", launch), mock.patch.object(FakeAdapter, "pull", pull):
                 yield
         finally:
             FakeAdapter.scenario = "pass"
@@ -232,16 +242,16 @@ def DeviceOther():
 
 
 class KeepGoingTests(_Harness):
-    def test_keep_going_runs_every_independent_stage_and_ends_fail(self):
+    def test_keep_going_runs_every_independent_stage(self):
         with self.scenarios("hang", "pass"):
             _, store = self.run_pipeline(self.pipeline_document(self.two_series()), {"keepGoing": True})
         job = store.read_job()
-        self.assertEqual("FAIL", job["status"])
+        self.assertEqual("STALL", job["status"], "no stage FAILed: the worst status, as without --keep-going")
         self.assertIn("1 of 4 stages did not pass", job["reason"])
         self.assertIn("3:run STALL", job["reason"])
         self.assertEqual(2, FakeAdapter.calls.count("launch"))
         result = self.result_of(store)
-        self.assertEqual(("FAIL", True), (result["status"], result["pipelineRun"]["keepGoing"]))
+        self.assertEqual(("STALL", True), (result["status"], result["pipelineRun"]["keepGoing"]))
         records = self.stage_records(result)
         self.assertEqual([("ran", "STALL"), ("ran", "PASS")], [(records[i]["disposition"], records[i]["status"]) for i in (3, 4)])
         summary = json.loads((store.directory / "summary.json").read_text(encoding="utf-8"))
@@ -264,9 +274,25 @@ class KeepGoingTests(_Harness):
         FakeAdapter.build_status = constants.FAIL
         _, store = self.run_pipeline(self.pipeline_document(self.two_series()), {"keepGoing": True})
         job = store.read_job()
-        self.assertEqual("FAIL", job["status"])
-        self.assertIn("1:build FAIL", job["reason"])
+        self.assertEqual(("FAIL", "build failed: gradle failed"), (job["status"], job["reason"]), "the build stopped it: no aggregate")
         self.assertNotIn("install", FakeAdapter.calls)
+
+    def test_a_blocked_build_stays_blocked_with_keep_going(self):
+        FakeAdapter.build_status = constants.BLOCKED
+        shutil.rmtree(self.home / "builds", ignore_errors=True)
+        _, store = self.run_pipeline(self.pipeline_document(self.two_series()), {"keepGoing": True})
+        job = store.read_job()
+        self.assertEqual("BLOCKED", job["status"], job["reason"])
+        self.assertNotIn("--keep-going ran the stages", job["reason"])
+
+    def test_keep_going_is_fail_only_when_a_stage_failed(self):
+        with self.scenarios("fail", "hang"):
+            _, store = self.run_pipeline(self.pipeline_document(self.two_series()), {"keepGoing": True})
+        job = store.read_job()
+        self.assertEqual("FAIL", job["status"])
+        self.assertIn("2 of 4 stages did not pass", job["reason"])
+        self.assertIn("3:run FAIL", job["reason"])
+        self.assertIn("4:run STALL", job["reason"])
 
 
 class ResultCachePipelineTests(_Harness):
@@ -344,6 +370,67 @@ class ResultCachePipelineTests(_Harness):
         events = store.events.read_text(encoding="utf-8")
         self.assertIn("does not match its recorded hash", events)
 
+    def run_only(self, **run_args):
+        return {"stage": "run", "plan": "open.plan.json", "args": {"app": "com.example.app", "stallSec": 1, **run_args}, "timeoutSec": 30}
+
+    def assert_full_pipeline_is_not_answered(self):
+        _, store = self.run_pipeline(self.pipeline_document(self.stages()), {"resultCache": "reuse"})
+        self.assertEqual(["build", "install"], [c for c in FakeAdapter.calls if c in ("build", "install")], "the commit is built and installed")
+        self.assertIn("launch", FakeAdapter.calls)
+        self.assertNotIn("reusedFrom", self.result_of(store))
+
+    def test_a_run_on_whatever_app_is_on_the_device_is_never_stored(self):
+        document = self.pipeline_document([self.run_only()])
+        document["id"] = "run-only"
+        _, store = self.run_pipeline(document)
+        self.assertEqual("PASS", store.read_job()["status"], store.read_job()["reason"])
+        self.assertEqual([], self.stored())
+        self.assert_full_pipeline_is_not_answered()
+
+    def test_a_run_after_installing_an_artifact_file_is_never_stored(self):
+        apk = self.work / "old.apk"
+        apk.write_bytes(b"x")
+        document = self.pipeline_document([{"stage": "install", "args": {"artifact": str(apk)}}, self.run_only()])
+        document["id"] = "artifact"
+        _, store = self.run_pipeline(document)
+        self.assertEqual("PASS", store.read_job()["status"], store.read_job()["reason"])
+        self.assertEqual([], self.stored())
+        self.assert_full_pipeline_is_not_answered()
+
+    def test_an_install_by_key_counts_only_for_a_clean_build_of_the_same_commit(self):
+        _, store = self.run_pipeline(self.pipeline_document(self.stages()), {"resultCache": "off"})
+        key = self.result_of(store)["build"]["key"]
+        by_key = self.pipeline_document([{"stage": "install", "args": {"artifactKey": key}}, self.run_only()])
+        by_key["id"] = "by-key"
+        self.run_pipeline(by_key)
+        self.assertEqual(1, len(self.stored()), "the published clean build of this commit, installed by key")
+        _, store = self.run_pipeline(self.pipeline_document(self.stages()), {"resultCache": "reuse"})
+        self.assertIn("reusedFrom", self.result_of(store), "the same build: the full pipeline is answered")
+        manifest_path = self.home / "builds" / key / "manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        core.atomic_write_json(manifest_path, {**manifest, "sha": OTHER_SHA})
+        shutil.rmtree(self.cache_folder())
+        self.run_pipeline(by_key)
+        self.assertEqual([], self.stored(), "another commit's build installed by key is not this commit's evidence")
+
+    def test_a_resumed_run_after_a_carried_install_is_not_stored_but_can_be_answered(self):
+        self.run_pipeline(self.pipeline_document(self.stages()), {"resultCache": "off"})
+        _, store = self.run_pipeline(self.pipeline_document(self.stages()), {"selection": {"stages": ["3"]}})
+        self.assertEqual("PASS", store.read_job()["status"], store.read_job()["reason"])
+        self.assertEqual([], self.stored(), "the app on the device may have been replaced since the carried install")
+        self.run_pipeline(self.pipeline_document(self.stages()))
+        _, store = self.run_pipeline(self.pipeline_document(self.stages()), {"selection": {"stages": ["3"]}, "resultCache": "reuse"})
+        self.assertNotIn("launch", FakeAdapter.calls, "a lookup does not depend on the device")
+        self.assertIn("reusedFrom", self.result_of(store))
+
+    def test_another_build_of_the_commit_is_another_key(self):
+        self.run_pipeline(self.pipeline_document(self.stages()))
+        with mock.patch.object(FakeAdapter, "toolchain", lambda adapter: {"gradle": "9.9"}, create=True):
+            _, store = self.run_pipeline(self.pipeline_document(self.stages()), {"resultCache": "reuse"})
+        self.assertIn("build", FakeAdapter.calls, "another toolchain is another build")
+        self.assertIn("launch", FakeAdapter.calls, "a result of the earlier build does not answer for the new one")
+        self.assertEqual(2, len(self.stored()))
+
     def test_a_changed_stage_or_plan_is_another_key(self):
         self.run_pipeline(self.pipeline_document(self.stages()))
         self.run_pipeline(self.pipeline_document(self.stages(launchArgs=["-x"])), {"resultCache": "reuse"})
@@ -358,14 +445,16 @@ def _result(status=constants.PASS, sha=SHA, dirty=False, **changes):
         "target": {"platform": "android", "deviceId": "android:ZY22", "deviceClass": "phone-mid", "osMajor": 15, "evidence": "physical"},
         "host": {"id": "win", "transport": "local", "selectedBy": "local"}, "plan": {"id": "perf.open", "sha256": "a" * 64},
         "startedUtc": "2026-11-04T10:00:00Z", "finishedUtc": "2026-11-04T10:01:00Z", "layers": {"scenario": status},
-        "steps": [], "metrics": [], "artifacts": [], "unverified": []}
+        "steps": [], "metrics": [], "artifacts": [], "unverified": [],
+        "build": {"key": "f" * 32, "path": "builds/x/app.apk", "sha256": "e" * 64, "sizeBytes": 3, "candidateSha": sha, "dirty": dirty,
+                  "profile": "Validation", "platform": "android", "reused": False, "builtByJob": "job"}}
     document.update(changes)
     return document
 
 
 def _key(**changes):
     values = {"repo": "Sample", "platform": "android", "sha": SHA, "plan_sha256": "a" * 64, "device_class": "phone-mid",
-              "profile": "Validation", "stage_sha256": "b" * 64, "core_version": "0.13.1"}
+              "profile": "Validation", "stage_sha256": "b" * 64, "build_key": "f" * 32, "core_version": "0.13.1"}
     values.update(changes)
     return resultcache.Key(**values)
 
@@ -407,10 +496,52 @@ class ResultCacheUnitTests(unittest.TestCase):
     def test_every_key_component_changes_the_key(self):
         base = _key()
         variants = [_key(repo="Other"), _key(platform="ios"), _key(sha=OTHER_SHA), _key(plan_sha256="c" * 64), _key(device_class="tablet"),
-                    _key(profile="Release"), _key(stage_sha256="d" * 64), _key(core_version="0.14.0")]
+                    _key(profile="Release"), _key(stage_sha256="d" * 64), _key(core_version="0.14.0"),
+                    _key(build_key="0" * 32)]
         digests = {base.digest, *(variant.digest for variant in variants)}
-        self.assertEqual(9, len(digests))
-        self.assertEqual({"repo", "platform", "sha", "planSha256", "deviceClass", "profile", "coreVersion", "stageSha256"}, set(base.components()))
+        self.assertEqual(10, len(digests))
+        self.assertEqual({"repo", "platform", "sha", "planSha256", "deviceClass", "profile", "coreVersion", "stageSha256", "buildKey"},
+                         set(base.components()))
+
+    def test_a_result_without_a_clean_build_of_the_commit_or_of_another_build_is_not_stored(self):
+        without = {name: value for name, value in _result().items() if name != "build"}
+        self.assertIsNone(resultcache.store(self.root, _key(), without, "job"), "an app that was already on the device")
+        dirty_build = _result()
+        dirty_build["build"] = {**dirty_build["build"], "dirty": True}
+        self.assertIsNone(resultcache.store(self.root, _key(), dirty_build, "job"))
+        other_commit = _result()
+        other_commit["build"] = {**other_commit["build"], "candidateSha": OTHER_SHA}
+        self.assertIsNone(resultcache.store(self.root, _key(), other_commit, "job"))
+        self.assertIsNone(resultcache.store(self.root, _key(build_key="0" * 32), _result(), "job"), "another build than the key's")
+        one_off = _result()
+        one_off["build"] = {**one_off["build"], "key": "dirty-job"}
+        self.assertIsNone(resultcache.store(self.root, _key(build_key="dirty-job"), one_off, "job"))
+
+    def test_a_rehashed_entry_whose_build_differs_from_the_key_is_ignored(self):
+        def other_build(entry, path):
+            entry["result"]["build"]["key"] = "0" * 32
+            entry["resultSha256"] = core.sha256_bytes(resultcache._canonical(entry["result"]))
+            path.write_text(json.dumps(entry), encoding="utf-8")
+
+        hit, why = self.tamper(other_build)
+        self.assertIsNone(hit)
+        self.assertIn("was made with build", why)
+
+    @unittest.skipUnless(os.name == "nt", "Windows junctions")
+    def test_a_junction_as_the_cache_folder_is_never_followed(self):
+        import subprocess
+        target = self.root.parent / "elsewhere"
+        resultcache.store(target, _key(), _result(), "job")
+        made = subprocess.run(["cmd", "/c", "mklink", "/J", str(self.root), str(target)], capture_output=True, text=True)
+        if made.returncode != 0 or not self.root.exists():
+            self.skipTest(f"mklink /J is not available: {made.stderr.strip() or made.stdout.strip()}")
+        self.addCleanup(lambda: os.rmdir(self.root) if self.root.exists() else None)
+        hit, why = resultcache.lookup(self.root, _key())
+        self.assertIsNone(hit)
+        self.assertIn("link or junction", why)
+        self.assertEqual([], resultcache.gc(self.root, keep_days=0, max_entries=0))
+        self.assertIsNone(resultcache.store(self.root, _key(stage_sha256="c" * 64), _result(), "job"))
+        self.assertEqual(1, len(list(target.glob("*.json"))), "nothing was written or removed through the junction")
 
     def test_another_core_version_is_a_miss(self):
         resultcache.store(self.root, _key(), _result(), "job")
@@ -650,6 +781,9 @@ class RepeatGuardTests(_CliMixin, _Harness):
         with patch:
             self.start(path)
             self.assertEqual(0, self.start(path, "--keep-going")[0], "another option")
+            self.assertEqual(0, self.start(path, "--keep-going", "--timeout-sec", "14400")[0], "a longer timeout after a TIMEOUT")
+            self.assertEqual(0, self.start(path, "--keep-going", "--timeout-sec", "14400", "--stall-sec", "900")[0], "another stall window")
+            self.assertEqual(constants.EXIT_BLOCKED, self.start(path, "--keep-going", "--timeout-sec", "14400", "--stall-sec", "900")[0])
             plan = self.work / "plans" / "open.plan.json"
             plan.write_text(plan.read_text(encoding="utf-8") + " ", encoding="utf-8")
             self.assertEqual(0, self.start(path)[0], "the plan changed")
@@ -659,7 +793,7 @@ class RepeatGuardTests(_CliMixin, _Harness):
             with mock.patch.object(pipeline.compare, "run_git", dirty), contextlib.redirect_stdout(io.StringIO()):
                 code = cli.main(["pipeline", str(path), "--local", "--project-dir", str(self.work / "project")])
             self.assertEqual(0, code, "an uncommitted change is an input")
-        self.assertEqual(4, len(payloads))
+        self.assertEqual(6, len(payloads))
 
     def test_the_guard_is_off_by_default_and_ends_with_its_window(self):
         path = self.write_pipeline(self.pipeline_document(self.stages()))

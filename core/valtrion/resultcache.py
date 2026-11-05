@@ -2,14 +2,17 @@
 
 A `run` stage that ends `PASS` on a clean tree is stored under the work root, `<workRoot>/result-cache/<key>.json`, where the key is
 a SHA-256 over every input that decides the outcome: project, platform, commit, plan SHA-256, device class, build profile, the
-Valtrion Core version and a hash of the stage itself (its arguments and the content of its pre-launch files; not its `plan` path,
-whose content is the plan hash, and not its `cleanup`). Only `PASS` is stored, and a lookup trusts an entry only when:
+Valtrion Core version, a hash of the stage itself (its arguments and the content of its pre-launch files; not its `plan` path,
+whose content is the plan hash, and not its `cleanup`) and the build-cache key of the clean build of the commit the stage ran on.
+Only a `PASS` made on the build this job installed from a known clean build of the commit is stored (never a run on whatever app was
+already on the device, an `args.artifact`, or a carried install), and a lookup trusts an entry only when:
 
-- the file is a regular file of this user (POSIX: owned by the effective user, not writable by group or others; a link is refused),
-  no larger than `MAX_ENTRY_BYTES`, inside a cache folder that is itself no link;
+- the file is a regular file of this user (POSIX: owned by the effective user, not writable by group or others; a link or a
+  Windows junction is refused), no larger than `MAX_ENTRY_BYTES`, inside a cache folder that is itself no link or junction;
 - it is a `valtrion.resultcache/1` entry whose key is the file name and whose recorded components are the ones asked for;
 - the stored result hashes to the recorded `resultSha256`, is a valid `gdv.result/1`, is `PASS`, is not dirty, and its own
-  `candidate`, `plan`, `target` and `host` fields agree with the key.
+  `candidate`, `plan`, `target` and `build` fields agree with the key (its `build` is a clean build of the commit with the key's
+  build key).
 
 Anything else is ignored (a miss with a reason), never trusted and never repaired. `FAIL`, `BLOCKED`, `STALL`, `TIMEOUT`,
 `NEEDS_PERMISSION` and stages that did not run are never stored, so they are never reused. Retention follows the build cache: entries
@@ -84,12 +87,15 @@ class Key:
     device_class: str
     profile: str
     stage_sha256: str
+    #: The build-cache key of the clean build of this commit that was installed before the run: the result is only as good as the
+    #: build it ran on, so a result is never reused for another build (or for an app that was not installed from a known build).
+    build_key: str
     core_version: str = __version__
 
     def components(self) -> dict[str, str]:
         return {"repo": self.repo, "platform": self.platform, "sha": self.sha, "planSha256": self.plan_sha256,
                 "deviceClass": self.device_class, "profile": self.profile, "coreVersion": self.core_version,
-                "stageSha256": self.stage_sha256}
+                "stageSha256": self.stage_sha256, "buildKey": self.build_key}
 
     @property
     def digest(self) -> str:
@@ -122,8 +128,8 @@ def _untrusted(path: Path, folder: bool = False) -> str | None:
         return "no entry"
     except OSError as error:
         return f"unreadable ({error})"
-    if stat.S_ISLNK(info.st_mode):
-        return "it is a link"
+    if stat.S_ISLNK(info.st_mode) or getattr(info, "st_reparse_tag", 0) or _is_junction(path):
+        return "it is a link or junction"
     if folder and not stat.S_ISDIR(info.st_mode):
         return "the cache folder is not a folder"
     if not folder and not stat.S_ISREG(info.st_mode):
@@ -137,6 +143,17 @@ def _untrusted(path: Path, folder: bool = False) -> str | None:
         if info.st_mode & 0o022:
             return "it is writable by other users"
     return None
+
+
+def _is_junction(path: Path) -> bool:
+    """A Windows junction (a mount point reparse point), which `S_ISLNK` does not report; `os.path.isjunction` exists from 3.12."""
+    check = getattr(os.path, "isjunction", None)
+    if check is not None:
+        try:
+            return bool(check(path))
+        except OSError:
+            return True
+    return False  # Python 3.10/3.11: `st_reparse_tag` of `os.lstat` covers junctions on Windows
 
 
 def _ensure_root(root: Path) -> None:
@@ -209,7 +226,19 @@ def _mismatch(result: Mapping[str, Any], key: Key) -> str | None:
     for name, value in observed.items():
         if value != wanted[name]:
             return f"the stored result has {name} {value!r}, not {wanted[name]!r}"
+    build = result.get("build")
+    if not isinstance(build, dict) or not clean_build_of(build.get("key"), build.get("candidateSha"), build.get("dirty"),
+                                                          build.get("platform"), key.sha, key.platform):
+        return "the stored result was not made with a clean build of this commit"
+    if build["key"] != key.build_key:
+        return f"the stored result was made with build {build['key']}, not {key.build_key}"
     return None
+
+
+def clean_build_of(build_key: Any, candidate_sha: Any, dirty: Any, platform: Any, sha: str | None, wanted_platform: str | None) -> bool:
+    """Whether a build (by its build-cache key and record) is a clean, cacheable build of commit `sha` for `wanted_platform`."""
+    return (isinstance(build_key, str) and bool(build_key) and not build_key.startswith("dirty-") and candidate_sha == sha
+            and dirty is False and (platform is None or platform == wanted_platform))
 
 
 def lookup(root: Path, key: Key, validator: Validator | None = None, touch: bool = True) -> tuple[Hit | None, str]:

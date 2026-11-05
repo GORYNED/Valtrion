@@ -770,6 +770,9 @@ def execute(pipeline: Mapping[str, Any], pipeline_path: Path | None, ctx: JobCon
     records: dict[int, dict] = {}
     current: list[int | None] = [None]  # the stage that is running: a way out through `fail` records its outcome
     reused_hits: dict[int, resultcache.Hit] = {}  # run stages answered from the result cache
+    #: The build-cache key of the clean build of this commit that this job's latest install put on the device; None when the app on
+    #: the device is not known to be such a build (no install in this job, an `args.artifact`, another commit's build, a failed one).
+    installed_build: list[str | None] = [None]
 
     def record(index: int, disposition: str, status: str | None = None, reason: str | None = None, **extra: Any) -> dict:
         stage = stages[index]
@@ -1065,11 +1068,22 @@ def execute(pipeline: Mapping[str, Any], pipeline_path: Path | None, ctx: JobCon
             return None, key, toolchain
         return buildcache.lookup(buildcache.builds_root(ctx.home), key), key, toolchain
 
-    def result_key(stage: Mapping[str, Any], plan_sha: str, device_class: str) -> resultcache.Key:
+    def result_key(stage: Mapping[str, Any], plan_sha: str, device_class: str, build_key: str) -> resultcache.Key:
         return resultcache.Key(pipeline["candidate"]["repo"], platform, str(candidate_sha), plan_sha, device_class,
-                               pipeline["candidate"]["profile"], resultcache.stage_fingerprint(stage, base), __version__)
+                               pipeline["candidate"]["profile"], resultcache.stage_fingerprint(stage, base), build_key, __version__)
 
-    discovered_class: list[str | None] = []  # the class discovery found for a lookup, once
+    discovered: list[DeviceInfo | None] = []  # the device discovery found for a lookup, once (nothing is leased or bound)
+
+    def lookup_device() -> DeviceInfo | None:
+        if device is not None:
+            return device
+        if not discovered:
+            try:
+                found, _ = select_device(adapter.discover(), pipeline["device"], load_plan(first_plan)[1] if first_plan else {})
+            except Exception:  # noqa: BLE001 - adapter code; without a device the class may still come from the pipeline
+                found = None
+            discovered.append(found)
+        return discovered[0]
 
     def cache_device_class() -> str | None:
         """The device class a lookup is keyed by: the pipeline's `device.class`, else the class of the device discovery would select
@@ -1078,13 +1092,32 @@ def execute(pipeline: Mapping[str, Any], pipeline_path: Path | None, ctx: JobCon
             return device.device_class
         if pipeline["device"].get("class"):
             return str(pipeline["device"]["class"])
-        if not discovered_class:
-            try:
-                found, _ = select_device(adapter.discover(), pipeline["device"], load_plan(first_plan)[1] if first_plan else {})
-            except Exception:  # noqa: BLE001 - adapter code; without a class nothing is looked up
-                found = None
-            discovered_class.append(found.device_class if found is not None else None)
-        return discovered_class[0]
+        found = lookup_device()
+        return found.device_class if found is not None else None
+
+    def planned_build_key() -> str | None:
+        """The build-cache key the build stage of this job will build or reuse, computed as `reuse_or_none` does; None when it
+        cannot be known before the build (a dirty tree, no project, an unknown toolchain, a signing device that is not attached)."""
+        if project_dir is None or dirty or candidate_sha in (None, NO_SHA):
+            return None
+        toolchain: dict[str, str] = {"unity": unity}
+        try:
+            toolchain.update(adapter.toolchain())
+        except Exception:  # noqa: BLE001 - adapter code
+            return None
+        signed_for = None
+        if adapter.signs_for_device:
+            found = lookup_device()
+            if found is None:
+                return None
+            signed_for = found.id
+        profile_name = pipeline["candidate"]["profile"]
+        return buildcache.compute_key(pipeline["candidate"]["repo"], platform, str(candidate_sha), profile_name, toolchain,
+                                      buildcache.profile_config_hash(project_dir, profile_name), signed_for)
+
+    def expected_build(index: int) -> str | None:
+        return expected_build_key(stages, index, selected, planned_build_key, resumed.build if resumed is not None else None,
+                                  ctx.home, candidate_sha, platform)
 
     def look_up(index: int) -> resultcache.Hit | None:
         """The cached passing result of run stage `index`, when lookups are on and the tree is clean; the miss is logged."""
@@ -1100,20 +1133,27 @@ def execute(pipeline: Mapping[str, Any], pipeline_path: Path | None, ctx: JobCon
             events.emit("log", "result cache: no lookup, the device class is unknown (name device.class in the pipeline)",
                         step=resume.stage_name(index, stage))
             return None
-        hit, why = resultcache.lookup(cache_root, result_key(stage, plan_sha, device_class))
+        build_key = expected_build(index)
+        if build_key is None:
+            events.emit("log", "result cache: no lookup, the stage does not run on a known clean build of this commit installed by "
+                        "the pipeline", step=resume.stage_name(index, stage))
+            return None
+        hit, why = resultcache.lookup(cache_root, result_key(stage, plan_sha, device_class, build_key))
         if hit is None:
             events.emit("log", f"result cache: {why}", step=resume.stage_name(index, stage))
         return hit
 
     def keep_result(index: int, merged: Mapping[str, Any]) -> None:
-        """Store a passing run stage result for later reuse (never one that was itself reused)."""
+        """Store a passing run stage result for later reuse: only one made on the build this job installed from a clean build of this
+        commit (built or reused by key in this job, or the earlier run's published build installed by this job); never a run on an
+        app that was already on the device, an `args.artifact`, or a carried install."""
         if not store_results or cache_root is None or device is None or merged["status"] != constants.PASS:
             return
-        if not resultcache.cacheable_commit(candidate_sha, dirty):
+        if not resultcache.cacheable_commit(candidate_sha, dirty) or installed_build[0] is None:
             return
         try:
-            stored = resultcache.store(cache_root, result_key(stages[index], merged["plan"]["sha256"], device.device_class), merged,
-                                       ctx.job_id)
+            stored = resultcache.store(cache_root, result_key(stages[index], merged["plan"]["sha256"], device.device_class,
+                                                              installed_build[0]), merged, ctx.job_id)
             if stored is not None:
                 events.emit("log", f"result cache: stored the result of run {merged['runId']}", step=resume.stage_name(index, stages[index]),
                             data={"key": stored.stem})
@@ -1346,6 +1386,7 @@ def execute(pipeline: Mapping[str, Any], pipeline_path: Path | None, ctx: JobCon
                 return fail(constants.BLOCKED, "install needs the artifact of a build stage, stage.args.artifactKey or stage.args.artifact")
             if used_entry is not None:
                 buildcache.touch(used_entry)
+            installed_build[0] = None  # whatever was installed before is replaced (or, after a failed install, unknown)
             installed = _bounded(lambda: adapter.install(device, chosen), stage, adapter_name="install")
             extra_layers["install"] = installed.status
             events.emit("step.finished", installed.reason, step=name, status=installed.status)
@@ -1354,6 +1395,10 @@ def execute(pipeline: Mapping[str, Any], pipeline_path: Path | None, ctx: JobCon
                 record(index, "ran", installed.status, f"install failed: {installed.reason}", deviceId=device.id if device else None)
                 return fail(installed.status, f"install failed: {installed.reason}")
             record(index, "ran", constants.PASS, deviceId=device.id if device else None)
+            if used_entry is not None and Path(chosen) == used_entry.path and used_entry.cacheable and resultcache.clean_build_of(
+                    used_entry.key, used_entry.manifest.get("sha"), used_entry.manifest.get("dirty"), used_entry.manifest.get("platform"),
+                    candidate_sha, platform):
+                installed_build[0] = used_entry.key  # a known clean build of this commit: its run results may be cached
             continue
         if kind == "run":
             assert device is not None
@@ -1395,6 +1440,35 @@ def execute(pipeline: Mapping[str, Any], pipeline_path: Path | None, ctx: JobCon
             continue
     settle()
     return conclude()
+
+
+def expected_build_key(stages: Sequence[Mapping[str, Any]], index: int, selected: frozenset[int] | set[int],
+                       planned: Callable[[], str | None], carried_build: Mapping[str, Any] | None, home: Path | None,
+                       sha: str | None, platform: str | None) -> str | None:
+    """The build-cache key of the clean build of commit `sha` that run stage `index` will run on: the build its last install takes,
+    which is the last build stage's (`planned`, when that stage runs in this job; the earlier run's build when it is carried), or the
+    published build `args.artifactKey` names. None when the stage does not run on a known clean build of the commit: no install before
+    it (the app already on the device), `args.artifact`, a dirty or another commit's build, or a key that cannot be known yet."""
+    installs = [i for i in range(index) if stages[i]["stage"] == "install"]
+    if not installs:
+        return None
+    install = installs[-1]
+    builds = [b for b in range(install) if stages[b]["stage"] == "build"]
+    args = stages[install].get("args") or {}
+    if not builds:
+        if args.get("artifact") or not args.get("artifactKey"):
+            return None
+        entry = buildcache.find(buildcache.builds_root(home), str(args["artifactKey"]))
+        if entry is None or not entry.cacheable or not resultcache.clean_build_of(
+                entry.key, entry.manifest.get("sha"), entry.manifest.get("dirty"), entry.manifest.get("platform"), sha, platform):
+            return None
+        return entry.key
+    if builds[-1] in selected:
+        return planned()
+    build = dict(carried_build or {})
+    if not resultcache.clean_build_of(build.get("key"), build.get("candidateSha"), build.get("dirty"), build.get("platform"), sha, platform):
+        return None
+    return str(build["key"])
 
 
 def _reused_result(hit: resultcache.Hit, job_id: str, index: int, plan: Mapping[str, Any], directory: Path) -> dict:
@@ -1476,10 +1550,15 @@ def _with_stage_record(document: dict, pipeline_id: str, records: Sequence[dict]
             problems.append((str(status), f"{name} {status}{detail}"))
     if not problems:
         return document, False
-    if keep_going:
+    # A pipeline that stopped (a build or install that did not pass, a busy device) did not go on: its result is the stage that stopped
+    # it, as without --keep-going.
+    stopped = overall.status != constants.PASS
+    if keep_going and not stopped:
+        # FAIL when a stage failed; otherwise (only BLOCKED, STALL, TIMEOUT, NEEDS_PERMISSION) the first of them, as `_worst_result`.
+        status = constants.FAIL if any(item[0] == constants.FAIL for item in problems) else problems[0][0]
         reason = (f"{len(problems)} of {len(records)} stages did not pass (--keep-going ran the stages after a failure): "
                   + "; ".join(text for _, text in problems))
-        return {**document, "status": constants.FAIL, "reason": reason}, True
+        return {**document, "status": status, "reason": reason}, True
     if document["status"] != constants.PASS:
         return document, False
     status, text = problems[0]
@@ -1641,10 +1720,20 @@ def run_pipeline_job(ctx: JobContext) -> PipelineOutcome:
 
 
 def cache_status(pipeline: Mapping[str, Any], base: Path, sha: str | None, dirty: bool, platform: str | None,
-                 work_root: Path) -> list[dict]:
+                 work_root: Path, project_dir: Path | None = None, home: Path | None = None,
+                 adapter_factory: Callable[[str], PlatformAdapter | None] = providers.get) -> list[dict]:
     """`valtrion pipeline --cache-status`: for each run stage, its result cache key and whether a trusted passing result is stored
-    under it. The device class is the pipeline's `device.class` (discovery is not run for a status)."""
+    under it. The device class is the pipeline's `device.class` (discovery is not run for a status), and the build is the one the
+    pipeline's build stage would build or reuse (unknown for a platform that signs for one device)."""
     root = resultcache.cache_root(work_root)
+    planned_key: list[str | None] = []
+
+    def planned() -> str | None:
+        if not planned_key:
+            planned_key.append(_planned_build_key(pipeline, sha, dirty, platform, project_dir, adapter_factory))
+        return planned_key[0]
+
+    everything = set(range(len(pipeline["stages"])))
     rows: list[dict] = []
     for index, stage in enumerate(pipeline["stages"]):
         if stage["stage"] != "run" or not stage.get("plan"):
@@ -1660,9 +1749,12 @@ def cache_status(pipeline: Mapping[str, Any], base: Path, sha: str | None, dirty
             row.update(state="unknown", reason="the platform is unknown")
         elif not device_class:
             row.update(state="unknown", reason="the pipeline names no device.class; the job looks up with the class of the device it selects")
+        elif (build_key := expected_build_key(pipeline["stages"], index, everything, planned, None, home, sha, platform)) is None:
+            row.update(state="unknown", reason="the stage does not run on a clean build of this commit known before the job (no install of "
+                                                "such a build, args.artifact, a platform that signs for one device, or an unknown toolchain)")
         else:
             key = resultcache.Key(pipeline["candidate"]["repo"], platform, str(sha), plan_hash, str(device_class),
-                                  pipeline["candidate"]["profile"], resultcache.stage_fingerprint(stage, base), __version__)
+                                  pipeline["candidate"]["profile"], resultcache.stage_fingerprint(stage, base), build_key, __version__)
             hit, why = resultcache.lookup(root, key, touch=False)
             row.update(key=key.digest, components=key.components())
             if hit is not None:
@@ -1671,3 +1763,25 @@ def cache_status(pipeline: Mapping[str, Any], base: Path, sha: str | None, dirty
                 row.update(state="miss", reason=why)
         rows.append(row)
     return rows
+
+
+def _planned_build_key(pipeline: Mapping[str, Any], sha: str | None, dirty: bool, platform: str | None, project_dir: Path | None,
+                       adapter_factory: Callable[[str], PlatformAdapter | None]) -> str | None:
+    """The build-cache key the build stage would use, without a job (for `--cache-status`); None when it is not known beforehand."""
+    if project_dir is None or not platform or not resultcache.cacheable_commit(sha, dirty):
+        return None
+    adapter = adapter_factory(platform)
+    if adapter is None or getattr(adapter, "signs_for_device", False):
+        return None
+    if hasattr(adapter, "use_project"):
+        adapter.use_project(project_dir)
+    toolchain: dict[str, str] = {"unity": unity_version(project_dir)}
+    hook = getattr(adapter, "toolchain", None)
+    try:
+        toolchain.update(dict(hook()) if hook is not None else {})
+    except Exception:  # noqa: BLE001 - adapter code
+        return None
+    profile = pipeline["candidate"]["profile"]
+    return buildcache.compute_key(pipeline["candidate"]["repo"], platform, str(sha), profile, toolchain,
+                                  buildcache.profile_config_hash(project_dir, profile), None)
+
