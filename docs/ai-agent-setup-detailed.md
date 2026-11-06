@@ -2,7 +2,7 @@
 
 The short copy-paste prompt is in [AI-agent setup](ai-agent-setup.md). Use this longer prompt when an agent needs every step, for example for a full Unity integration with an Editor smoke test. Paste it into an agent working in your project. It first identifies the task and project type, then chooses a command check or the Unity integration. It works with an agent that has file and command access and needs no agent-specific plugin.
 
-Installation sources, best first: Core from PyPI (`pipx install valtrion`, pin `==<version>` for shared projects); the Unity package from a release tag, `https://github.com/GORYNED/Valtrion.git?path=integrations/unity/com.goryned.valtrion.unity#unity-v0.12.0` (replace the tag with the newest `unity-vX.Y.Z` that `compat.json` pairs with the installed Core); or a reviewed checkout of Valtrion's HTTPS repository URL. A public checkout needs no GitHub account or token. Private forks require existing repository access. A missing required tool or permission is a blocker to report. The [Quick Start](quick-start.md) covers command jobs; the [Unity Quick Start](unity-quick-start.md) covers Editor integration. The [readiness record](release-readiness.md) separates observed evidence from unverified work.
+Installation sources, best first: Core from PyPI (`pipx install valtrion`, pin `==<version>` for shared projects); the Unity package from a release tag, `https://github.com/GORYNED/Valtrion.git?path=integrations/unity/com.goryned.valtrion.unity#unity-v0.13.0` (replace the tag with the newest `unity-vX.Y.Z` that `compat.json` pairs with the installed Core); or a reviewed checkout of Valtrion's HTTPS repository URL. A public checkout needs no GitHub account or token. Private forks require existing repository access. A missing required tool or permission is a blocker to report. The [Quick Start](quick-start.md) covers command jobs; the [Unity Quick Start](unity-quick-start.md) covers Editor integration. The [readiness record](release-readiness.md) separates observed evidence from unverified work.
 
 ```text
 Use Valtrion for repeatable checks in this workspace, then prove the chosen path
@@ -69,7 +69,7 @@ Unity path: discover and pin
 2. Obtain https://github.com/GORYNED/Valtrion.git in a separate checkout outside
    Assets, using existing access. If access is unavailable, report BLOCKED. Use
    the user-specified ref when provided; otherwise check out the release tag that
-   matches the package you install (for example unity-v0.12.0), and use main only when
+   matches the package you install (for example unity-v0.13.0), and use main only when
    the user wants unreleased code. Record the SHA.
    Do not apply new installer flags to an older checkout. Read
    README.md, docs/unity-quick-start.md, docs/install.md, docs/providers.md,
