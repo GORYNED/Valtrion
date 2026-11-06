@@ -1,8 +1,9 @@
 # Changelog
 
-## Unreleased
+## 0.13.0 (2026-11-06)
 
 - **Test windows stay off the screen on macOS (Editor).** A new Editor assembly `Valtrion.Unity.Editor.WindowIsolation` (macOS Editor only, no other dependency) acts in a batch-mode Editor when the environment variable `GDV_ISOLATE_WINDOWS=1` is set (an interactive Editor ignores it with a warning), which `valtrion unity run` does on macOS by default (Core with the same change). The Editor process then may not become the active application, and every window it opens (`EditorWindow`, utility window, popup) is made transparent and ignores the mouse before it is shown; the tests that open them run as before. Without the variable nothing changes. The hook is removed again before a domain reload.
+- Contracts are unchanged. Compatible Core versions are listed in `compat.json`: package 0.13.0 works with Core 0.8.0 up to, not including, 0.17 (the window isolation is switched on by Core 0.16.0 or newer; with an older Core the assembly does nothing). Packages 0.12.x are paired with Core below 0.16: update the package to 0.13.
 
 ## 0.12.0 (2026-11-05)
 

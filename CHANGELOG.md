@@ -2,8 +2,9 @@
 
 Core (the `valtrion` Python package) and the Unity package `com.goryned.valtrion.unity` are versioned independently. The Unity changelog is in `integrations/unity/com.goryned.valtrion.unity/CHANGELOG.md`; `compat.json` lists compatible pairs.
 
-## Unreleased
+## 0.16.0 (2026-11-06)
 
+- **Upgrade note.** `compat.json` pairs Core 0.16.0 with Unity package 0.13.x (Core 0.8.0 up to, not including, 0.17): `valtrion doctor --project` reports a project that still has package 0.12.x as `BLOCKED` with Core 0.16.0. Update the package tag in `Packages/manifest.json` to `unity-v0.13.0` (this is also what switches the window isolation on), or stay on Core 0.15.x. Other hosts need the same Core version (`valtrion hosts sync`).
 - **`unity run` keeps the windows that tests open off the screen on macOS.** The `hiddenDesktop` setting (on by default for `unity run`) now also acts on macOS: Unity gets `GDV_ISOLATE_WINDOWS=1` and the Editor part of the Unity package hides its windows and refuses to become the active application (needs `-batchmode` and the package change of the same release; `unity run` says on stderr when either is missing). Windows behaves as before. See the `unity run` section of `docs/cli.md` for what this does not do.
 
 ## 0.15.1 (2026-11-05)
