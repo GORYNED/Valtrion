@@ -299,6 +299,17 @@ class LaunchdTests(JobTestCase):
         self.assertTrue(loaded["RunAtLoad"])
         self.assertNotIn("KeepAlive", loaded, "a one-shot agent must not be restarted")
 
+    def test_windows_runner_gets_a_hidden_console_not_none(self):
+        """Without a console the second python.exe of a venv launcher (pipx) opens a visible console window of its own."""
+        layout, _ = jobs.create_job(self.request(["x"]), self.root, self.home)
+        with mock.patch.object(jobs.subprocess, "Popen") as popen:
+            popen.return_value.pid = 1234
+            jobs.launch_detached(layout.directory, "windows")
+        flags = popen.call_args.kwargs["creationflags"]
+        self.assertTrue(flags & 0x08000000, "CREATE_NO_WINDOW")
+        self.assertFalse(flags & 0x00000008, "not DETACHED_PROCESS")
+        self.assertTrue(flags & 0x00000200, "CREATE_NEW_PROCESS_GROUP")
+
     def test_bootstraps_into_the_requested_domain_and_records_the_label_for_cleanup(self):
         import plistlib
         layout, spec = jobs.create_job(self.request(["x"]), self.root, self.home)

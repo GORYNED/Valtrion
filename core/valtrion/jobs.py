@@ -5,7 +5,7 @@ never changes its outcome. State is `job.json` (`gdv.job/1`, rewritten atomicall
 append-only) in the run folder `<artifactsRoot>/<project>/<sha8>/<runId>/`. A watcher reads these from a byte offset and judges
 progress from the age of the last event, never from the liveness of its own connection.
 
-Detaching: Windows uses `DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP` (and breaks away from a parent Job Object when allowed);
+Detaching: Windows uses `CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP` (a hidden console of its own, which a venv launcher's second python.exe inherits instead of opening a window; and breaks away from a parent Job Object when allowed);
 macOS uses a one-shot launchd agent, in the `user` domain or the `gui` domain for steps that need the login keychain; other
 systems use `setsid`.
 """
@@ -1029,7 +1029,7 @@ def stable_python(os_name: str, protected: Callable[..., str | None] = workroot.
 
 
 _CREATE_BREAKAWAY_FROM_JOB = 0x01000000
-_DETACHED_PROCESS = 0x00000008
+_CREATE_NO_WINDOW = 0x08000000  # not DETACHED_PROCESS: the venv launcher python.exe starts the real interpreter, which would open a console window
 _CREATE_NEW_PROCESS_GROUP = 0x00000200
 
 
@@ -1050,7 +1050,7 @@ def launch_detached(
         return _launch_launchd(argv, directory, log, domain, spec, run_command, work_roots)
     with open(log, "ab") as handle:
         if os_name == "windows":
-            base = _DETACHED_PROCESS | _CREATE_NEW_PROCESS_GROUP
+            base = _CREATE_NO_WINDOW | _CREATE_NEW_PROCESS_GROUP
             try:
                 process = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=handle, stderr=subprocess.STDOUT, cwd=directory,
                                            creationflags=base | _CREATE_BREAKAWAY_FROM_JOB, close_fds=True)
