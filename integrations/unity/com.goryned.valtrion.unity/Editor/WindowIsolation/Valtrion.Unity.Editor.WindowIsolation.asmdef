@@ -1,0 +1,16 @@
+{
+    "name": "Valtrion.Unity.Editor.WindowIsolation",
+    "rootNamespace": "Valtrion.Unity.Editor.WindowIsolation",
+    "references": [],
+    "includePlatforms": [
+        "Editor"
+    ],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": false,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "noEngineReferences": false
+}

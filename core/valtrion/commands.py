@@ -1497,7 +1497,7 @@ def _configure_unity(parser: argparse.ArgumentParser) -> None:
                      help="turn Git LFS pointer files of the project into their content before Unity starts, from the host's shared LFS "
                           "cache, fetching only missing objects (default: lfs.materialize of host.json, on)")
     run.add_argument("--hidden-desktop", action=argparse.BooleanOptionalAction, default=None,
-                     help="Windows only: start Unity on a desktop of its own, so the windows that tests open do not appear on your screen "
+                     help="Start Unity so that the windows that tests open do not appear on your screen (Windows: a desktop of its own; macOS: the Editor hides them, Unity package 0.13+) "
                           "or take the keyboard and the mouse (default: hiddenDesktop of host.json, on)")
     run.add_argument("--progress-window", action=argparse.BooleanOptionalAction, default=None,
                      help="Windows only: show one small window with the progress of the run; the dashboard shows it too (default: progressWindow of host.json, off)")
