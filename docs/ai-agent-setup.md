@@ -24,7 +24,7 @@ a clear result and saved logs. Docs: https://github.com/GORYNED/Valtrion#readme
 4. If this is a Unity project (Assets, Packages, ProjectSettings), also read
    https://github.com/GORYNED/Valtrion/blob/main/docs/ai-agent-setup-detailed.md
    and follow its Unity path. Pin the Unity package to a release tag, for example
-   https://github.com/GORYNED/Valtrion.git?path=integrations/unity/com.goryned.valtrion.unity#unity-v0.12.0
+   https://github.com/GORYNED/Valtrion.git?path=integrations/unity/com.goryned.valtrion.unity#unity-v0.13.0
    and check the pair with `valtrion doctor --project <Unity project>`.
    For any other engine only command jobs are supported: do not invent an integration.
 5. Report: files changed, installed version, exact commands, exit codes, evidence
