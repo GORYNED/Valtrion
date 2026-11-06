@@ -196,7 +196,7 @@ class AndroidAdapter(PlatformAdapter):
         self._server_started = True
         try:
             subprocess.run([*command, "start-server"], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                           timeout=30, check=False)
+                           timeout=30, check=False, creationflags=constants.NO_WINDOW)
         except (OSError, subprocess.SubprocessError):
             pass  # the first supervised call reports what is wrong
 

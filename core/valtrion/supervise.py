@@ -542,7 +542,8 @@ def kill_process_tree(pid: int) -> bool:
     if pid <= 0:
         return False
     if os.name == "nt":
-        result = subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True, check=False, timeout=30)
+        result = subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True, check=False, timeout=30,
+                                creationflags=constants.NO_WINDOW)
         return result.returncode == 0
     try:
         os.killpg(pid, signal.SIGKILL)  # the runner leads its own session

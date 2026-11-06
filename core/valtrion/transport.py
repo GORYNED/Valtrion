@@ -51,7 +51,7 @@ def run_process(argv: Sequence[str], timeout_sec: int, cwd: str | None = None, e
     try:
         completed = subprocess.run(
             list(argv), capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout_sec, cwd=cwd,
-            env=dict(env) if env else None, stdin=stdin, check=False)
+            env=dict(env) if env else None, stdin=stdin, check=False, creationflags=constants.NO_WINDOW)
     except subprocess.TimeoutExpired as error:
         return CommandResult(None, _text(error.stdout), _text(error.stderr), True)
     except OSError as error:

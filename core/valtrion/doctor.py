@@ -15,7 +15,7 @@ import subprocess
 from pathlib import Path
 from typing import Callable, Sequence
 
-from . import __version__, buildcache, checkout, compare, core, diskspace, incremental, lease, scratch, workroot
+from . import __version__, buildcache, constants, checkout, compare, core, diskspace, incremental, lease, scratch, workroot
 from .resolver import HostCapabilities
 
 PROBE_TIMEOUT_SEC = 20
@@ -32,7 +32,8 @@ _MODULE_FOLDERS = {
 def run_probe(argv: Sequence[str]) -> tuple[int, str]:
     try:
         done = subprocess.run(
-            list(argv), capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=PROBE_TIMEOUT_SEC, check=False)
+            list(argv), capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=PROBE_TIMEOUT_SEC, check=False,
+            creationflags=constants.NO_WINDOW)
     except subprocess.TimeoutExpired:
         return 124, "timed out"
     except OSError as error:

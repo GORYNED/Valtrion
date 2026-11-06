@@ -192,7 +192,8 @@ def run_git(folder: Path, arguments: Sequence[str], timeout: float = 60) -> tupl
     import subprocess
     try:
         done = subprocess.run(["git", *arguments], cwd=folder, capture_output=True, text=True, encoding="utf-8", errors="replace",
-                              timeout=timeout, check=False, env=git_environment(), stdin=subprocess.DEVNULL)
+                              timeout=timeout, check=False, env=git_environment(), stdin=subprocess.DEVNULL,
+                              creationflags=constants.NO_WINDOW)
     except subprocess.TimeoutExpired:
         return 124, f"git {arguments[0] if arguments else ''} timed out after {timeout:g} s"
     except (OSError, subprocess.SubprocessError) as error:

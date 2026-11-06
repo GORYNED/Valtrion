@@ -349,7 +349,8 @@ def alive(pid):
     except (TypeError, ValueError):
         return False
     if os.name == "nt":
-        done = subprocess.run(["tasklist", "/FI", "PID eq %d" % pid, "/NH"], capture_output=True, text=True, timeout=60)
+        done = subprocess.run(["tasklist", "/FI", "PID eq %d" % pid, "/NH"], capture_output=True, text=True, timeout=60,
+                              creationflags=0x08000000)
         if done.returncode != 0:
             raise SystemExit("cannot check process %d" % pid)
         return str(pid) in done.stdout

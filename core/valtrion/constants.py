@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+
 PASS = "PASS"
 FAIL = "FAIL"
 BLOCKED = "BLOCKED"
@@ -82,3 +84,7 @@ def exit_code_for_verdict(verdict: str) -> int:
 #: hard upper limit of `launchTimeoutSec` (run stage `args`, `valtrion run --launch-timeout`, `host.json`).
 LAUNCH_TIMEOUT_DEFAULT_SEC = 60
 LAUNCH_TIMEOUT_MAX_SEC = 300
+
+#: `creationflags` for a child process that must not open a console window. The detached runner has no console, so every console child
+#: (git, adb, tasklist, taskkill, python) would otherwise get a window of its own. 0 elsewhere (no effect).
+NO_WINDOW = 0x08000000 if os.name == "nt" else 0

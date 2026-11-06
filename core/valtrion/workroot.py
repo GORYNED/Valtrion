@@ -30,7 +30,7 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Callable, Mapping, Sequence
 
-from . import artifacts, compare, core
+from . import artifacts, compare, constants, core
 
 WORK_ROOT_ENV = "GDV_WORK_ROOT"
 GIT_TIMEOUT_SEC = 1800
@@ -436,7 +436,7 @@ def run_git(argv: Sequence[str], cwd: Path | None = None) -> tuple[int, str]:
     try:
         done = subprocess.run(
             ["git", *argv], cwd=cwd, env=environment, capture_output=True, text=True, encoding="utf-8", errors="replace",
-            timeout=GIT_TIMEOUT_SEC, check=False, stdin=subprocess.DEVNULL)
+            timeout=GIT_TIMEOUT_SEC, check=False, stdin=subprocess.DEVNULL, creationflags=constants.NO_WINDOW)
     except subprocess.TimeoutExpired:
         return 124, f"git {argv[0]} timed out after {GIT_TIMEOUT_SEC} s"
     except OSError as error:
