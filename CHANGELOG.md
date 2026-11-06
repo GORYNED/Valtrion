@@ -4,7 +4,7 @@ Core (the `valtrion` Python package) and the Unity package `com.goryned.valtrion
 
 ## Unreleased
 
-- **`unity run` keeps the windows that tests open off the screen on macOS.** The `hiddenDesktop` setting (on by default for `unity run`) now also acts on macOS: Unity gets `GDV_ISOLATE_WINDOWS=1` and the Editor part of the Unity package hides its windows and refuses to become the active application (needs the package change of the same release; without it nothing changes). Windows behaves as before. See the `unity run` section of `docs/cli.md` for what this does not do.
+- **`unity run` keeps the windows that tests open off the screen on macOS.** The `hiddenDesktop` setting (on by default for `unity run`) now also acts on macOS: Unity gets `GDV_ISOLATE_WINDOWS=1` and the Editor part of the Unity package hides its windows and refuses to become the active application (needs `-batchmode` and the package change of the same release; `unity run` says on stderr when either is missing). Windows behaves as before. See the `unity run` section of `docs/cli.md` for what this does not do.
 
 ## 0.15.1 (2026-11-05)
 

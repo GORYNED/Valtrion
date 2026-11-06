@@ -280,6 +280,10 @@ def run(
         materialize = config.lfs_materialize(home) if lfs_materialize is None else lfs_materialize
         on_hidden_desktop = config.hidden_desktop(home) if hidden_desktop is None else hidden_desktop
         show_progress = config.progress_window(home) if progress_window is None else progress_window
+        if on_hidden_desktop and windowisolation.applies():
+            problem = windowisolation.note(project, args)
+            if problem:
+                _say(err, problem)
         lfs_cache = lfs.cache_root(config.load_host_settings(home).work_root) if materialize else None
 
         capacity = lease.unity_editor_capacity(home)
