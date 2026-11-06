@@ -22,7 +22,7 @@ import time
 from pathlib import Path
 from typing import Callable, Sequence, TextIO
 
-from . import config, constants, core, lease, lfs, progresswindow, supervise, testprogress, unityguard
+from . import config, constants, core, lease, lfs, progresswindow, supervise, testprogress, unityguard, windowisolation
 from .providers.unity import support
 
 DEFAULT_LEASE_WAIT_SEC = 1800.0
@@ -246,8 +246,9 @@ def run(
     `lifeline`: a file descriptor whose end of input means the caller is gone (the standard input of a command run over SSH); the run is then
     interrupted like by Ctrl+C. `lfs_materialize`: run the Git LFS preflight (None: `lfs.materialize` of host.json, default on);
     `lfs_call` and `lfs_free` replace `git lfs` and the free-space probe in tests. `hidden_desktop`: start Unity on a desktop of its own
-    (None: `hiddenDesktop` of host.json, default off here; the command line turns it on by default; Windows only, ignored elsewhere), so
-    test windows do not appear on the screen. `progress_window`: show one window with the progress of the run (same rules, `progressWindow`)."""
+    (None: `hiddenDesktop` of host.json, default off here; the command line turns it on by default): on Windows a desktop of its own, on
+    macOS the Editor hides its own windows (`windowisolation`; needs the Unity package), so test windows do not appear on the screen.
+    `progress_window`: show one window with the progress of the run (same rules, `progressWindow`)."""
     out = out or sys.stdout
     err = err or sys.stderr
     args = normalize_assembly_names(unity_args)
@@ -371,7 +372,7 @@ def run(
                 title, detail = progresswindow.describe_run(args, project)
                 window = progresswindow.start(log_file or console, title, detail, show_progress, progress_file)
                 # The Editor part of the Unity package writes how far the tests have come into this file (dashboard, progress window).
-                unity_environment = {**os.environ, testprogress.ENVIRONMENT_VARIABLE: str(progress_file)}
+                unity_environment = {**windowisolation.environment(os.environ, on_hidden_desktop), testprogress.ENVIRONMENT_VARIABLE: str(progress_file)}
                 outcome = None
                 try:
                     outcome = supervise.supervise([editor, *args], watchdog, console, None, unity_environment, exit_codes=UNITY_EXIT_CODES,

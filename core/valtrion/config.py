@@ -370,9 +370,9 @@ def _host_flag(key: str, default: bool, home: Path | None) -> bool:
 
 
 def hidden_desktop(home: Path | None = None, default: bool = False) -> bool:
-    """`hiddenDesktop` of host.json: whether `unity run` starts Unity on a desktop of its own (Windows only), so the windows that tests open
-    never show on the user's screen or take the keyboard and the mouse. `default` when host.json does not set it (the command line of
-    `unity run` passes True)."""
+    """`hiddenDesktop` of host.json: whether `unity run` keeps the windows that tests open off the user's screen and away from the keyboard
+    and the mouse (Windows: Unity runs on a desktop of its own; macOS: the Editor hides its own windows). `default` when host.json does not
+    set it (the command line of `unity run` passes True)."""
     return _host_flag("hiddenDesktop", default, home)
 
 

@@ -33,6 +33,7 @@ def main():
         (folder / "pid").write_text(str(os.getpid()), encoding="utf-8")
         progress = os.environ.get("GDV_PROGRESS_FILE", "")
         (folder / "progress-env").write_text(progress, encoding="utf-8")
+        (folder / "isolation-env").write_text(os.environ.get("GDV_ISOLATE_WINDOWS", "unset"), encoding="utf-8")
         if progress and "--progress-report" in sys.argv:  # what the Unity package does: report how far the tests have come
             Path(progress).parent.mkdir(parents=True, exist_ok=True)
             Path(progress).write_text(json.dumps({"schema": "gdv.testprogress/1", "state": "running", "total": 10, "done": 4, "passed": 4,

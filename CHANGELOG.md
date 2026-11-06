@@ -2,6 +2,10 @@
 
 Core (the `valtrion` Python package) and the Unity package `com.goryned.valtrion.unity` are versioned independently. The Unity changelog is in `integrations/unity/com.goryned.valtrion.unity/CHANGELOG.md`; `compat.json` lists compatible pairs.
 
+## Unreleased
+
+- **`unity run` keeps the windows that tests open off the screen on macOS.** The `hiddenDesktop` setting (on by default for `unity run`) now also acts on macOS: Unity gets `GDV_ISOLATE_WINDOWS=1` and the Editor part of the Unity package hides its windows and refuses to become the active application (needs the package change of the same release; without it nothing changes). Windows behaves as before. See the `unity run` section of `docs/cli.md` for what this does not do.
+
 ## 0.15.1 (2026-11-05)
 
 - **A background job no longer opens a console window on Windows when Valtrion is installed with pipx or in a venv.** The runner was started with `DETACHED_PROCESS`, that is without a console. The interpreter of a venv (`Scriptspython.exe`) is a launcher that starts the real `python.exe` as a child, and that child opened a console window of its own for as long as the job ran. The runner now starts with `CREATE_NO_WINDOW`: it has a hidden console, which the child inherits, and everything it starts keeps using it. No change on macOS and Linux.
