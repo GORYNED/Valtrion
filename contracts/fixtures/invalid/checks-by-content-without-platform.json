@@ -1,0 +1,17 @@
+{
+  "schema": "gdv.checks/1",
+  "platforms": { "required": ["ios"] },
+  "areas": [
+    { "glob": "**/*.cs", "kind": "managed" }
+  ],
+  "jsonRules": [
+    { "glob": "Packages/packages-lock.json", "root": "dependencies", "keys": [
+      { "match": "*", "kind": "native", "byContent": { "managed": "managed" } }
+    ] }
+  ],
+  "kinds": {
+    "managed": { "L2": ["editmode:Example.Tests"] },
+    "native": { "L3": ["player:ios"] }
+  },
+  "unclassified": "widest"
+}

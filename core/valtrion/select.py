@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Collection, Mapping, Sequence
 
-from . import constants, nowindow, presets, project
+from . import constants, nowindow, packagediff, presets, project
 from .schema import SchemaError, UnreadableInput, Validator, parse_json, validate_file
 
 LEVELS = ("L0", "L1", "L2", "L3", "L4")
@@ -288,6 +288,9 @@ def validate_config(config: Config, validator: Validator | None = None) -> tuple
             for name in key_kinds(entry):
                 if name not in kinds:
                     errors.append(f"{where}.keys[{position}]: kind {name!r} has no entry in kinds")
+            for role, name in sorted(entry.get("byContent", {}).items()):
+                if name not in kinds:
+                    errors.append(f"{where}.keys[{position}].byContent.{role}: kind {name!r} has no entry in kinds")
     for index, rule in enumerate(config.content_rules):
         where = f"contentRules[{index}]"
         if rule["kind"] not in kinds:
@@ -748,6 +751,96 @@ def json_rule_paths(
     return found
 
 
+def lock_path_of(path: str) -> str:
+    """The lock file that pins the dependencies of a dependency file: the file itself, or `packages-lock.json` next to a manifest."""
+    folder = path.rpartition("/")[0]
+    return path if path.rsplit("/", 1)[-1] == "packages-lock.json" else (f"{folder}/" if folder else "") + "packages-lock.json"
+
+
+def _package_record(
+        root: Path, lock_path: str, key: str, merge_base: str, include_worktree: bool, config: Config) -> dict[str, Any]:
+    """Judge one changed dependency of a git source by the files that changed in it: `{"verdict": "managed" | "platform" | "unresolved", ...}`."""
+    try:
+        old_lock = parse_json_object(_git(root, "show", f"{merge_base}:{lock_path}"))
+        if include_worktree:
+            target = root / lock_path
+            if target.is_symlink() or not target.is_file():
+                return {"verdict": "unresolved", "reason": f"{lock_path} is not a regular file in the working tree"}
+            new_lock = parse_json_object(target.read_bytes())
+        else:
+            new_lock = parse_json_object(_git(root, "show", f"HEAD:{lock_path}"))
+    except (GitError, _NotJson, OSError, ValueError) as error:
+        return {"verdict": "unresolved", "reason": f"{lock_path} cannot be read: {error}"}
+    old_entry = (old_lock.get("dependencies") or {}).get(key) if isinstance(old_lock.get("dependencies"), dict) else None
+    new_entry = (new_lock.get("dependencies") or {}).get(key) if isinstance(new_lock.get("dependencies"), dict) else None
+    if old_entry is None or new_entry is None:
+        return {"verdict": "unresolved", "reason": "the dependency is added or removed"}
+    old_source, new_source = packagediff.entry_source(old_entry), packagediff.entry_source(new_entry)
+    if old_source is None or new_source is None:
+        return {"verdict": "unresolved", "reason": "not a git dependency with a commit and a usable URL in the lock file"}
+    if (old_source.url, old_source.subpath) != (new_source.url, new_source.subpath):
+        return {"verdict": "unresolved", "reason": "the repository or the folder of the package changed"}
+    record: dict[str, Any] = {"from": old_source.commit[:8], "to": new_source.commit[:8]}
+    if old_source.commit == new_source.commit:  # a manifest that moved without the lock file: nothing was compared, so nothing is proven
+        return {**record, "verdict": "unresolved", "reason": "the lock file pins the same commit before and after, so it does not say what changed"}
+
+    def path_reason(relative: str) -> str | None:
+        classified, unclassified = classify(config, [relative])
+        if unclassified:
+            return "no kind of the map matches it"
+        for kind in classified[relative]:
+            heavy = _heavy_specs(config, kind)
+            if heavy:
+                return f"kind {kind!r} has {', '.join(heavy)}"
+        return None
+
+    # Whatever goes wrong while the content is read ends as `unresolved`; a verdict is given only for content that was read.
+    try:
+        repo = packagediff.PackageRepo(new_source, old_source.commit, new_source.commit)
+    except (packagediff.Unresolved, OSError, ValueError, RecursionError) as error:
+        return {**record, "verdict": "unresolved", "reason": str(error)}
+    try:
+        files = repo.changed()
+        reasons = packagediff.judge(repo, files, path_reason)
+    except (packagediff.Unresolved, OSError, ValueError, RecursionError) as error:
+        return {**record, "verdict": "unresolved", "reason": str(error)}
+    finally:
+        repo.close()
+    return {**record, "verdict": "platform" if reasons else "managed", "files": len(files), "reasons": reasons}
+
+
+def package_diff_paths(
+        root: Path, config: Config, json_keys: Mapping[str, Mapping[str, list[str]]], merge_base: str | None, include_worktree: bool,
+        offline: bool = False) -> tuple[dict[str, dict[str, list[str]]], dict[str, dict[str, dict[str, Any]]]]:
+    """For the changed keys of a `jsonRules` entry that carries `byContent`, replace the key's kinds by the kind its content gives: the
+    entry's `managed` kind when only managed code, Editor code, tests or documents changed in the package, its `platform` kind when anything
+    else did. Returns the new `json_keys` and the verdicts (`packageDiffs`: lock file -> dependency -> verdict, so two projects in one
+    repository that pin the same dependency are judged apart). A key whose content cannot be read, or any key when `offline`, keeps its own
+    kinds (fail closed) and the verdict says `unresolved` and why."""
+    if not json_keys or merge_base is None:
+        return dict(json_keys), {}
+    rules = [(glob_to_regex(rule["glob"]), rule) for rule in config.json_rules]
+    records: dict[str, dict[str, dict[str, Any]]] = {}
+    result: dict[str, dict[str, list[str]]] = {}
+    for path, keys in json_keys.items():
+        rule = next((item for pattern, item in rules if pattern.match(path)), None)
+        updated: dict[str, list[str]] = {}
+        for key, kinds in keys.items():
+            entry = next((item for item in rule["keys"] if fnmatch.fnmatchcase(key, item["match"])), None) if rule else None
+            by_content = entry.get("byContent") if entry else None
+            if not by_content:
+                updated[key] = list(kinds)
+                continue
+            lock_path = lock_path_of(path)
+            if key not in records.get(lock_path, {}):
+                records.setdefault(lock_path, {})[key] = ({"verdict": "unresolved", "reason": "offline"} if offline
+                                                          else _package_record(root, lock_path, key, merge_base, include_worktree, config))
+            verdict = records[lock_path][key]["verdict"]
+            updated[key] = [by_content["managed" if verdict == "managed" else "platform"]] if verdict in ("managed", "platform") else list(kinds)
+        result[path] = updated
+    return result, records
+
+
 # --- project commands that prove a change keeps every value -------------------------------------------------------------------------
 
 DEFAULT_EQUIVALENCE_TIMEOUT_SEC = 60
@@ -823,6 +916,9 @@ class Selection:
     equivalent: dict[str, dict[str, Any]] = field(default_factory=dict)
     #: Paths of an `equivalenceRules` glob whose command did not prove equivalence, with the reason (they keep their normal kinds).
     equivalence_unproven: dict[str, str] = field(default_factory=dict)
+    #: The verdict of each changed dependency a `byContent` key judged by what changed inside it (lock file -> dependency -> {verdict, from, to,
+    #: files, reasons | reason}).
+    package_diffs: dict[str, dict[str, dict[str, Any]]] = field(default_factory=dict)
 
     def of_type(self, *types: str) -> list[Check]:
         return [check for check in self.checks if check.type in types]
@@ -873,6 +969,9 @@ class Selection:
                     origin = config.from_preset("jsonRules", index) if index is not None else None
                     if origin:
                         detail["from"] = origin
+                    record = self.package_diffs.get(lock_path_of(path), {}).get(key)
+                    if record:
+                        detail["byContent"] = record["verdict"]
                     for kind in kinds:
                         add(kind, path, detail)
             elif path in self.cosmetic:
@@ -941,6 +1040,7 @@ class Selection:
             "jsonKeyKinds": self.json_keys,
             "equivalentPaths": self.equivalent,
             "equivalenceUnprovenPaths": self.equivalence_unproven,
+            "packageDiffs": self.package_diffs,
             "selectedKinds": self.named_kinds,
             "kindsNamedExplicitly": bool(self.named_kinds),
             "l0": [_check_json(check) for check in self.of_type(L0)],
@@ -1023,6 +1123,7 @@ def select(
     json_keys: Mapping[str, Mapping[str, Sequence[str]]] | None = None,
     equivalent: Mapping[str, Mapping[str, Any]] | None = None,
     equivalence_unproven: Mapping[str, str] | None = None,
+    package_diffs: Mapping[str, Mapping[str, Mapping[str, Any]]] | None = None,
 ) -> Selection:
     """Union of the checks of the matched kinds for `level` and every lower level; unclassified paths widen the set.
 
@@ -1056,6 +1157,7 @@ def select(
         level, base_ref, merge_base, include_worktree, list(paths), classified, unclassified, policy, widest, sorted(kinds), checks, config, failed,
         named, dict(cosmetic or {}), {path: {key: list(kinds) for key, kinds in keys.items()} for path, keys in (json_keys or {}).items()},
         {path: dict(entry) for path, entry in (equivalent or {}).items()}, dict(equivalence_unproven or {}),
+        {lock: {key: dict(record) for key, record in records.items()} for lock, records in (package_diffs or {}).items()},
     )
 
 
@@ -1069,6 +1171,8 @@ def _add_common(parser: argparse.ArgumentParser) -> None:
                              "with --base-ref it is added to the kinds of the diff")
     parser.add_argument("--checks", type=Path, help=f"the project check map (default: `checks` of valtrion.json, else {DEFAULT_CHECKS_PATH.as_posix()} under the repository root)")
     parser.add_argument("--include-worktree", action="store_true", help="also count staged, unstaged and untracked files as changed")
+    parser.add_argument("--offline", action="store_true",
+                        help="do not fetch a dependency's repository to judge a `byContent` key by what changed inside it: such a key keeps its own kinds")
 
 
 def _configure_select(parser: argparse.ArgumentParser) -> None:
@@ -1099,10 +1203,11 @@ def resolve_selection(arguments: argparse.Namespace) -> Selection:
     include_worktree = bool(arguments.base_ref) and arguments.include_worktree
     cosmetic = cosmetic_paths(root, config, paths, merge_base, include_worktree)
     json_keys = json_rule_paths(root, config, paths, merge_base, include_worktree)
+    json_keys, package_diffs = package_diff_paths(root, config, json_keys, merge_base, include_worktree, bool(getattr(arguments, "offline", False)))
     equivalent, unproven = equivalent_paths(root, config, paths, merge_base, include_worktree, skip=set(cosmetic) | set(json_keys))
     return select(config, paths, arguments.level, base_ref=arguments.base_ref, merge_base=merge_base,
                   include_worktree=include_worktree, named_kinds=named, cosmetic=cosmetic, json_keys=json_keys,
-                  equivalent=equivalent, equivalence_unproven=unproven)
+                  equivalent=equivalent, equivalence_unproven=unproven, package_diffs=package_diffs)
 
 
 def run_guarded(name: str, action) -> int:
@@ -1169,6 +1274,14 @@ def format_selection(selection: Selection, explain: bool = False) -> str:
     if selection.equivalence_unproven:
         lines.append(f"NOT PROVEN ({len(selection.equivalence_unproven)}): kept their normal kinds:")
         lines.extend(f"  {path}: {reason}" for path, reason in sorted(selection.equivalence_unproven.items()))
+    if selection.package_diffs:
+        total = sum(len(records) for records in selection.package_diffs.values())
+        lines.append(f"PACKAGE DIFF ({total}): a dependency judged by what changed inside it, mapped by byContent:")
+        for lock, records in sorted(selection.package_diffs.items()):
+            for key, record in sorted(records.items()):
+                span = f" ({record['from']}..{record['to']}, {record['files']} file(s))" if "from" in record and "files" in record else ""
+                detail = "; ".join(record.get("reasons", [])) or record.get("reason", "")
+                lines.append(f"  {lock}: {key}: {record['verdict']}{span}" + (f": {detail}" if detail else ""))
     if selection.unclassified:
         action = "no checks selected, fix the area map" if selection.failed else "widest set selected"
         lines.append(f"UNCLASSIFIED ({len(selection.unclassified)}), policy {selection.policy}: {action}")

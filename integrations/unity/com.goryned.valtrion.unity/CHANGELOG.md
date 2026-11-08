@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- `ChecksJsonKey.ByContent` (`ChecksByContent` with `Managed` and `Platform`): the optional `byContent` of a `jsonRules` key of `gdv.checks/1` (Core, #106) is read and written; a missing member is rejected. Documents without it behave as before.
+
 - `ChecksDocument.Extends` and `ChecksDocument.Bindings` (slot name to a list of check entries), `ChecksArea.OverridesPreset`, and `ContractReader.StringListMap`: the optional `extends`, `bindings` and `overridesPreset` of `gdv.checks/1` (Core, #105) are read and written. With `extends`, `Areas` and `Kinds` may be null (absent in the document); without it both are required as before. A malformed preset id is rejected.
 
 - `ChecksJsonKey.AllowHeavyFallback`: the optional `allowHeavyFallback` boolean of a `jsonRules` key of `gdv.checks/1` (Core, #104) is read and written. Documents without it behave as before.

@@ -1,0 +1,18 @@
+{
+  "schema": "gdv.checks/1",
+  "platforms": { "required": ["ios"], "dev": ["editor"] },
+  "areas": [
+    { "glob": "**/*.cs", "kind": "managed" }
+  ],
+  "jsonRules": [
+    { "glob": "Packages/packages-lock.json", "root": "dependencies", "keys": [
+      { "match": "com.example.*", "kind": "native", "byContent": { "managed": "managed", "platform": "native" } },
+      { "match": "*", "kind": "native", "allowHeavyFallback": true }
+    ] }
+  ],
+  "kinds": {
+    "managed": { "L2": ["editmode:Example.Tests"] },
+    "native": { "L2": ["editmode:Example.Tests"], "L3": ["player:ios"] }
+  },
+  "unclassified": "widest"
+}
