@@ -1,0 +1,17 @@
+{
+  "schema": "gdv.checks/1",
+  "platforms": { "required": ["ios"], "dev": ["editor"] },
+  "areas": [
+    { "glob": "Assets/Project/**", "kind": "runtime" },
+    { "glob": "Assets/Data/**", "kind": "data" }
+  ],
+  "equivalenceRules": [
+    { "glob": "Assets/Data/**/*.asset", "kind": "layout", "command": ["python", "tools/asset_values_equal.py"], "timeoutSec": 30 }
+  ],
+  "kinds": {
+    "runtime": { "L2": ["editmode:Project.Runtime.Tests"] },
+    "data": { "L2": ["editmode:Project.Data.Tests"] },
+    "layout": { "L0": ["l0"] }
+  },
+  "unclassified": "widest"
+}

@@ -10,13 +10,14 @@ from __future__ import annotations
 import argparse
 import fnmatch
 import json
+import os
 import re
 import shutil
 import subprocess
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Collection, Mapping, Sequence
 
 from . import constants, nowindow, project
 from .schema import SchemaError, UnreadableInput, Validator, parse_json, validate_file
@@ -119,6 +120,11 @@ class Config:
     def content_rules(self) -> list[dict]:
         """The optional top-level `contentRules`: paths whose cosmetic-only changes (comments, blank lines, re-indentation) get a cheaper kind."""
         return self.data.get("contentRules", [])
+
+    @property
+    def equivalence_rules(self) -> list[dict]:
+        """The optional top-level `equivalenceRules`: paths whose change a project command can prove value-preserving get a cheaper kind."""
+        return self.data.get("equivalenceRules", [])
 
     @property
     def runners(self) -> dict[str, str]:
@@ -262,6 +268,15 @@ def validate_config(config: Config, validator: Validator | None = None) -> tuple
         block = rule.get("blockComment")
         if block is not None and (not block["start"].strip() or not block["end"].strip()):
             errors.append(f"{where}: blockComment needs a start and an end marker")
+    for index, rule in enumerate(config.equivalence_rules):
+        where = f"equivalenceRules[{index}]"
+        if rule["kind"] not in kinds:
+            errors.append(f"{where}: kind {rule['kind']!r} has no entry in kinds")
+        glob = rule["glob"]
+        if glob.startswith("/") or ".." in glob.replace("\\", "/").split("/") or "\\" in glob:
+            errors.append(f"{where}: glob {glob!r} must be repository-relative with '/' separators and no '..'")
+        if not rule["command"][0].strip():
+            errors.append(f"{where}: command[0] must name a program")
     for name, template in config.runners.items():
         if not _NAME.match(name):
             errors.append(f"runners: invalid runner name {name!r} (letters, digits, '.', '_' and '-', starting with a letter or digit)")
@@ -346,11 +361,13 @@ def glob_to_regex(glob: str) -> re.Pattern[str]:
 
 def classify(
         config: Config, paths: Sequence[str], cosmetic: Mapping[str, str] | None = None,
-        json_keys: Mapping[str, Mapping[str, Sequence[str]]] | None = None) -> tuple[dict[str, list[str]], list[str]]:
+        json_keys: Mapping[str, Mapping[str, Sequence[str]]] | None = None,
+        equivalent: Mapping[str, Mapping[str, Any]] | None = None) -> tuple[dict[str, list[str]], list[str]]:
     """Map each path to every kind whose area matches it; paths without a match are unclassified.
 
     A path matches an area when it matches `glob` and none of the area's optional `exclude` globs. An excluded path can still match
-    another area, so it keeps that area's kind. A path in `cosmetic` (path -> kind, see `cosmetic_paths`) has that one kind instead."""
+    another area, so it keeps that area's kind. A path in `cosmetic` (path -> kind, see `cosmetic_paths`) has that one kind instead, and so
+    has a path in `equivalent` (path -> {"kind": ...}, see `equivalent_paths`)."""
     compiled = [(glob_to_regex(area["glob"]), [glob_to_regex(item) for item in area.get("exclude", ())], area["kind"]) for area in config.areas]
     classified: dict[str, list[str]] = {}
     unclassified: list[str] = []
@@ -360,6 +377,9 @@ def classify(
             continue
         if cosmetic and path in cosmetic:
             classified[path] = [cosmetic[path]]
+            continue
+        if equivalent and path in equivalent:
+            classified[path] = [equivalent[path]["kind"]]
             continue
         kinds = sorted({kind for pattern, excluded, kind in compiled if pattern.match(path) and not any(skip.match(path) for skip in excluded)})
         if kinds:
@@ -606,6 +626,51 @@ def json_rule_paths(
     return found
 
 
+# --- project commands that prove a change keeps every value -------------------------------------------------------------------------
+
+DEFAULT_EQUIVALENCE_TIMEOUT_SEC = 60
+
+
+def equivalent_paths(
+        root: Path, config: Config, paths: Sequence[str], merge_base: str | None, include_worktree: bool,
+        skip: Collection[str] = ()) -> tuple[dict[str, dict[str, Any]], dict[str, str]]:
+    """Run the `equivalenceRules` command of each changed path that matches a rule's glob. Returns `(proven, unproven)`.
+
+    The first rule whose glob matches a path is used. Its `command` (argv, no shell) runs in the repository root with the merge base and
+    the path appended; `VALTRION_INCLUDE_WORKTREE` is `1` when the working tree is part of the diff, else `0`. Exit code 0 proves the change
+    value-equivalent, and the path gets the rule's kind (`proven`: path -> kind, rule index, glob). Any other exit code, a command that cannot
+    start and one that exceeds `timeoutSec` (default 60) prove nothing: the path keeps its normal kinds (fail closed) and `unproven` says why.
+    Paths in `skip` (already classified by a JSON or comment rule) are not run."""
+    rules = [(glob_to_regex(rule["glob"]), index, rule) for index, rule in enumerate(config.equivalence_rules)]
+    if not rules or merge_base is None:
+        return {}, {}
+    proven: dict[str, dict[str, Any]] = {}
+    unproven: dict[str, str] = {}
+    environment = dict(os.environ, VALTRION_INCLUDE_WORKTREE="1" if include_worktree else "0")
+    for path in paths:
+        if path in skip:
+            continue
+        match = next(((index, item) for pattern, index, item in rules if pattern.match(path)), None)
+        if match is None:
+            continue
+        index, rule = match
+        timeout = rule.get("timeoutSec", DEFAULT_EQUIVALENCE_TIMEOUT_SEC)
+        try:
+            completed = subprocess.run([*rule["command"], merge_base, path], cwd=root, env=environment, stdin=subprocess.DEVNULL,
+                                       capture_output=True, timeout=timeout, check=False, **nowindow.OPTIONS)
+        except subprocess.TimeoutExpired:
+            unproven[path] = f"equivalenceRules[{index}]: the command did not finish in {timeout} s"
+            continue
+        except (OSError, subprocess.SubprocessError, ValueError) as error:
+            unproven[path] = f"equivalenceRules[{index}]: the command could not run: {error}"
+            continue
+        if completed.returncode != 0:
+            unproven[path] = f"equivalenceRules[{index}]: the command exited with {completed.returncode}: not proven equivalent"
+            continue
+        proven[path] = {"kind": rule["kind"], "rule": index, "glob": rule["glob"]}
+    return proven, unproven
+
+
 # --- selection -------------------------------------------------------------------------------------------------------------------
 
 
@@ -630,6 +695,10 @@ class Selection:
     cosmetic: dict[str, str] = field(default_factory=dict)
     #: Changed JSON files that a `jsonRules` entry judged by their keys (path -> {changed key -> kind}).
     json_keys: dict[str, dict[str, list[str]]] = field(default_factory=dict)
+    #: Changed paths that an `equivalenceRules` command proved value-equivalent (path -> {kind, rule, glob}).
+    equivalent: dict[str, dict[str, Any]] = field(default_factory=dict)
+    #: Paths of an `equivalenceRules` glob whose command did not prove equivalence, with the reason (they keep their normal kinds).
+    equivalence_unproven: dict[str, str] = field(default_factory=dict)
 
     def of_type(self, *types: str) -> list[Check]:
         return [check for check in self.checks if check.type in types]
@@ -671,6 +740,8 @@ class Selection:
             "kinds": self.kinds,
             "cosmeticPaths": self.cosmetic,
             "jsonKeyKinds": self.json_keys,
+            "equivalentPaths": self.equivalent,
+            "equivalenceUnprovenPaths": self.equivalence_unproven,
             "selectedKinds": self.named_kinds,
             "kindsNamedExplicitly": bool(self.named_kinds),
             "l0": [_check_json(check) for check in self.of_type(L0)],
@@ -751,6 +822,8 @@ def select(
     named_kinds: Sequence[str] = (),
     cosmetic: Mapping[str, str] | None = None,
     json_keys: Mapping[str, Mapping[str, Sequence[str]]] | None = None,
+    equivalent: Mapping[str, Mapping[str, Any]] | None = None,
+    equivalence_unproven: Mapping[str, str] | None = None,
 ) -> Selection:
     """Union of the checks of the matched kinds for `level` and every lower level; unclassified paths widen the set.
 
@@ -762,7 +835,7 @@ def select(
     unknown = [name for name in named if name not in config.kinds]
     if unknown:
         raise ConfigError([f"unknown kind(s): {', '.join(unknown)} (kinds in the map: {', '.join(sorted(config.kinds)) or 'none'})"])
-    classified, unclassified = classify(config, paths, cosmetic, json_keys)
+    classified, unclassified = classify(config, paths, cosmetic, json_keys, equivalent)
     kinds = {kind for matched in classified.values() for kind in matched} | set(named)
     policy = config.unclassified_policy
     widest = bool(unclassified) and policy == "widest"
@@ -783,6 +856,7 @@ def select(
     return Selection(
         level, base_ref, merge_base, include_worktree, list(paths), classified, unclassified, policy, widest, sorted(kinds), checks, config, failed,
         named, dict(cosmetic or {}), {path: {key: list(kinds) for key, kinds in keys.items()} for path, keys in (json_keys or {}).items()},
+        {path: dict(entry) for path, entry in (equivalent or {}).items()}, dict(equivalence_unproven or {}),
     )
 
 
@@ -823,8 +897,10 @@ def resolve_selection(arguments: argparse.Namespace) -> Selection:
     include_worktree = bool(arguments.base_ref) and arguments.include_worktree
     cosmetic = cosmetic_paths(root, config, paths, merge_base, include_worktree)
     json_keys = json_rule_paths(root, config, paths, merge_base, include_worktree)
+    equivalent, unproven = equivalent_paths(root, config, paths, merge_base, include_worktree, skip=set(cosmetic) | set(json_keys))
     return select(config, paths, arguments.level, base_ref=arguments.base_ref, merge_base=merge_base,
-                  include_worktree=include_worktree, named_kinds=named, cosmetic=cosmetic, json_keys=json_keys)
+                  include_worktree=include_worktree, named_kinds=named, cosmetic=cosmetic, json_keys=json_keys,
+                  equivalent=equivalent, equivalence_unproven=unproven)
 
 
 def run_guarded(name: str, action) -> int:
@@ -859,6 +935,13 @@ def format_selection(selection: Selection) -> str:
     if selection.cosmetic:
         lines.append(f"COSMETIC ({len(selection.cosmetic)}): only comments or layout changed, mapped by contentRules:")
         lines.extend(f"  {path} -> {kind}" for path, kind in sorted(selection.cosmetic.items()))
+    if selection.equivalent:
+        lines.append(f"EQUIVALENT ({len(selection.equivalent)}): a project command proved the values unchanged, mapped by equivalenceRules:")
+        lines.extend(f"  {path} -> {entry['kind']} (equivalenceRules[{entry['rule']}], glob {entry['glob']})"
+                     for path, entry in sorted(selection.equivalent.items()))
+    if selection.equivalence_unproven:
+        lines.append(f"NOT PROVEN ({len(selection.equivalence_unproven)}): kept their normal kinds:")
+        lines.extend(f"  {path}: {reason}" for path, reason in sorted(selection.equivalence_unproven.items()))
     if selection.unclassified:
         action = "no checks selected, fix the area map" if selection.failed else "widest set selected"
         lines.append(f"UNCLASSIFIED ({len(selection.unclassified)}), policy {selection.policy}: {action}")

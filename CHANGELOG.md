@@ -2,6 +2,10 @@
 
 Core (the `valtrion` Python package) and the Unity package `com.goryned.valtrion.unity` are versioned independently. The Unity changelog is in `integrations/unity/com.goryned.valtrion.unity/CHANGELOG.md`; `compat.json` lists compatible pairs.
 
+## Unreleased
+
+- **`select`: a project command can prove a change of a serialized asset value-preserving (#95).** A new optional `equivalenceRules` array in `checks.json` gives a path (by `glob`) a cheaper `kind` when a project-owned `command` (argv, with the merge base and the path appended, bounded by `timeoutSec`) exits with 0. Any other exit code, a missing program or a timeout keeps the normal kinds (fail closed). `select --json` lists `equivalentPaths` and `equivalenceUnprovenPaths`; the text output has `EQUIVALENT` and `NOT PROVEN` blocks. Core parses no format. Additive: a map without the key behaves as before; a project that uses the key needs a Unity package that reads it (the next package release) to open the map there.
+
 ## 0.16.0 (2026-11-06)
 
 - **Upgrade note.** `compat.json` pairs Core 0.16.0 with Unity package 0.13.x (Core 0.8.0 up to, not including, 0.17): `valtrion doctor --project` reports a project that still has package 0.12.x as `BLOCKED` with Core 0.16.0. Update the package tag in `Packages/manifest.json` to `unity-v0.13.0` (this is also what switches the window isolation on), or stay on Core 0.15.x. Other hosts need the same Core version (`valtrion hosts sync`).

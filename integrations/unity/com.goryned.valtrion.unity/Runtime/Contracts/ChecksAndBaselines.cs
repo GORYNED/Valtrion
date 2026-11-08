@@ -164,6 +164,44 @@ namespace Valtrion.Unity.Contracts
         }
     }
 
+    /// <summary>For paths that match <see cref="Glob"/>, a project command that proves a change keeps every value: exit code 0 gives the path <see cref="Kind"/>.</summary>
+    public sealed class ChecksEquivalenceRule
+    {
+        public string Glob { get; set; }
+
+        public string Kind { get; set; }
+
+        /// <summary>The program and its arguments; the base commit and the changed path are appended when it runs.</summary>
+        public List<string> Command { get; set; } = new List<string>();
+
+        /// <summary>Seconds the command may run (1 to 3600, default 60 in Core).</summary>
+        public int? TimeoutSec { get; set; }
+
+        internal static ChecksEquivalenceRule Read(ContractReader reader)
+        {
+            var rule = new ChecksEquivalenceRule
+            {
+                Glob = reader.Str("glob"),
+                Kind = reader.Identifier("kind"),
+                Command = reader.Strings("command"),
+                TimeoutSec = reader.OptInt32("timeoutSec", 1),
+            };
+            if (rule.Command.Count == 0)
+                throw new ContractException($"{reader.Path}.command: expected at least one item");
+            if (rule.TimeoutSec > 3600)
+                throw new ContractException($"{reader.Path}.timeoutSec: {rule.TimeoutSec} is above 3600");
+            reader.Done();
+            return rule;
+        }
+
+        internal JsonValue Write()
+        {
+            var node = JsonValue.NewObject().Set("glob", JsonValue.From(Glob)).Set("kind", JsonValue.From(Kind)).Set("command", JsonBuild.Strings(Command));
+            node.SetIf("timeoutSec", TimeoutSec);
+            return node;
+        }
+    }
+
     /// <summary>The checks a kind of change needs at each validation level (L0 to L4); a level that is absent has no checks of its own.</summary>
     public sealed class ChecksLevels
     {
@@ -223,6 +261,9 @@ namespace Valtrion.Unity.Contracts
         /// <summary>Optional rules that classify a changed JSON file by the keys that changed.</summary>
         public List<ChecksJsonRule> JsonRules { get; set; }
 
+        /// <summary>Optional rules whose project command can prove a change value-equivalent, which gives the path a cheaper kind.</summary>
+        public List<ChecksEquivalenceRule> EquivalenceRules { get; set; }
+
         public Dictionary<string, ChecksLevels> Kinds { get; set; } = new Dictionary<string, ChecksLevels>();
 
         public string Unclassified { get; set; }
@@ -246,6 +287,7 @@ namespace Valtrion.Unity.Contracts
                 Areas = reader.Items("areas", ChecksArea.Read),
                 ContentRules = reader.OptItems("contentRules", ChecksContentRule.Read),
                 JsonRules = reader.OptItems("jsonRules", ChecksJsonRule.Read),
+                EquivalenceRules = reader.OptItems("equivalenceRules", ChecksEquivalenceRule.Read),
                 Kinds = reader.Map("kinds", ChecksLevels.Read),
                 Unclassified = reader.Choice("unclassified", Enums.Unclassified),
             };
@@ -261,6 +303,7 @@ namespace Valtrion.Unity.Contracts
             node.Set("areas", JsonBuild.Array(Areas, area => area.Write()));
             if (JsonRules != null) node.Set("jsonRules", JsonBuild.Array(JsonRules, rule => rule.Write()));
             if (ContentRules != null) node.Set("contentRules", JsonBuild.Array(ContentRules, rule => rule.Write()));
+            if (EquivalenceRules != null) node.Set("equivalenceRules", JsonBuild.Array(EquivalenceRules, rule => rule.Write()));
             return node.Set("kinds", JsonBuild.Map(Kinds, levels => levels.Write())).Set("unclassified", JsonValue.From(Unclassified));
         }
 
