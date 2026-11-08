@@ -31,7 +31,7 @@ Since package 0.11.0 the `PlanTest` helper is an ordinary package assembly and n
 
 - Core: `pipx upgrade valtrion`. On SSH hosts run `valtrion hosts sync` so every host has the same version.
 - Unity: change the tag in the manifest URL (for example `#unity-v0.14.0` to a newer `unity-vX.Y.Z`), let Unity resolve it, and commit `Packages/manifest.json` and `packages-lock.json`.
-- Core 0.17.0 is paired with packages 0.13.x and 0.14.x (so is Core 0.16.x). A `checks.json` that uses `equivalenceRules` needs package 0.14.0 or newer. A project that still has package 0.12.x (or 0.11.x) gets `BLOCKED` from `valtrion doctor --project` with Core 0.16.0 or newer: change its manifest tag to `unity-v0.14.0`, or stay on Core 0.15.x. The package 0.13.0 and newer is also what hides the windows that tests open on macOS (`unity run`).
+- Core 0.17.1 is paired with packages 0.13.x and 0.14.x (Core 0.17.0 does not know package 0.14.x: `doctor` reports it as `BLOCKED`; Core 0.16.x pairs with 0.13.x only). A `checks.json` that uses `equivalenceRules` needs package 0.14.0 or newer. A project that still has package 0.12.x (or 0.11.x) gets `BLOCKED` from `valtrion doctor --project` with Core 0.16.0 or newer: change its manifest tag to `unity-v0.14.0`, or stay on Core 0.15.x. The package 0.13.0 and newer is also what hides the windows that tests open on macOS (`unity run`).
 - Then run `valtrion doctor --project <Unity project>`: it reports `BLOCKED` with the action to take if the pair is not listed in [compat.json](../compat.json). Read the changelogs ([Core](../CHANGELOG.md), [Unity](../integrations/unity/com.goryned.valtrion.unity/CHANGELOG.md)) before upgrading.
 
 ## From a checkout
