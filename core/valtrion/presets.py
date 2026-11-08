@@ -20,9 +20,9 @@ _SCRIPT_EXTENSIONS = ("py", "sh", "ps1", "cmd", "bat", "md", "txt", "json", "yml
 _HEAVY = {"L0": ["l0"], "L2": ["bind:editor"], "L3": ["bind:player"], "L4": ["bind:device"]}
 _EDITOR = {"L0": ["l0"], "L2": ["bind:editor"]}
 
-_NATIVE_EXTENSIONS = ("so", "a", "aar", "jar", "dylib", "bundle", "xcframework", "framework", "mm", "m", "h", "c", "cc", "cpp", "hpp", "swift", "java",
+NATIVE_EXTENSIONS = ("so", "a", "aar", "jar", "dylib", "bundle", "xcframework", "framework", "mm", "m", "h", "c", "cc", "cpp", "hpp", "swift", "java",
                       "kt", "gradle", "plist", "entitlements", "xcprivacy", "aidl", "proguard", "dll")
-_SHADER_EXTENSIONS = ("shader", "shadergraph", "shadersubgraph", "shadervariants", "hlsl", "cginc", "compute", "metal", "glsl", "glslinc", "vfx", "uitkshader")
+SHADER_EXTENSIONS = ("shader", "shadergraph", "shadersubgraph", "shadervariants", "hlsl", "cginc", "compute", "metal", "glsl", "glslinc", "vfx", "uitkshader")
 #: `ProjectSettings` files without a platform, shader or inclusion section: cross-platform runtime or Editor behavior (Editor suites cover it).
 _LIGHT_SETTINGS = ("TagManager", "InputManager", "TimeManager", "AudioManager", "DynamicsManager", "Physics2DSettings", "PhysicsCoreProjectSettings2D",
                    "NavMeshAreas", "ClusterInputManager", "NetworkManager", "EditorSettings", "PresetManager", "ProjectAuditorSettings",
@@ -31,12 +31,14 @@ _LIGHT_SETTING_GLOBS = [f"**/ProjectSettings/{name}.asset" for name in _LIGHT_SE
 
 
 def _dependency_rule(glob: str) -> dict[str, Any]:
+    by_content = {"managed": "package-managed", "platform": "package-platform"}
     return {"glob": glob, "root": "dependencies", "keys": [
         {"match": "com.unity.ide.*", "kind": "package-managed"},
         {"match": "com.unity.test-framework*", "kind": "package-managed"},
-        {"match": "com.goryned.valtrion.*", "kind": "package-managed"},
+        # A git dependency is judged by what changed inside it (`select`); when that cannot be read the key's own kind applies.
+        {"match": "com.goryned.valtrion.*", "kind": "package-managed", "byContent": dict(by_content)},
         # Anything else may carry native or platform content: fail closed to the heavy kind, on purpose.
-        {"match": "*", "kind": "package-platform", "allowHeavyFallback": True},
+        {"match": "*", "kind": "package-platform", "allowHeavyFallback": True, "byContent": dict(by_content)},
     ]}
 
 
@@ -62,10 +64,10 @@ def _unity_1() -> dict[str, Any]:
         {"glob": "**/iOS/**", "kind": "native"},
         {"glob": "**/Plugins/**", "kind": "native"},
     ]
-    areas += [{"glob": f"**/*.{extension}", "kind": "native"} for extension in _NATIVE_EXTENSIONS]
-    areas += [{"glob": f"**/*.{extension}.meta", "kind": "native"} for extension in _NATIVE_EXTENSIONS]
-    areas += [{"glob": f"**/*.{extension}", "kind": "shader"} for extension in _SHADER_EXTENSIONS]
-    areas += [{"glob": f"**/*.{extension}.meta", "kind": "shader"} for extension in _SHADER_EXTENSIONS]
+    areas += [{"glob": f"**/*.{extension}", "kind": "native"} for extension in NATIVE_EXTENSIONS]
+    areas += [{"glob": f"**/*.{extension}.meta", "kind": "native"} for extension in NATIVE_EXTENSIONS]
+    areas += [{"glob": f"**/*.{extension}", "kind": "shader"} for extension in SHADER_EXTENSIONS]
+    areas += [{"glob": f"**/*.{extension}.meta", "kind": "shader"} for extension in SHADER_EXTENSIONS]
     areas += [
         {"glob": "**/ProjectSettings/**", "kind": "platform-settings", "exclude": list(_LIGHT_SETTING_GLOBS)},
         {"glob": "**/Assets/Settings/**", "kind": "platform-settings"},

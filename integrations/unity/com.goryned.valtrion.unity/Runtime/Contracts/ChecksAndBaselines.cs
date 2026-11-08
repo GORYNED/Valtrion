@@ -71,9 +71,17 @@ namespace Valtrion.Unity.Contracts
         /// <summary>true on a fallback key (<c>*</c>) whose kinds hold player or device checks: <c>check-config</c> then does not warn that every unknown entry selects hardware.</summary>
         public bool? AllowHeavyFallback { get; set; }
 
+        /// <summary>For a git dependency, the kinds a change gets by what changed inside the package: <see cref="ChecksByContent.Managed"/> when only managed code, Editor code, tests or documents changed, <see cref="ChecksByContent.Platform"/> otherwise; the key's own kinds apply when the content cannot be read.</summary>
+        public ChecksByContent ByContent { get; set; }
+
         internal static ChecksJsonKey Read(ContractReader reader)
         {
-            var key = new ChecksJsonKey { Match = reader.Str("match"), Kind = reader.OptIdentifier("kind"), Kinds = reader.OptStrings("kinds"), AllowHeavyFallback = reader.OptBool("allowHeavyFallback") };
+            var byContent = reader.OptObject("byContent");
+            var key = new ChecksJsonKey
+            {
+                Match = reader.Str("match"), Kind = reader.OptIdentifier("kind"), Kinds = reader.OptStrings("kinds"), AllowHeavyFallback = reader.OptBool("allowHeavyFallback"),
+                ByContent = byContent == null ? null : ChecksByContent.Read(byContent),
+            };
             if (key.Kind == null && key.Kinds == null)
                 throw new ContractException($"{reader.Path}: give kind or kinds");
             if (key.Kinds != null && key.Kinds.Count == 0)
@@ -88,8 +96,26 @@ namespace Valtrion.Unity.Contracts
             if (Kind != null) node.Set("kind", JsonValue.From(Kind));
             if (Kinds != null) node.Set("kinds", JsonBuild.Strings(Kinds));
             node.SetIf("allowHeavyFallback", AllowHeavyFallback);
+            if (ByContent != null) node.Set("byContent", ByContent.Write());
             return node;
         }
+    }
+
+    /// <summary>The two kinds of a <c>byContent</c> key.</summary>
+    public sealed class ChecksByContent
+    {
+        public string Managed { get; set; }
+
+        public string Platform { get; set; }
+
+        internal static ChecksByContent Read(ContractReader reader)
+        {
+            var byContent = new ChecksByContent { Managed = reader.Identifier("managed"), Platform = reader.Identifier("platform") };
+            reader.Done();
+            return byContent;
+        }
+
+        internal JsonValue Write() => JsonValue.NewObject().Set("managed", JsonValue.From(Managed)).Set("platform", JsonValue.From(Platform));
     }
 
     /// <summary>For a changed JSON file matching <see cref="Glob"/>, the kinds of the child keys of <see cref="Root"/> that changed.</summary>

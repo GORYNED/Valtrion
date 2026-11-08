@@ -62,7 +62,16 @@
                 "match": { "type": "string", "minLength": 1 },
                 "kind": { "$ref": "common.schema.json#/$defs/identifier" },
                 "kinds": { "type": "array", "minItems": 1, "items": { "$ref": "common.schema.json#/$defs/identifier" } },
-                "allowHeavyFallback": { "type": "boolean" }
+                "allowHeavyFallback": { "type": "boolean" },
+                "byContent": {
+                  "type": "object",
+                  "required": ["managed", "platform"],
+                  "additionalProperties": false,
+                  "properties": {
+                    "managed": { "$ref": "common.schema.json#/$defs/identifier" },
+                    "platform": { "$ref": "common.schema.json#/$defs/identifier" }
+                  }
+                }
               }
             }
           }
