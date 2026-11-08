@@ -2,6 +2,10 @@
 
 Core (the `valtrion` Python package) and the Unity package `com.goryned.valtrion.unity` are versioned independently. The Unity changelog is in `integrations/unity/com.goryned.valtrion.unity/CHANGELOG.md`; `compat.json` lists compatible pairs.
 
+## Unreleased
+
+- **`select --explain` names the rule behind every selected check (#103).** The text output gets an `Explain` block and `--json` an `explain` array: for each selected check, the kinds that brought it in and, per kind, the rule (`areas[i]`, `jsonRules[i]` with its key and the `*` fallback flag, `contentRules[i]`, `equivalenceRules[i]`, `--kind`, or the widest set) with its glob and the changed paths. Without the flag the output is unchanged, and the selection never changes.
+
 ## 0.17.1 (2026-11-08)
 
 - **`compat.json` in the wheel lists Unity package 0.14.x.** Core 0.17.0 was built before package 0.14.0 existed, so `valtrion doctor --project` reported a project with package 0.14.0 as `BLOCKED`. Core 0.17.1 pairs with packages 0.13.x and 0.14.x (Core 0.8.0 up to, not including, 0.18). Nothing else changes. Update with `pipx upgrade valtrion` (and `valtrion hosts sync` on SSH hosts) before moving a project to package 0.14.0.

@@ -726,7 +726,73 @@ class Selection:
                              "suites": [suite.key for suite in suites]})
         return commands
 
-    def to_json(self) -> dict[str, Any]:
+    def kind_sources(self) -> dict[str, list[tuple[str | None, dict[str, Any]]]]:
+        """For each kind, the (path, rule) pairs that put it in the selection. The rule is a dict naming the config entry
+        (`rule`: `areas[i]`, `jsonRules[i]`, `contentRules[i]`, `equivalenceRules[i]`, `--kind` or `unclassified`) and what matched. Mirrors
+        `classify` and `select`; it never changes them."""
+        config = self.config
+        sources: dict[str, list[tuple[str | None, dict[str, Any]]]] = {}
+
+        def add(kind: str, path: str | None, rule: dict[str, Any]) -> None:
+            sources.setdefault(kind, []).append((path, rule))
+
+        areas = [(index, glob_to_regex(area["glob"]), [glob_to_regex(item) for item in area.get("exclude", ())], area)
+                 for index, area in enumerate(config.areas)]
+        json_rules = [(index, glob_to_regex(rule["glob"]), rule) for index, rule in enumerate(config.json_rules)]
+        content_rules = [(index, glob_to_regex(rule["glob"]), rule) for index, rule in enumerate(config.content_rules)]
+        for path in self.paths:
+            if path in self.json_keys:
+                index, _, rule = next((item for item in json_rules if item[1].match(path)), (None, None, None))
+                for key, kinds in self.json_keys[path].items():
+                    position = next((n for n, entry in enumerate(rule["keys"]) if fnmatch.fnmatchcase(key, entry["match"])), None) if rule else None
+                    detail: dict[str, Any] = {"rule": f"jsonRules[{index}]", "glob": rule["glob"] if rule else None, "key": key}
+                    if rule is not None and position is not None:
+                        detail["match"] = rule["keys"][position]["match"]
+                        detail["fallback"] = rule["keys"][position]["match"] == "*"
+                    for kind in kinds:
+                        add(kind, path, detail)
+            elif path in self.cosmetic:
+                index, _, rule = next((item for item in content_rules if item[1].match(path)), (None, None, None))
+                add(self.cosmetic[path], path, {"rule": f"contentRules[{index}]", "glob": rule["glob"] if rule else None})
+            elif path in self.equivalent:
+                entry = self.equivalent[path]
+                add(entry["kind"], path, {"rule": f"equivalenceRules[{entry['rule']}]", "glob": entry["glob"]})
+            else:
+                for index, pattern, excluded, area in areas:
+                    if pattern.match(path) and not any(skip.match(path) for skip in excluded):
+                        add(area["kind"], path, {"rule": f"areas[{index}]", "glob": area["glob"]})
+        for kind in self.named_kinds:
+            add(kind, None, {"rule": "--kind"})
+        if self.widest:
+            for path in self.unclassified:  # the paths that matched no rule are what widened the set
+                for kind in config.kinds:
+                    add(kind, path, {"rule": "unclassified", "detail": "widest"})
+        return sources
+
+    def explain(self) -> list[dict[str, Any]]:
+        """One entry per selected check: the kinds that brought it in and, per kind, the rules (with the paths) behind them."""
+        sources = self.kind_sources()
+        result = []
+        for check in self.checks:
+            because: list[dict[str, Any]] = []
+            for kind in sorted(check.kinds):
+                grouped: dict[str, dict[str, Any]] = {}
+                for path, rule in sources.get(kind, ()):
+                    identity = json.dumps(rule, sort_keys=True)
+                    entry = grouped.setdefault(identity, {"kind": kind, **rule, "paths": []})
+                    if path is not None and path not in entry["paths"]:
+                        entry["paths"].append(path)
+                because.extend(grouped.values())
+            result.append({"check": check.key, "type": check.type, "level": check.level, "because": because})
+        return result
+
+    def to_json(self, explain: bool = False) -> dict[str, Any]:
+        document = self._to_json()
+        if explain:
+            document["explain"] = self.explain()
+        return document
+
+    def _to_json(self) -> dict[str, Any]:
         return {
             "version": 1,
             "level": self.level,
@@ -878,6 +944,9 @@ def _configure_select(parser: argparse.ArgumentParser) -> None:
     _add_common(parser)
     parser.add_argument("--level", choices=LEVELS, default="L4", help="highest level to select, cumulative (default: L4, everything the change needs)")
     parser.add_argument("--json", action="store_true", help="print the selection as JSON")
+    parser.add_argument("--explain", action="store_true",
+                        help="also name, for every selected check, the kind and the rule (area, jsonRules key, contentRules, equivalenceRules, "
+                             "--kind or the widest set) that brought it in; the selection itself does not change")
 
 
 def resolve_selection(arguments: argparse.Namespace) -> Selection:
@@ -921,7 +990,32 @@ def run_guarded(name: str, action) -> int:
         return constants.EXIT_FAIL
 
 
-def format_selection(selection: Selection) -> str:
+def _rule_text(entry: Mapping[str, Any]) -> str:
+    rule = entry["rule"]
+    if rule == "--kind":
+        return "--kind"
+    if rule == "unclassified":
+        return "unclassified path(s): widest set"
+    text = f"{rule} glob {entry['glob']}"
+    if "key" in entry:
+        text += f" key {entry['key']}" + (f" (match {entry['match']}" + (", fallback)" if entry.get("fallback") else ")") if "match" in entry else "")
+    return text
+
+
+def format_explain(selection: Selection) -> list[str]:
+    """One line per selected check: `key [level] <- kind K: rule (paths); ...`."""
+    lines = ["Explain (why each check is selected):"]
+    for item in selection.explain():
+        parts = []
+        for entry in item["because"]:
+            paths = entry["paths"]
+            shown = ", ".join(paths[:3]) + (f" +{len(paths) - 3} more" if len(paths) > 3 else "")
+            parts.append(f"kind {entry['kind']}: {_rule_text(entry)}" + (f" ({shown})" if shown else ""))
+        lines.append(f"  {item['check']} [{item['level']}] <- " + ("; ".join(parts) or "-"))
+    return lines
+
+
+def format_selection(selection: Selection, explain: bool = False) -> str:
     lines = [
         f"valtrion select: level {selection.level}, base {selection.base_ref or '-'}"
         + (f" (merge base {selection.merge_base[:8]})" if selection.merge_base else "")
@@ -979,6 +1073,8 @@ def format_selection(selection: Selection) -> str:
     lines.append("Required platforms: " + (", ".join(selection.required_platforms()) or "-"))
     if not selection.checks and not selection.failed:
         lines.append("Nothing selected.")
+    if explain and selection.checks:
+        lines.extend(format_explain(selection))
     return "\n".join(lines)
 
 
@@ -990,9 +1086,9 @@ def _select(arguments: argparse.Namespace) -> int:
     def action() -> int:
         selection = resolve_selection(arguments)
         if arguments.json:
-            print(json.dumps(selection.to_json(), indent=2, sort_keys=False))
+            print(json.dumps(selection.to_json(arguments.explain), indent=2, sort_keys=False))
         else:
-            print(format_selection(selection))
+            print(format_selection(selection, arguments.explain))
         return constants.EXIT_FAIL if selection.failed else constants.EXIT_PASS
 
     return run_guarded("select", action)
