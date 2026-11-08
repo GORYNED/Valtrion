@@ -4,6 +4,8 @@ Core (the `valtrion` Python package) and the Unity package `com.goryned.valtrion
 
 ## Unreleased
 
+- **`check-config` warns about map patterns that over-select (#104).** Three warnings, found from the map alone: a dependency manifest classified by key while its lock file is not (the lock file then takes the kinds of its area as a whole file, and a pin change touches both); a `*` fallback key whose kind holds player or device checks; a kind with L4 checks that only dependency keys reach. Exit code and selection are unchanged. A fallback key may carry the new optional `allowHeavyFallback: true` (`gdv.checks/1`, additive) to accept the second case on purpose; a project that uses the flag needs a Unity package that reads it (the next package release) to open the map there.
+
 - **`select --explain` names the rule behind every selected check (#103).** The text output gets an `Explain` block and `--json` an `explain` array: for each selected check, the kinds that brought it in and, per kind, the rule (`areas[i]`, `jsonRules[i]` with its key and the `*` fallback flag, `contentRules[i]`, `equivalenceRules[i]`, `--kind`, or the widest set) with its glob and the changed paths. Without the flag the output is unchanged, and the selection never changes.
 
 ## 0.17.1 (2026-11-08)

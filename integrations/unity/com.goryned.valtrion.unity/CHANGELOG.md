@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- `ChecksJsonKey.AllowHeavyFallback`: the optional `allowHeavyFallback` boolean of a `jsonRules` key of `gdv.checks/1` (Core, #104) is read and written. Documents without it behave as before.
+
 ## 0.14.0 (2026-11-08)
 
 - `ChecksDocument.EquivalenceRules` (`ChecksEquivalenceRule` with `Command` and `TimeoutSec`): the optional `equivalenceRules` key of `gdv.checks/1` (Core 0.17.0, #95) is read and written. Documents without it behave as before. Before, a `checks.json` that uses the key was rejected with `unexpected property`. The Editor tests (compilation and EditMode) pass with the change.
