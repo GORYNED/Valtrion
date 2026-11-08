@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- `ChecksDocument.EquivalenceRules` (`ChecksEquivalenceRule` with `Command` and `TimeoutSec`): the optional `equivalenceRules` key of `gdv.checks/1` is read and written. Documents without it behave as before. Not run in an Editor yet.
+
 ## 0.13.0 (2026-11-06)
 
 - **Test windows stay off the screen on macOS (Editor).** A new Editor assembly `Valtrion.Unity.Editor.WindowIsolation` (macOS Editor only, no other dependency) acts in a batch-mode Editor when the environment variable `GDV_ISOLATE_WINDOWS=1` is set (an interactive Editor ignores it with a warning), which `valtrion unity run` does on macOS by default (Core with the same change). The Editor process then may not become the active application, and every window it opens (`EditorWindow`, utility window, popup) is made transparent and ignores the mouse before it is shown; the tests that open them run as before. Without the variable nothing changes. The hook is removed again before a domain reload.
