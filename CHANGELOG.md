@@ -2,6 +2,10 @@
 
 Core (the `valtrion` Python package) and the Unity package `com.goryned.valtrion.unity` are versioned independently. The Unity changelog is in `integrations/unity/com.goryned.valtrion.unity/CHANGELOG.md`; `compat.json` lists compatible pairs.
 
+## 0.17.1 (2026-11-08)
+
+- **`compat.json` in the wheel lists Unity package 0.14.x.** Core 0.17.0 was built before package 0.14.0 existed, so `valtrion doctor --project` reported a project with package 0.14.0 as `BLOCKED`. Core 0.17.1 pairs with packages 0.13.x and 0.14.x (Core 0.8.0 up to, not including, 0.18). Nothing else changes. Update with `pipx upgrade valtrion` (and `valtrion hosts sync` on SSH hosts) before moving a project to package 0.14.0.
+
 ## 0.17.0 (2026-11-08)
 
 - **Upgrade note.** `compat.json` pairs Core 0.17.0 with Unity package 0.13.x (Core 0.8.0 up to, not including, 0.18): nothing to change in a project that has package 0.13.0. A map that uses the new `equivalenceRules` key can be read by Core only; the Unity package reads it from the next package release.
