@@ -35,7 +35,7 @@ No `pipx`? See [installation](docs/install.md) for a virtual-environment install
 Using Unity? Add the package from Git: Window → Package Manager → + → Add package from git URL:
 
 ```text
-https://github.com/GORYNED/Valtrion.git?path=integrations/unity/com.goryned.valtrion.unity#unity-v0.14.0
+https://github.com/GORYNED/Valtrion.git?path=integrations/unity/com.goryned.valtrion.unity#unity-v0.15.0
 ```
 
 The Unity package has its own version. [compat.json](compat.json) lists which Core versions it works with, and `valtrion doctor --project <Unity project>` checks the pair.
@@ -93,7 +93,7 @@ Copy the prompt from [AI-agent setup](docs/ai-agent-setup.md) into Claude Code, 
 
 ## Status and limits
 
-Valtrion is pre-release software under the [MIT license](LICENSE). Core 0.17.1 and Unity package 0.14.0 are GitHub Pre-releases (Core is also on PyPI), and the CLI may change before a stable release. The [release-readiness record](docs/release-readiness.md) lists tested environments and known gaps.
+Valtrion is pre-release software under the [MIT license](LICENSE). Core 0.18.0 and Unity package 0.15.0 are GitHub Pre-releases (Core is also on PyPI), and the CLI may change before a stable release. The [release-readiness record](docs/release-readiness.md) lists tested environments and known gaps.
 
 - Unity is the only application integration. Other engines can use command jobs only. The Unity package needs Unity 6000.6 or newer.
 - Standalone `install`, `launch`, `push`, `pull`, `screenshot` and `logs` commands are not implemented yet. Use `run` or `pipeline` workflows. `build` (build only, published and reused by key) is implemented.
