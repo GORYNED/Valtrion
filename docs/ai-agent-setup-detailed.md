@@ -69,7 +69,7 @@ Unity path: discover and pin
 2. Obtain https://github.com/GORYNED/Valtrion.git in a separate checkout outside
    Assets, using existing access. If access is unavailable, report BLOCKED. Use
    the user-specified ref when provided; otherwise check out the release tag that
-   matches the package you install (for example unity-v0.14.0), and use main only when
+   matches the package you install (for example unity-v0.15.0), and use main only when
    the user wants unreleased code. Record the SHA.
    Do not apply new installer flags to an older checkout. Read
    README.md, docs/unity-quick-start.md, docs/install.md, docs/providers.md,
