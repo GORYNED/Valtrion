@@ -1,0 +1,14 @@
+{
+  "schema": "gdv.checks/1",
+  "platforms": { "required": ["ios"], "dev": ["editor"] },
+  "extends": "valtrion:unity/1",
+  "bindings": {
+    "editor": ["editmode:Example.Tests", "playmode:Example.Play.Tests"],
+    "player": ["player:ios"],
+    "device": ["device:plans/smoke"]
+  },
+  "areas": [
+    { "glob": "Assets/Example/Plugins/Managed/**", "kind": "tests", "overridesPreset": true }
+  ],
+  "unclassified": "fail"
+}

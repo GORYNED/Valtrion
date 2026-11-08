@@ -3,7 +3,8 @@
   "$id": "gdv.checks/1",
   "title": "Project check map: changed paths to kinds, kinds to checks per level",
   "type": "object",
-  "required": ["schema", "platforms", "areas", "kinds", "unclassified"],
+  "required": ["schema", "platforms", "unclassified"],
+  "anyOf": [{ "required": ["areas", "kinds"] }, { "required": ["extends"] }],
   "additionalProperties": false,
   "properties": {
     "schema": { "const": "gdv.checks/1" },
@@ -17,6 +18,11 @@
       }
     },
     "unityEditorSlots": { "$ref": "common.schema.json#/$defs/int32", "minimum": 1 },
+    "extends": { "type": "string", "pattern": "^valtrion:[a-z0-9-]+/[0-9]+$" },
+    "bindings": {
+      "type": "object",
+      "additionalProperties": { "type": "array", "items": { "type": "string", "minLength": 1 } }
+    },
     "runners": {
       "type": "object",
       "additionalProperties": { "type": "string", "minLength": 1 }
@@ -30,7 +36,8 @@
         "properties": {
           "glob": { "type": "string", "minLength": 1 },
           "exclude": { "type": "array", "items": { "type": "string", "minLength": 1 } },
-          "kind": { "$ref": "common.schema.json#/$defs/identifier" }
+          "kind": { "$ref": "common.schema.json#/$defs/identifier" },
+          "overridesPreset": { "type": "boolean" }
         }
       }
     },

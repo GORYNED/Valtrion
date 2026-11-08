@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Collection, Mapping, Sequence
 
-from . import constants, nowindow, project
+from . import constants, nowindow, presets, project
 from .schema import SchemaError, UnreadableInput, Validator, parse_json, validate_file
 
 LEVELS = ("L0", "L1", "L2", "L3", "L4")
@@ -93,7 +93,16 @@ class Check:
 @dataclass(frozen=True)
 class Config:
     path: Path
+    #: The effective map: for a map with `extends`, the project's entries followed by the preset's (see `presets.expand`).
     data: dict
+    #: What came from the preset (`id`, `projectCounts` of areas, jsonRules and contentRules before the preset's entries, `kinds`), or None.
+    preset: dict | None = None
+
+    def from_preset(self, array: str, index: int) -> str | None:
+        """The preset id when entry `index` of `areas`, `jsonRules` or `contentRules` came from the preset, else None."""
+        if self.preset is not None and index >= self.preset["projectCounts"][array]:
+            return self.preset["id"]
+        return None
 
     @property
     def directory(self) -> Path:
@@ -219,7 +228,11 @@ def load_config(path: Path, validator: Validator | None = None) -> Config:
         raise ConfigError([f"{path}: {message}" for message in errors])
     if schema_id != "gdv.checks/1":
         raise ConfigError([f"{path}: expected schema gdv.checks/1, found {schema_id}"])
-    return Config(path, parse_json(path.read_text(encoding="utf-8-sig")))
+    try:
+        data, preset = presets.expand(parse_json(path.read_text(encoding="utf-8-sig")))
+    except presets.PresetError as error:
+        raise ConfigError([f"{path}: {error}"]) from error
+    return Config(path, data, preset)
 
 
 def validate_config(config: Config, validator: Validator | None = None) -> tuple[list[str], list[str]]:
@@ -228,6 +241,25 @@ def validate_config(config: Config, validator: Validator | None = None) -> tuple
     warnings: list[str] = []
     kinds = config.kinds
     used: set[str] = set()
+    inherited: set[str] = set()  # kinds that are the preset's own, as the project did not write a kind of that name
+    bound: set[str] = set()
+    if config.preset is None:
+        if "bindings" in config.data:
+            warnings.append("bindings: has no effect without extends")
+        warnings.extend(f"areas[{index}]: overridesPreset has no effect without extends" for index, area in enumerate(config.areas) if "overridesPreset" in area)
+    else:
+        inherited = set(config.preset["kinds"]) - set(config.preset["replaced"])
+        for name, dropped in sorted(config.preset["replaced"].items()):
+            if dropped:
+                warnings.append(f"kinds.{name}: replaces the kind of the same name of {config.preset['id']} and leaves out {', '.join(dropped)}; "
+                                "paths of that class select less than the preset assumes")
+        for slot, entries in config.data.get("bindings", {}).items():
+            for position, raw in enumerate(entries):
+                bound.add(raw)
+                try:
+                    parse_spec(raw)
+                except ValueError as error:
+                    errors.append(f"bindings.{slot}[{position}]: {error}")
     for index, area in enumerate(config.areas):
         glob = area["glob"]
         if area["kind"] not in kinds:
@@ -284,7 +316,7 @@ def validate_config(config: Config, validator: Validator | None = None) -> tuple
         if _NAME.match(name) and shutil.which(name):
             warnings.append(f"runners.{name}: the name is also a program on PATH; an entry whose text after '@' is exactly {name!r} "
                             "used to be that command and now uses this runner")
-    for kind in sorted(set(kinds) - used):
+    for kind in sorted(set(kinds) - used - set(config.preset["kinds"] if config.preset else ())):
         warnings.append(f"kind {kind!r} is not used by any area (selected only by the widest set)")
     plan_ids: dict[str, str] = {}
     for kind in sorted(kinds):
@@ -293,7 +325,8 @@ def validate_config(config: Config, validator: Validator | None = None) -> tuple
                 try:
                     spec = parse_spec(raw)
                 except ValueError as error:
-                    errors.append(f"kinds.{kind}.{level}: {error}")
+                    if not (kind in inherited and raw in bound):  # a bad binding is reported once, under `bindings`
+                        errors.append(f"kinds.{kind}.{level}: {error}")
                     continue
                 if spec.runner is not None and spec.type in _EDITOR_TYPES:
                     template, name = config.resolve_runner(spec.runner)
@@ -345,6 +378,8 @@ def _over_selection_warnings(config: Config) -> list[str]:
     areas = [(index, glob_to_regex(area["glob"]), [glob_to_regex(item) for item in area.get("exclude", ())], area)
              for index, area in enumerate(config.areas)]
     for index, rule in enumerate(config.json_rules):
+        if config.from_preset("jsonRules", index):
+            continue  # the preset's own rules are its business; the warnings are about the project's map
         folder, _, name = rule["glob"].rpartition("/")
         sibling_name = _LOCK_SIBLINGS.get(name)
         if sibling_name is None or any(char in rule["glob"] for char in "*?["):
@@ -366,6 +401,8 @@ def _over_selection_warnings(config: Config) -> list[str]:
                         f"so the lock file decides the selection. Add a jsonRules entry for {sibling} with the same keys")
     users: dict[str, list[str]] = {}
     for index, rule in enumerate(config.json_rules):
+        if config.from_preset("jsonRules", index):
+            continue
         for position, entry in enumerate(rule["keys"]):
             where = f"jsonRules[{index}].keys[{position}]"
             names = key_kinds(entry)
@@ -437,7 +474,7 @@ def classify(
     A path matches an area when it matches `glob` and none of the area's optional `exclude` globs. An excluded path can still match
     another area, so it keeps that area's kind. A path in `cosmetic` (path -> kind, see `cosmetic_paths`) has that one kind instead, and so
     has a path in `equivalent` (path -> {"kind": ...}, see `equivalent_paths`)."""
-    compiled = [(glob_to_regex(area["glob"]), [glob_to_regex(item) for item in area.get("exclude", ())], area["kind"]) for area in config.areas]
+    compiled = compile_areas(config)
     classified: dict[str, list[str]] = {}
     unclassified: list[str] = []
     for path in paths:
@@ -450,12 +487,28 @@ def classify(
         if equivalent and path in equivalent:
             classified[path] = [equivalent[path]["kind"]]
             continue
-        kinds = sorted({kind for pattern, excluded, kind in compiled if pattern.match(path) and not any(skip.match(path) for skip in excluded)})
+        kinds = sorted({area["kind"] for _, area in matching_areas(config, compiled, path)})
         if kinds:
             classified[path] = kinds
         else:
             unclassified.append(path)
     return classified, unclassified
+
+
+def compile_areas(config: Config) -> list[tuple[int, re.Pattern[str], list[re.Pattern[str]], dict]]:
+    return [(index, glob_to_regex(area["glob"]), [glob_to_regex(item) for item in area.get("exclude", ())], area)
+            for index, area in enumerate(config.areas)]
+
+
+def matching_areas(config: Config, compiled: Sequence[tuple[int, re.Pattern[str], list[re.Pattern[str]], dict]], path: str) -> list[tuple[int, dict]]:
+    """The areas (index, entry) that match `path`: the glob matches and no `exclude` does. When a project area with `overridesPreset` matches,
+    the preset's areas are ignored for that path; otherwise the preset's areas add their kinds to the project's (the safe default)."""
+    found = [(index, area) for index, pattern, excluded, area in compiled if pattern.match(path) and not any(skip.match(path) for skip in excluded)]
+    if config.preset is not None:
+        start = config.preset["projectCounts"]["areas"]
+        if any(index < start and area.get("overridesPreset") for index, area in found):
+            found = [(index, area) for index, area in found if index < start]
+    return found
 
 
 def _git(root: Path, *arguments: str) -> bytes:
@@ -805,8 +858,7 @@ class Selection:
         def add(kind: str, path: str | None, rule: dict[str, Any]) -> None:
             sources.setdefault(kind, []).append((path, rule))
 
-        areas = [(index, glob_to_regex(area["glob"]), [glob_to_regex(item) for item in area.get("exclude", ())], area)
-                 for index, area in enumerate(config.areas)]
+        areas = compile_areas(config)
         json_rules = [(index, glob_to_regex(rule["glob"]), rule) for index, rule in enumerate(config.json_rules)]
         content_rules = [(index, glob_to_regex(rule["glob"]), rule) for index, rule in enumerate(config.content_rules)]
         for path in self.paths:
@@ -818,18 +870,28 @@ class Selection:
                     if rule is not None and position is not None:
                         detail["match"] = rule["keys"][position]["match"]
                         detail["fallback"] = rule["keys"][position]["match"] == "*"
+                    origin = config.from_preset("jsonRules", index) if index is not None else None
+                    if origin:
+                        detail["from"] = origin
                     for kind in kinds:
                         add(kind, path, detail)
             elif path in self.cosmetic:
                 index, _, rule = next((item for item in content_rules if item[1].match(path)), (None, None, None))
-                add(self.cosmetic[path], path, {"rule": f"contentRules[{index}]", "glob": rule["glob"] if rule else None})
+                detail = {"rule": f"contentRules[{index}]", "glob": rule["glob"] if rule else None}
+                origin = config.from_preset("contentRules", index) if index is not None else None
+                if origin:
+                    detail["from"] = origin
+                add(self.cosmetic[path], path, detail)
             elif path in self.equivalent:
                 entry = self.equivalent[path]
                 add(entry["kind"], path, {"rule": f"equivalenceRules[{entry['rule']}]", "glob": entry["glob"]})
             else:
-                for index, pattern, excluded, area in areas:
-                    if pattern.match(path) and not any(skip.match(path) for skip in excluded):
-                        add(area["kind"], path, {"rule": f"areas[{index}]", "glob": area["glob"]})
+                for index, area in matching_areas(config, areas, path):
+                    detail = {"rule": f"areas[{index}]", "glob": area["glob"]}
+                    origin = config.from_preset("areas", index)
+                    if origin:
+                        detail["from"] = origin
+                    add(area["kind"], path, detail)
         for kind in self.named_kinds:
             add(kind, None, {"rule": "--kind"})
         if self.widest:
@@ -1065,7 +1127,7 @@ def _rule_text(entry: Mapping[str, Any]) -> str:
         return "--kind"
     if rule == "unclassified":
         return "unclassified path(s): widest set"
-    text = f"{rule} glob {entry['glob']}"
+    text = f"{rule} glob {entry['glob']}" + (f" of {entry['from']}" if entry.get("from") else "")
     if "key" in entry:
         text += f" key {entry['key']}" + (f" (match {entry['match']}" + (", fallback)" if entry.get("fallback") else ")") if "match" in entry else "")
     return text
