@@ -656,8 +656,10 @@ def equivalent_paths(
         index, rule = match
         timeout = rule.get("timeoutSec", DEFAULT_EQUIVALENCE_TIMEOUT_SEC)
         try:
-            completed = subprocess.run([*rule["command"], merge_base, path], cwd=root, env=environment, stdin=subprocess.DEVNULL,
-                                       capture_output=True, timeout=timeout, check=False, **nowindow.OPTIONS)
+            argument = "./" + path if path.startswith("-") else path  # never read as an option by the command
+            # No pipes: after a timeout `subprocess.run` would wait for a grandchild that still holds them (Windows).
+            completed = subprocess.run([*rule["command"], merge_base, argument], cwd=root, env=environment, stdin=subprocess.DEVNULL,
+                                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=timeout, check=False, **nowindow.OPTIONS)
         except subprocess.TimeoutExpired:
             unproven[path] = f"equivalenceRules[{index}]: the command did not finish in {timeout} s"
             continue

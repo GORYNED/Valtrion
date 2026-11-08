@@ -142,6 +142,18 @@ class EquivalenceTests(RepoCase):
         self.assertEqual(["other/x.txt"], payload["unclassifiedPaths"])
         self.assertEqual(["assets/a.asset"], list(payload["equivalentPaths"]))  # classified by the rule, not unclassified
 
+    def test_the_first_matching_rule_is_the_only_one_used(self):
+        self.rules()
+        data = json.loads(self.checks_path.read_text(encoding="utf-8"))
+        first = {"glob": "assets/**", "kind": "docs", "command": [sys.executable, str(self.script), "error"]}
+        data["equivalenceRules"].insert(0, first)
+        self.checks_path.write_text(json.dumps(data), encoding="utf-8")
+        write(self.root, "assets/a.asset", "beta: 2\nalpha: 1\n")
+        self.commit()
+        payload = self.select_json()
+        self.assertEqual({}, payload["equivalentPaths"])  # the second rule would have proven it
+        self.assertIn("equivalenceRules[0]", payload["equivalenceUnprovenPaths"]["assets/a.asset"])
+
     def test_a_path_the_glob_does_not_match_is_never_run(self):
         self.rules(mode="error", glob="assets/**/*.prefab")
         write(self.root, "assets/a.asset", "beta: 2\nalpha: 1\n")
