@@ -140,7 +140,7 @@ class CheckTests(ProjectCase):
         self.assertEqual("ok", self.check()["status"])
 
     def test_the_shipped_compat_table_is_valid_and_lists_this_core(self):
-        self.lock({"version": "0.13.0", "source": "registry"})
+        self.lock({"version": "0.15.0", "source": "registry"})
         self.assertEqual("ok", project.check_project(self.unity)["status"])
 
 
@@ -163,7 +163,7 @@ class DoctorProjectTests(ProjectCase):
         self.assertEqual("skipped", json.loads(out)["project"]["status"])
 
     def test_supported_package_passes(self):
-        self.lock({"version": "0.13.0", "source": "registry"})
+        self.lock({"version": "0.15.0", "source": "registry"})
         code, out, _ = self.doctor("--project", str(self.unity))
         self.assertEqual((0, "ok"), (code, json.loads(out)["project"]["status"]))
 
@@ -272,6 +272,21 @@ class ShippedTableTests(ProjectCase):
             self.assertEqual("ok", project.check_project(self.unity, core_version)["status"], core_version)
         for core_version in ("0.7.4", "0.18.0"):
             self.assertNotEqual("ok", project.check_project(self.unity, core_version)["status"], core_version)
+
+    def test_package_0_15_x_works_with_core_0_8_to_0_18_and_not_with_0_19(self):
+        _, ranges = project.load_compat_document()
+        self.assertEqual([{"package": "0.15.x", "core": ">=0.8.0,<0.19"}], [r for r in ranges if r["package"] == "0.15.x"])
+        self.lock({"version": "0.15.0", "source": "registry"})
+        for core_version in ("0.8.0", "0.17.1", "0.18.0", "0.18.9"):
+            self.assertEqual("ok", project.check_project(self.unity, core_version)["status"], core_version)
+        for core_version in ("0.7.4", "0.19.0"):
+            self.assertNotEqual("ok", project.check_project(self.unity, core_version)["status"], core_version)
+
+    def test_package_0_14_x_is_not_paired_with_core_0_18_that_it_cannot_read_the_keys_of(self):
+        self.lock({"version": "0.14.0", "source": "registry"})
+        result = project.check_project(self.unity, "0.18.0")
+        self.assertEqual("BLOCKED", result["status"])
+        self.assertIn(">=0.8.0,<0.18", result["reason"])
 
     def test_the_package_and_the_core_of_this_checkout_are_paired(self):
         package = json.loads((Path(__file__).resolve().parents[2] / "integrations" / "unity" / "com.goryned.valtrion.unity" / "package.json")
