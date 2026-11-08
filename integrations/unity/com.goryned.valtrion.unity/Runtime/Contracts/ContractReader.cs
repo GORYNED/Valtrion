@@ -371,6 +371,22 @@ namespace Valtrion.Unity.Contracts
             return result;
         }
 
+        /// <summary>A map whose values are lists of non-empty strings (null when absent).</summary>
+        public Dictionary<string, List<string>> StringListMap(string name)
+        {
+            var node = Optional(name, JsonKind.Object);
+            if (node == null)
+                return null;
+            var result = new Dictionary<string, List<string>>();
+            foreach (var member in node.Members)
+            {
+                if (member.Value.Kind != JsonKind.Array)
+                    throw new ContractException($"{_path}.{name}.{member.Key}: expected an array");
+                result[member.Key] = StringsOf(member.Value, $"{name}.{member.Key}");
+            }
+            return result;
+        }
+
         public Dictionary<string, string> StringMap(string name)
         {
             var node = Optional(name, JsonKind.Object);

@@ -1,0 +1,5 @@
+{
+  "schema": "gdv.checks/1",
+  "platforms": { "required": ["ios"] },
+  "unclassified": "fail"
+}

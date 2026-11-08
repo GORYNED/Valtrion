@@ -1,0 +1,7 @@
+{
+  "schema": "gdv.checks/1",
+  "platforms": { "required": ["ios"] },
+  "extends": "unity/1",
+  "bindings": { "editor": [], "player": [], "device": [] },
+  "unclassified": "fail"
+}

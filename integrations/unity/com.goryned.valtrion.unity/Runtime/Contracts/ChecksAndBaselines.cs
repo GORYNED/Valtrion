@@ -37,9 +37,12 @@ namespace Valtrion.Unity.Contracts
 
         public string Kind { get; set; }
 
+        /// <summary>true: for a path this area matches, the built-in preset's areas (<c>extends</c>) are ignored instead of adding their kinds.</summary>
+        public bool? OverridesPreset { get; set; }
+
         internal static ChecksArea Read(ContractReader reader)
         {
-            var area = new ChecksArea { Glob = reader.Str("glob"), Exclude = reader.OptStrings("exclude"), Kind = reader.Identifier("kind") };
+            var area = new ChecksArea { Glob = reader.Str("glob"), Exclude = reader.OptStrings("exclude"), Kind = reader.Identifier("kind"), OverridesPreset = reader.OptBool("overridesPreset") };
             reader.Done();
             return area;
         }
@@ -48,7 +51,9 @@ namespace Valtrion.Unity.Contracts
         {
             var node = JsonValue.NewObject().Set("glob", JsonValue.From(Glob));
             if (Exclude != null) node.Set("exclude", JsonBuild.Strings(Exclude));
-            return node.Set("kind", JsonValue.From(Kind));
+            node.Set("kind", JsonValue.From(Kind));
+            node.SetIf("overridesPreset", OverridesPreset);
+            return node;
         }
     }
 
@@ -257,6 +262,13 @@ namespace Valtrion.Unity.Contracts
         /// <summary>Optional named runner command templates (name to command); an Editor suite entry <c>editmode:A@name</c> uses one.</summary>
         public Dictionary<string, string> Runners { get; set; }
 
+        /// <summary>Optional built-in preset (<c>valtrion:unity/1</c>) whose path rules and classes are merged under this map; versioned, so a Core upgrade never changes a selection.</summary>
+        public string Extends { get; set; }
+
+        /// <summary>With <see cref="Extends"/>: the project's concrete checks for each slot of the preset (<c>editor</c>, <c>player</c>, <c>device</c>); an empty list says there are none.</summary>
+        public Dictionary<string, List<string>> Bindings { get; set; }
+
+        /// <summary>Null only when the map has <see cref="Extends"/> and no areas of its own.</summary>
         public List<ChecksArea> Areas { get; set; } = new List<ChecksArea>();
 
         /// <summary>Optional rules that map a comment-only or layout-only change of matching paths to a cheaper kind.</summary>
@@ -268,6 +280,7 @@ namespace Valtrion.Unity.Contracts
         /// <summary>Optional rules whose project command can prove a change value-equivalent, which gives the path a cheaper kind.</summary>
         public List<ChecksEquivalenceRule> EquivalenceRules { get; set; }
 
+        /// <summary>Null only when the map has <see cref="Extends"/> and no kinds of its own.</summary>
         public Dictionary<string, ChecksLevels> Kinds { get; set; } = new Dictionary<string, ChecksLevels>();
 
         public string Unclassified { get; set; }
@@ -283,16 +296,22 @@ namespace Valtrion.Unity.Contracts
                 foreach (var runner in runners)
                     if (runner.Value.Length == 0)
                         throw new ContractException($"{reader.Path}.runners.{runner.Key}: expected a non-empty string");
+            var extends = reader.OptStr("extends", 1);
+            if (extends != null && !System.Text.RegularExpressions.Regex.IsMatch(extends, "^valtrion:[a-z0-9-]+/[0-9]+$"))
+                throw new ContractException($"{reader.Path}.extends: expected a preset id such as valtrion:unity/1");
             var checks = new ChecksDocument
             {
                 Platforms = ChecksPlatforms.Read(reader.Object("platforms")),
                 UnityEditorSlots = reader.OptInt32("unityEditorSlots", 1),
                 Runners = runners,
-                Areas = reader.Items("areas", ChecksArea.Read),
+                Extends = extends,
+                Bindings = reader.StringListMap("bindings"),
+                // A map that extends a preset may leave out areas and kinds; a map without `extends` needs both.
+                Areas = extends != null ? reader.OptItems("areas", ChecksArea.Read) : reader.Items("areas", ChecksArea.Read),
                 ContentRules = reader.OptItems("contentRules", ChecksContentRule.Read),
                 JsonRules = reader.OptItems("jsonRules", ChecksJsonRule.Read),
                 EquivalenceRules = reader.OptItems("equivalenceRules", ChecksEquivalenceRule.Read),
-                Kinds = reader.Map("kinds", ChecksLevels.Read),
+                Kinds = extends != null ? reader.OptMap("kinds", ChecksLevels.Read) : reader.Map("kinds", ChecksLevels.Read),
                 Unclassified = reader.Choice("unclassified", Enums.Unclassified),
             };
             reader.Done();
@@ -304,11 +323,14 @@ namespace Valtrion.Unity.Contracts
             var node = JsonValue.NewObject()
                 .Set("schema", JsonValue.From(Schema)).Set("platforms", Platforms.Write()).SetIf("unityEditorSlots", UnityEditorSlots);
             if (Runners != null) node.Set("runners", JsonBuild.StringMap(Runners));
-            node.Set("areas", JsonBuild.Array(Areas, area => area.Write()));
+            if (Extends != null) node.Set("extends", JsonValue.From(Extends));
+            if (Bindings != null) node.Set("bindings", JsonBuild.Map(Bindings, list => JsonBuild.Strings(list)));
+            if (Areas != null) node.Set("areas", JsonBuild.Array(Areas, area => area.Write()));
             if (JsonRules != null) node.Set("jsonRules", JsonBuild.Array(JsonRules, rule => rule.Write()));
             if (ContentRules != null) node.Set("contentRules", JsonBuild.Array(ContentRules, rule => rule.Write()));
             if (EquivalenceRules != null) node.Set("equivalenceRules", JsonBuild.Array(EquivalenceRules, rule => rule.Write()));
-            return node.Set("kinds", JsonBuild.Map(Kinds, levels => levels.Write())).Set("unclassified", JsonValue.From(Unclassified));
+            if (Kinds != null) node.Set("kinds", JsonBuild.Map(Kinds, levels => levels.Write()));
+            return node.Set("unclassified", JsonValue.From(Unclassified));
         }
 
         public string ToJsonString() => ToJson().Write(true);
