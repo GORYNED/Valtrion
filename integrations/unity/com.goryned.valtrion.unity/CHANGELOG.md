@@ -1,8 +1,9 @@
 # Changelog
 
-## Unreleased
+## 0.14.0 (2026-11-08)
 
-- `ChecksDocument.EquivalenceRules` (`ChecksEquivalenceRule` with `Command` and `TimeoutSec`): the optional `equivalenceRules` key of `gdv.checks/1` is read and written. Documents without it behave as before. Not run in an Editor yet.
+- `ChecksDocument.EquivalenceRules` (`ChecksEquivalenceRule` with `Command` and `TimeoutSec`): the optional `equivalenceRules` key of `gdv.checks/1` (Core 0.17.0, #95) is read and written. Documents without it behave as before. Before, a `checks.json` that uses the key was rejected with `unexpected property`. The Editor tests (compilation and EditMode) pass with the change.
+- Compatible Core versions are listed in `compat.json`: package 0.14.0 works with Core 0.8.0 up to, not including, 0.18. A project that uses `equivalenceRules` needs this package and Core 0.17.0 or newer; update the package tag in `Packages/manifest.json` to `unity-v0.14.0`.
 
 ## 0.13.0 (2026-11-06)
 
