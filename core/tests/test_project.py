@@ -264,6 +264,15 @@ class ShippedTableTests(ProjectCase):
         for core_version in ("0.7.4", "0.18.0"):
             self.assertNotEqual("ok", project.check_project(self.unity, core_version)["status"], core_version)
 
+    def test_package_0_14_x_works_with_core_0_8_to_0_17_and_not_with_0_18(self):
+        _, ranges = project.load_compat_document()
+        self.assertEqual([{"package": "0.14.x", "core": ">=0.8.0,<0.18"}], [r for r in ranges if r["package"] == "0.14.x"])
+        self.lock({"version": "0.14.0", "source": "registry"})
+        for core_version in ("0.8.0", "0.16.0", "0.17.0", "0.17.9"):
+            self.assertEqual("ok", project.check_project(self.unity, core_version)["status"], core_version)
+        for core_version in ("0.7.4", "0.18.0"):
+            self.assertNotEqual("ok", project.check_project(self.unity, core_version)["status"], core_version)
+
     def test_the_package_and_the_core_of_this_checkout_are_paired(self):
         package = json.loads((Path(__file__).resolve().parents[2] / "integrations" / "unity" / "com.goryned.valtrion.unity" / "package.json")
                              .read_text(encoding="utf-8"))["version"]
