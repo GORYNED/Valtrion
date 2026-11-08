@@ -315,7 +315,76 @@ def validate_config(config: Config, validator: Validator | None = None) -> tuple
                 previous = plan_ids.setdefault(plan.plan_id, spec.target)
                 if previous != spec.target:
                     errors.append(f"kinds.{kind}.{level}: plan id {plan.plan_id!r} is used by {previous!r} and {spec.target!r}")
+    if not errors:  # the helpers read kinds and keys the checks above have just proven valid
+        warnings.extend(_over_selection_warnings(config))
     return errors, warnings
+
+
+#: A dependency manifest and its lock file: a change of one almost always comes with a change of the other.
+_LOCK_SIBLINGS = {"manifest.json": "packages-lock.json", "packages-lock.json": "manifest.json",
+                  "package.json": "package-lock.json", "package-lock.json": "package.json"}
+
+
+def _heavy_specs(config: Config, kind: str) -> list[str]:
+    """The player and device checks (levels L3 and L4) of a kind, as `L3 player:x`."""
+    found = []
+    for level in ("L3", "L4"):
+        for raw in config.kinds.get(kind, {}).get(level, ()):
+            spec = parse_spec(raw)
+            if spec.type in (PLAYER, DEVICE):
+                found.append(f"{level} {spec.type}:{spec.target}")
+    return found
+
+
+def _over_selection_warnings(config: Config) -> list[str]:
+    """Map patterns that pass every check yet select more than the change calls for, found without a diff:
+    a dependency file classified by key whose lock file is not; a `*` fallback key whose kind holds player or device checks (unless the key
+    says `allowHeavyFallback`); a kind with L4 checks that only dependency keys reach."""
+    warnings: list[str] = []
+    covered = [glob_to_regex(rule["glob"]) for rule in config.json_rules]
+    areas = [(index, glob_to_regex(area["glob"]), [glob_to_regex(item) for item in area.get("exclude", ())], area)
+             for index, area in enumerate(config.areas)]
+    for index, rule in enumerate(config.json_rules):
+        folder, _, name = rule["glob"].rpartition("/")
+        sibling_name = _LOCK_SIBLINGS.get(name)
+        if sibling_name is None or any(char in rule["glob"] for char in "*?["):
+            continue
+        sibling = f"{folder}/{sibling_name}" if folder else sibling_name
+        if any(pattern.match(sibling) for pattern in covered):
+            continue
+        matched = [(position, area) for position, pattern, excluded, area in areas
+                   if pattern.match(sibling) and not any(skip.match(sibling) for skip in excluded)]
+        if matched:
+            parts = []
+            for position, area in matched:
+                heavy = _heavy_specs(config, area["kind"])
+                parts.append(f"areas[{position}] (kind {area['kind']!r}" + (f", with {', '.join(heavy)}" if heavy else "") + ")")
+            where = "it is classified as a whole file by " + ", ".join(parts)
+        else:
+            where = "no jsonRules entry and no area matches it"
+        warnings.append(f"jsonRules[{index}]: {rule['glob']} is classified by key but {sibling} is not: {where}; a pin change touches both files, "
+                        f"so the lock file decides the selection. Add a jsonRules entry for {sibling} with the same keys")
+    users: dict[str, list[str]] = {}
+    for index, rule in enumerate(config.json_rules):
+        for position, entry in enumerate(rule["keys"]):
+            where = f"jsonRules[{index}].keys[{position}]"
+            names = key_kinds(entry)
+            if entry["match"] == "*" and not entry.get("allowHeavyFallback"):
+                for name in names:
+                    heavy = _heavy_specs(config, name)
+                    if heavy:
+                        warnings.append(f"{where}: the fallback key '*' selects kind {name!r} with {', '.join(heavy)}, so every dependency no other key "
+                                        "names selects them; narrow the kind, or set \"allowHeavyFallback\": true on the key to accept it")
+            for name in names:
+                users.setdefault(name, []).append(f"{rule['glob']} key {entry['match']!r}")
+    direct = {area["kind"] for area in config.areas} | {rule["kind"] for rule in config.content_rules} | {rule["kind"] for rule in config.equivalence_rules}
+    for name in sorted(users):
+        if name in direct or not config.kinds.get(name, {}).get("L4"):
+            continue
+        shown = ", ".join(users[name][:3]) + (f" +{len(users[name]) - 3} more" if len(users[name]) > 3 else "")
+        warnings.append(f"kind {name!r} has L4 checks and only dependency keys reach it ({shown}): a version change of such an entry selects them "
+                        "whatever the change contains; make sure a bump of these dependencies can affect the platform")
+    return warnings
 
 
 #: Placeholders of a runner template: the united, sorted assembly list joined with `,` or with `;` (Unity's separator for `-assemblyNames` and

@@ -1,0 +1,18 @@
+{
+  "schema": "gdv.checks/1",
+  "platforms": { "required": ["ios"], "dev": ["editor"] },
+  "areas": [
+    { "glob": "Assets/**", "kind": "managed" }
+  ],
+  "jsonRules": [
+    { "glob": "Packages/manifest.json", "root": "dependencies", "keys": [
+      { "match": "example.core", "kind": "managed" },
+      { "match": "*", "kind": "native", "allowHeavyFallback": true }
+    ] }
+  ],
+  "kinds": {
+    "managed": { "L2": ["editmode:Example.Tests"] },
+    "native": { "L2": ["editmode:Example.Tests"], "L3": ["player:ios"] }
+  },
+  "unclassified": "widest"
+}

@@ -63,9 +63,12 @@ namespace Valtrion.Unity.Contracts
         /// <summary>A list of kinds; null when <see cref="Kind"/> is used.</summary>
         public List<string> Kinds { get; set; }
 
+        /// <summary>true on a fallback key (<c>*</c>) whose kinds hold player or device checks: <c>check-config</c> then does not warn that every unknown entry selects hardware.</summary>
+        public bool? AllowHeavyFallback { get; set; }
+
         internal static ChecksJsonKey Read(ContractReader reader)
         {
-            var key = new ChecksJsonKey { Match = reader.Str("match"), Kind = reader.OptIdentifier("kind"), Kinds = reader.OptStrings("kinds") };
+            var key = new ChecksJsonKey { Match = reader.Str("match"), Kind = reader.OptIdentifier("kind"), Kinds = reader.OptStrings("kinds"), AllowHeavyFallback = reader.OptBool("allowHeavyFallback") };
             if (key.Kind == null && key.Kinds == null)
                 throw new ContractException($"{reader.Path}: give kind or kinds");
             if (key.Kinds != null && key.Kinds.Count == 0)
@@ -79,6 +82,7 @@ namespace Valtrion.Unity.Contracts
             var node = JsonValue.NewObject().Set("match", JsonValue.From(Match));
             if (Kind != null) node.Set("kind", JsonValue.From(Kind));
             if (Kinds != null) node.Set("kinds", JsonBuild.Strings(Kinds));
+            node.SetIf("allowHeavyFallback", AllowHeavyFallback);
             return node;
         }
     }
