@@ -255,13 +255,13 @@ class ShippedTableTests(ProjectCase):
         for core_version in ("0.7.4", "0.16.0"):
             self.assertNotEqual("ok", project.check_project(self.unity, core_version)["status"], core_version)
 
-    def test_package_0_13_x_works_with_core_0_8_to_0_16_and_not_with_0_17(self):
+    def test_package_0_13_x_works_with_core_0_8_to_0_17_and_not_with_0_18(self):
         _, ranges = project.load_compat_document()
-        self.assertEqual([{"package": "0.13.x", "core": ">=0.8.0,<0.17"}], [r for r in ranges if r["package"] == "0.13.x"])
+        self.assertEqual([{"package": "0.13.x", "core": ">=0.8.0,<0.18"}], [r for r in ranges if r["package"] == "0.13.x"])
         self.lock({"version": "0.13.0", "source": "registry"})
-        for core_version in ("0.8.0", "0.15.1", "0.16.0", "0.16.9"):
+        for core_version in ("0.8.0", "0.15.1", "0.16.0", "0.17.0", "0.17.9"):
             self.assertEqual("ok", project.check_project(self.unity, core_version)["status"], core_version)
-        for core_version in ("0.7.4", "0.17.0"):
+        for core_version in ("0.7.4", "0.18.0"):
             self.assertNotEqual("ok", project.check_project(self.unity, core_version)["status"], core_version)
 
     def test_the_package_and_the_core_of_this_checkout_are_paired(self):
