@@ -433,6 +433,29 @@ namespace Valtrion.Unity.Tests
         }
 
         [Test]
+        public void TheFloorStillCutsTheFileBackInStaleBytesMode()
+        {
+            _capacity = 60 * MiB;
+            var plan = HarnessFixture.Plan(Fill("\"leaveFreeBytes\":" + 20 * MiB + ",\"toleranceBytes\":" + 2 * MiB + ",\"staleBytes\":" + 100 * MiB));
+            var runner = new PlanRunner(plan, null, _f.Options);
+            var squeezed = false;
+
+            _f.Pump(runner, () =>
+            {
+                if (!squeezed && Used() >= 36 * MiB)
+                {
+                    squeezed = true;
+                    _takenBySystem = 8 * MiB;
+                }
+            });
+
+            var result = runner.Result;
+            Assert.IsTrue(squeezed);
+            Assert.AreEqual("PASS", result.Status);
+            Assert.AreEqual(18 * MiB, Single(result, "fill.freeAfterBytes"), 64, "cut back to the derived floor, not further and not left below it");
+        }
+
+        [Test]
         public void StaleBytesBelowOneIsRefused()
         {
             _f.Run(HarnessFixture.Plan(Fill("\"leaveFreeBytes\":" + 40 * MiB + ",\"toleranceBytes\":" + MiB + ",\"staleBytes\":0")));

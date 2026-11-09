@@ -175,7 +175,8 @@ namespace Valtrion.Unity.Harness
         /// <c>maxAdjustments</c> times, default 10, at most 2147483647). Whenever a reading is below the floor, the file is cut back to the floor at once and the step ends
         /// FAIL. A reader that does not show the free space falling after three writes in a row is not trusted: the step ends FAIL. <c>staleBytes</c> replaces the three writes with an amount: how many bytes may be written
         /// while the reading does not fall (by at least half of what was written) before it is not trusted; for a reader that reports space the system can free again, whose reading stays on a plateau while
-        /// it is reclaimed. The floor still cuts the file back whenever a reading is below it. <c>chunkBytes</c> (default 16 MiB)
+        /// it is reclaimed. The floor still cuts the file back whenever a reading is below it. Up to <c>staleBytes</c> plus one chunk are written without the reading confirming them, so
+        /// <c>staleBytes</c> should be less than the gap between the reading and the floor. <c>chunkBytes</c> (default 16 MiB)
         /// is how much one frame writes. The file is recorded in the cleanup ledger before it is created and removed when the run ends however it ends. It ends BLOCKED,
         /// writing nothing, when the reader is not registered or says unknown (a negative number), when the target is below the floor, when the free space is already
         /// below the target, when a fill file of this run exists, or when the fill folder holds a file this harness did not create. Reports <c>fill.bytesWritten</c> (the
@@ -306,6 +307,9 @@ namespace Valtrion.Unity.Harness
                 }
                 if (hasStaleBytes ? staleWritten > staleLimitBytes : stale >= StaleReadingsLimit)
                 {
+                    // A reading below the floor is acted on before the step ends: the space goes back at once, whatever the guard says.
+                    if (free < reserve && written > 0)
+                        Truncate(path, Magic.Length + written - Math.Min(reserve - free, written));
                     var how = hasStaleBytes ? $"after {Text(staleWritten)} bytes written (more than staleBytes, {Text(staleLimitBytes)})" : $"after {StaleReadingsLimit} writes in a row";
                     context.Fail($"free space did not fall {how} (the reader says {Text(free)} bytes): it cannot keep the floor, the fill stopped and the file is removed by the cleanup");
                     yield break;
