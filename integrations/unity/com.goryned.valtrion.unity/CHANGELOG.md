@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## 0.16.1 (2026-11-09)
+
+- Compatible Core versions are listed in `compat.json`: package 0.16.1 works with Core 0.8.0 up to, not including, 0.20 (the pairing of 0.16.x is unchanged). Contracts and every step other than `storage.fill` are unchanged. The Editor tests (compilation and EditMode) pass with the change below; update the package tag in `Packages/manifest.json` to `unity-v0.16.1`.
 
 - **`storage.fill`: `reserveBytes` may be left out with `leaveFreeBytes` (#113).** The floor is then `leaveFreeBytes` minus `toleranceBytes` (at least 1), the lowest free space the tolerance admits, so a plan that states the target and the tolerance needs no third number; a reading below the floor still cuts the file back at once. With `bytes`, `reserveBytes` stays required, and an explicit `reserveBytes` is used as before.
 
