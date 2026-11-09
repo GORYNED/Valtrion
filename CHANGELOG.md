@@ -4,6 +4,7 @@ Core (the `valtrion` Python package) and the Unity package `com.goryned.valtrion
 
 ## Unreleased
 
+- **`app.background` is a step type of a plan (#113).** `{"type": "app.background", "seconds": N}` asks the host to send the running app to the background for N seconds and bring it back (the harness sends an `external.ui` request with `action` `app.background`; Unity package, next release). `validate` forbids it between `probe.start` and `probe.stop` of a performance plan, like `external.ui`. The host command is the project's: `docs/protocol.md` describes the request and the reply. Additive to `gdv.plan/1`.
 - **`repeat` is a step type of a plan (#113).** `{"type": "repeat", "count": N, "steps": [...]}` runs inner steps N times inside one step (the harness runs it; Unity package, next release). `validate` checks its shape (a whole `count` of at least 1, a non-empty `steps` list whose items each have a `type`, not `repeat`, and a `timeoutSec`) and counts the inner steps in the rule that forbids `external.ui` inside a measured probe window of a `performance` plan. Additive to `gdv.plan/1`: a plan without `repeat` steps is judged as before.
 
 ## 0.18.0 (2026-11-08)

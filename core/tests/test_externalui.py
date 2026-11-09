@@ -64,6 +64,35 @@ class AnswerTests(unittest.TestCase):
         self.assertNotEqual(constants.PASS, self.answer(["valtrion-no-such-program-xyz"]).status)
         self.assertEqual(constants.BLOCKED, self.answer([]).status)
 
+class AppBackgroundActionTests(unittest.TestCase):
+    """The host side of the `app.background` plan step: the request reaches the project's command as data, and its answer is the reply."""
+
+    def test_the_seconds_reach_the_command_as_an_argument_and_the_environment(self):
+        script = (
+            "import json, os, sys\n"
+            "args = json.loads(os.environ['GDV_UI_ARGS'])\n"
+            "assert os.environ['GDV_UI_ACTION'] == 'app.background'\n"
+            "assert sys.argv[1] == '--seconds=2.5', sys.argv\n"
+            "assert args == {'seconds': 2.5}, args\n"
+            "print(json.dumps({'status': 'PASS', 'message': 'back after ' + sys.argv[1]}))\n")
+        request = {"id": "run-ui-0-1", "action": "app.background", "args": {"seconds": 2.5}}
+        spec = {"command": [sys.executable, "-c", script, "--seconds={arg:seconds}"], "timeoutSec": 30}
+        reply = externalui.answer(spec, request, "device-1", "app", None)
+        self.assertEqual((constants.PASS, "back after --seconds=2.5"), (reply.status, reply.message))
+
+    def test_a_command_that_cannot_bring_the_app_back_ends_the_step_as_failed(self):
+        request = {"id": "run-ui-0-1", "action": "app.background", "args": {"seconds": 5}}
+        spec = {"command": [sys.executable, "-c", "import sys; print('the app did not return'); sys.exit(3)"], "timeoutSec": 30}
+        reply = externalui.answer(spec, request, "device-1", "app", None)
+        self.assertEqual(constants.FAIL, reply.status)
+
+    def test_a_missing_seconds_argument_is_blocked_and_runs_nothing(self):
+        request = {"id": "run-ui-0-1", "action": "app.background", "args": {}}
+        spec = {"command": [sys.executable, "-c", "raise SystemExit(1)", "--seconds={arg:seconds}"], "timeoutSec": 30}
+        reply = externalui.answer(spec, request, "device-1", "app", None)
+        self.assertEqual(constants.BLOCKED, reply.status)
+
+
 class UntrustedValueTests(unittest.TestCase):
     """`action`, `args` and the id come from the app: they never choose the program, an option or a path, and never abort the run."""
 

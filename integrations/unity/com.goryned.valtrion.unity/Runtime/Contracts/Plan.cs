@@ -191,7 +191,7 @@ namespace Valtrion.Unity.Contracts
             }
         }
 
-        /// <summary>External UI automation distorts a measurement, so a performance plan must not run an <c>external.ui</c> step
+        /// <summary>External UI automation distorts a measurement, so a performance plan must not run an <c>external.ui</c> or <c>app.background</c> step
         /// between <c>probe.start</c> and <c>probe.stop</c>; the inner steps of a <c>repeat</c> count in the order they run.</summary>
         static void CheckExternalUi(PlanDocument plan)
         {
@@ -226,8 +226,8 @@ namespace Valtrion.Unity.Contracts
                 measuring = true;
             else if (type == "probe.stop")
                 measuring = false;
-            else if (type == "external.ui" && measuring)
-                throw new ContractException($"{path}: external.ui is forbidden between probe.start and probe.stop in a performance plan");
+            else if ((type == "external.ui" || type == "app.background") && measuring)
+                throw new ContractException($"{path}: {type} is forbidden between probe.start and probe.stop in a performance plan");
         }
 
         public JsonValue ToJson()

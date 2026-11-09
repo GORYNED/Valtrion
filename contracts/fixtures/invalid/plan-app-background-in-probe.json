@@ -1,0 +1,22 @@
+{
+  "schema": "gdv.plan/1",
+  "id": "example.perf.bad",
+  "kind": "performance",
+  "dataPolicy": "isolated",
+  "budgetSeconds": 60,
+  "steps": [
+    {
+      "type": "probe.start",
+      "timeoutSec": 5
+    },
+    {
+      "type": "app.background",
+      "timeoutSec": 60,
+      "seconds": 5
+    },
+    {
+      "type": "probe.stop",
+      "timeoutSec": 5
+    }
+  ]
+}

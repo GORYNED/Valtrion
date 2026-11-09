@@ -306,7 +306,7 @@ def _flatten(steps: list, path: str):
 
 
 def check_plan_semantics(plan: dict) -> list[str]:
-    """Rules a schema cannot express: the shape of a `repeat` step, and an `external.ui` step must not run inside a measured probe window of a performance plan
+    """Rules a schema cannot express: the shape of a `repeat` step, and an `external.ui` or `app.background` step must not run inside a measured probe window of a performance plan
     (inner steps of a `repeat` included)."""
     errors: list[str] = []
     for section in ("setup", "steps"):
@@ -321,8 +321,8 @@ def check_plan_semantics(plan: dict) -> list[str]:
             measuring = True
         elif step_type == "probe.stop":
             measuring = False
-        elif step_type == "external.ui" and measuring:
-            message = f"{path}: external.ui is forbidden between probe.start and probe.stop in a performance plan"
+        elif step_type in ("external.ui", "app.background") and measuring:
+            message = f"{path}: {step_type} is forbidden between probe.start and probe.stop in a performance plan"
             if message not in errors:  # a list that repeats is read twice and names the same step twice
                 errors.append(message)
     return errors
