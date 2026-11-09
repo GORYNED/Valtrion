@@ -12,7 +12,7 @@ using UnityEngine;
 namespace Valtrion.Unity.Harness
 {
     /// <summary>The step types every plan can use: <c>wait</c>, <c>waitUntil</c>, <c>mark</c>, <c>probe.start</c>, <c>probe.stop</c>, <c>gc</c>,
-    /// <c>idle</c>, <c>screenshot</c>, <c>log.expect</c>, <c>file.put</c>, <c>app.quit</c>, <c>external.ui</c>, <c>session.offsets</c>, <c>storage.begin</c>, <c>storage.end</c>, <c>timer.start</c> and <c>timer.stop</c>. They are registered by an explicit table, so they
+    /// <c>idle</c>, <c>screenshot</c>, <c>log.expect</c>, <c>file.put</c>, <c>app.quit</c>, <c>external.ui</c>, <c>session.offsets</c>, <c>storage.begin</c>, <c>storage.end</c>, <c>timer.start</c>, <c>timer.stop</c>, <c>counter.start</c> and <c>counter.stop</c>. They are registered by an explicit table, so they
     /// need neither reflection nor linker preservation.</summary>
     public static class BuiltInSteps
     {
@@ -32,6 +32,7 @@ namespace Valtrion.Unity.Harness
             registry.Register("external.ui", ExternalUi);
             SessionSteps.RegisterAll(registry);
             StorageSteps.RegisterAll(registry);
+            CounterSteps.RegisterAll(registry);
         }
 
         /// <summary><c>{ "seconds": 2 }</c> waits that long on the run clock.</summary>
