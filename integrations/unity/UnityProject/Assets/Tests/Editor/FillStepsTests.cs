@@ -78,7 +78,7 @@ namespace Valtrion.Unity.Tests
             var result = _f.ReadResult();
             Assert.AreEqual("PASS", result.Status);
             Assert.AreEqual(5 * MiB, Single(result, "fill.bytesWritten"));
-            Assert.AreEqual(95 * MiB, Single(result, "fill.freeAfterBytes"));
+            Assert.AreEqual(95 * MiB, Single(result, "fill.freeAfterBytes"), 64, "the 16-byte marker is on the disk too");
         }
 
         [Test]
@@ -237,7 +237,7 @@ namespace Valtrion.Unity.Tests
         {
             Directory.CreateDirectory(FillFolder);
             var orphan = Path.Combine(FillFolder, "gdv-fill-killed-run.bin");
-            File.WriteAllBytes(orphan, new byte[1000]);
+            File.WriteAllBytes(orphan, FillSteps.Marker().Concat(new byte[1000]).ToArray());
             var other = Path.Combine(FillFolder, "notes.txt");
             File.WriteAllText(other, "keep");
 
@@ -303,6 +303,110 @@ namespace Valtrion.Unity.Tests
         }
 
         [Test]
+        public void FileIsRemovedAlsoWhenThePlanSaysCleanupNone()
+        {
+            _f.Run(HarnessFixture.Plan(Fill("\"reserveBytes\":" + 10 * MiB + ",\"bytes\":" + 4 * MiB), ",\"cleanup\":\"none\""));
+
+            Assert.AreEqual("PASS", _f.ReadResult().Status);
+            Assert.AreEqual(0, Used());
+        }
+
+        [Test]
+        public void ReaderThatDoesNotShowTheSpaceFallingStopsTheFill()
+        {
+            StorageReaders.Shared.Register("free", context => 100 * MiB);
+            long most = 0;
+            var plan = HarnessFixture.Plan(Fill("\"reserveBytes\":" + 10 * MiB + ",\"leaveFreeBytes\":" + 20 * MiB + ",\"toleranceBytes\":" + MiB));
+            var runner = new PlanRunner(plan, null, _f.Options);
+
+            _f.Pump(runner, () => most = System.Math.Max(most, Used()));
+
+            Assert.AreEqual("FAIL", runner.Result.Status);
+            StringAssert.Contains("did not fall", runner.Result.Reason);
+            Assert.LessOrEqual(most, 6 * MiB, "it stopped after a few chunks, not at the end of the disk");
+            Assert.AreEqual(0, Used());
+        }
+
+        [Test]
+        public void BytesModeThatTheSystemSqueezedBelowTheFloorCutsTheFileBackAtOnce()
+        {
+            _capacity = 30 * MiB;
+            var plan = HarnessFixture.Plan(Fill("\"reserveBytes\":" + 10 * MiB + ",\"bytes\":" + 15 * MiB));
+            var runner = new PlanRunner(plan, null, _f.Options);
+            long freeAtTheEnd = -1;
+
+            _f.Pump(runner, () =>
+            {
+                if (Used() >= 5 * MiB && _takenBySystem == 0)
+                    _takenBySystem = 12 * MiB;
+                if (!runner.Finished)
+                    freeAtTheEnd = _capacity - Used() - _takenBySystem;
+            });
+
+            Assert.AreEqual("FAIL", runner.Result.Status);
+            StringAssert.Contains("cut back", runner.Result.Reason);
+            Assert.GreaterOrEqual(Single(runner.Result, "fill.freeAfterBytes"), 10 * MiB, "the free space is back at the floor");
+        }
+
+        [Test]
+        public void SweepLeavesDirectoriesOtherNamesAndFilesWithoutTheMarkerAlone()
+        {
+            Directory.CreateDirectory(FillFolder);
+            var directory = Path.Combine(FillFolder, "gdv-fill-dir.bin");
+            Directory.CreateDirectory(directory);
+            File.WriteAllText(Path.Combine(directory, "inside.txt"), "x");
+            var noMarker = Path.Combine(FillFolder, "gdv-fill-nomarker.bin");
+            File.WriteAllText(noMarker, "somebody else's data");
+            var other = Path.Combine(FillFolder, "readme.txt");
+            File.WriteAllText(other, "keep");
+
+            _f.Run(HarnessFixture.Plan("{\"type\":\"wait\",\"timeoutSec\":5,\"seconds\":0.1}"));
+
+            Assert.IsTrue(Directory.Exists(directory));
+            Assert.IsTrue(File.Exists(Path.Combine(directory, "inside.txt")));
+            Assert.IsTrue(File.Exists(noMarker));
+            Assert.IsTrue(File.Exists(other));
+            Assert.IsTrue(_f.ReadResult().Unverified.Any(u => u.Contains("gdv-fill-nomarker.bin") && u.Contains("left alone")));
+        }
+
+        [Test]
+        public void ASecondRunInTheSameProcessDoesNotSweepAwayTheFileOfTheFirst()
+        {
+            var first = new PlanRunner(HarnessFixture.Plan(Fill("\"reserveBytes\":" + 10 * MiB + ",\"bytes\":" + 20 * MiB)), null, _f.Options);
+            var routine = first.Execute();
+            for (var i = 0; i < 8; i++)
+            {
+                Assert.IsTrue(routine.MoveNext());
+                _f.Clock.Advance(16);
+            }
+            var before = Used();
+            Assert.Greater(before, 0);
+            _f.Options.RunId = "second-run";
+            var second = new PlanRunner(HarnessFixture.Plan("{\"type\":\"wait\",\"timeoutSec\":5,\"seconds\":0.1}"), null, _f.Options);
+
+            _f.Pump(second);
+
+            Assert.AreEqual("PASS", second.Result.Status);
+            Assert.GreaterOrEqual(Used(), before, "the file of the first run is still there");
+            while (routine.MoveNext())
+                _f.Clock.Advance(16);
+            Assert.AreEqual("PASS", first.Result.Status);
+            Assert.AreEqual(20 * MiB, Single(first.Result, "fill.bytesWritten"));
+            Assert.AreEqual(0, Used());
+        }
+
+        [Test]
+        public void RunIdWithAColonMakesASafeFileName()
+        {
+            _f.Options.RunId = "plan:2026-11-09";
+
+            _f.Run(HarnessFixture.Plan(Fill("\"reserveBytes\":" + 10 * MiB + ",\"bytes\":" + MiB)));
+
+            Assert.AreEqual("PASS", new PlanRunnerResultReader(_f).Status);
+            Assert.AreEqual(0, Used());
+        }
+
+        [Test]
         public void SecondFillWithoutReleaseIsBlocked()
         {
             var step = Fill("\"reserveBytes\":" + 10 * MiB + ",\"bytes\":" + MiB);
@@ -326,6 +430,10 @@ namespace Valtrion.Unity.Tests
                 "\"reserveBytes\":-1,\"bytes\":1",
                 "\"reserveBytes\":1.5,\"bytes\":1",
                 "\"reserveBytes\":100,\"leaveFreeBytes\":10,\"toleranceBytes\":1",
+                "\"reserveBytes\":0,\"bytes\":1",
+                "\"reserveBytes\":1,\"bytes\":1,\"toleranceBytes\":1",
+                "\"reserveBytes\":1,\"bytes\":1,\"maxAdjustments\":4294967296",
+                "\"reserveBytes\":1,\"bytes\":1,\"maxAdjustments\":-1",
             })
             {
                 using (var fixture = new HarnessFixture())
@@ -337,6 +445,19 @@ namespace Valtrion.Unity.Tests
                     StringAssert.Contains("invalid arguments", result.Reason, arguments);
                 }
             }
+        }
+
+        sealed class PlanRunnerResultReader
+        {
+            readonly string _status;
+
+            public PlanRunnerResultReader(HarnessFixture fixture)
+            {
+                var path = Directory.GetFiles(Path.Combine(fixture.Root, "gdv", "out"), "result.json", SearchOption.AllDirectories).Single();
+                _status = ResultDocument.Parse(File.ReadAllText(path)).Status;
+            }
+
+            public string Status => _status;
         }
 
         [Test]

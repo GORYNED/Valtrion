@@ -147,7 +147,7 @@ namespace Valtrion.Unity.Harness
             try
             {
                 foreach (var removed in FillSteps.SweepOrphans(_paths, null))
-                    _run.Unverified.Add("removed a fill file left by an earlier launch: " + removed);
+                    _run.Unverified.Add("fill file of an earlier launch: " + removed);
             }
             catch (Exception ex)
             {
@@ -469,6 +469,9 @@ namespace Valtrion.Unity.Harness
             CloseDanglingWindow();
             try
             {
+                // The fill file of storage.fill is removed whatever the plan's cleanup says: it holds the free space of the device.
+                foreach (var problem in FillSteps.RemoveOwned(_run))
+                    _run.Unverified.Add(problem);
                 if (_plan.Cleanup != "none")
                 {
                     foreach (var problem in _run.Ledger.Cleanup())
