@@ -35,6 +35,9 @@ namespace Valtrion.Unity.Harness
 
         public ConditionRegistry Conditions { get; }
 
+        /// <summary>The step types of this run; <c>repeat</c> runs inner steps through it.</summary>
+        public StepRegistry Steps { get; internal set; }
+
         public MetricStore Metrics { get; } = new MetricStore();
 
         public List<ResultArtifact> Artifacts { get; } = new List<ResultArtifact>();
@@ -87,6 +90,9 @@ namespace Valtrion.Unity.Harness
 
         /// <summary>Zero-based measured iteration; negative during warm-up, 0 during setup.</summary>
         public int Iteration { get; }
+
+        /// <summary>The one-based round of the <c>repeat</c> step this step runs in, or 0 outside a <c>repeat</c>. A step that writes a file names it after the round.</summary>
+        public long Round { get; internal set; }
 
         public JsonValue Args => Step.Args;
 

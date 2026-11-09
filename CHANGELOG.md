@@ -2,6 +2,10 @@
 
 Core (the `valtrion` Python package) and the Unity package `com.goryned.valtrion.unity` are versioned independently. The Unity changelog is in `integrations/unity/com.goryned.valtrion.unity/CHANGELOG.md`; `compat.json` lists compatible pairs.
 
+## Unreleased
+
+- **`repeat` is a step type of a plan (#113).** `{"type": "repeat", "count": N, "steps": [...]}` runs inner steps N times inside one step (the harness runs it; Unity package, next release). `validate` checks its shape (a whole `count` of at least 1, a non-empty `steps` list whose items each have a `type`, not `repeat`, and a `timeoutSec`) and counts the inner steps in the rule that forbids `external.ui` inside a measured probe window of a `performance` plan. Additive to `gdv.plan/1`: a plan without `repeat` steps is judged as before.
+
 ## 0.18.0 (2026-11-08)
 
 - **Upgrade note.** `compat.json` pairs Core 0.18.0 with Unity package 0.15.x (Core 0.8.0 up to, not including, 0.19). Packages 0.13.x and 0.14.x are paired with Core below 0.18: `valtrion doctor --project` reports a project that still has one of them as `BLOCKED` with Core 0.18.0, because they cannot read the new keys of `checks.json` (`extends`, `bindings`, `overridesPreset`, `allowHeavyFallback`, `byContent`). Update the package tag in `Packages/manifest.json` to `unity-v0.15.0` together with Core, or stay on Core 0.17.x. Other hosts need the same Core version (`valtrion hosts sync`). Nothing else changes for a map that uses none of the new keys.

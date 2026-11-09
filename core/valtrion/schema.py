@@ -256,20 +256,75 @@ def _describe(value: Any) -> str:
     return type(value).__name__
 
 
-def check_plan_semantics(plan: dict) -> list[str]:
-    """Rules a schema cannot express: an `external.ui` step must not run inside a measured probe window of a performance plan."""
+def _whole(value: Any, minimum: int) -> bool:
+    if isinstance(value, bool):
+        return False
+    if isinstance(value, int):
+        return minimum <= value <= 2_147_483_647
+    return isinstance(value, float) and value.is_integer() and minimum <= value <= 2_147_483_647
+
+
+def _repeat_errors(step: dict, path: str) -> list[str]:
+    """Rules of the `repeat` step: a whole `count` of at least 1 and a non-empty list of inner steps, each with a `type` (not `repeat`) and a `timeoutSec`."""
     errors: list[str] = []
+    if not _whole(step.get("count"), 1):
+        errors.append(f"{path}: repeat needs a whole 'count' of at least 1")
+    inner = step.get("steps")
+    if not isinstance(inner, list) or not inner:
+        errors.append(f"{path}: repeat needs a non-empty 'steps' list")
+        return errors
+    for index, child in enumerate(inner):
+        where = f"{path}.steps[{index}]"
+        if not isinstance(child, dict):
+            errors.append(f"{where}: an inner step is an object with 'type' and 'timeoutSec'")
+            continue
+        child_type = child.get("type")
+        if not isinstance(child_type, str) or not child_type:
+            errors.append(f"{where}: an inner step needs a 'type'")
+        elif child_type == "repeat":
+            errors.append(f"{where}: repeat cannot be nested")
+        if not _whole(child.get("timeoutSec"), 1):
+            errors.append(f"{where}: an inner step needs a whole 'timeoutSec' of at least 1")
+    return errors
+
+
+def _flatten(steps: list, path: str):
+    """The steps in the order they run, with the inner steps of a `repeat` in place, as `(path, type)`. From the second round on, the inner steps start in
+    the state the first round left, so a list that repeats is read twice."""
+    for index, step in enumerate(steps):
+        if not isinstance(step, dict):
+            continue
+        where = f"{path}[{index}]"
+        yield where, step.get("type")
+        inner = step.get("steps")
+        if step.get("type") == "repeat" and isinstance(inner, list):
+            count = step.get("count")
+            passes = 2 if isinstance(count, (int, float)) and not isinstance(count, bool) and count > 1 else 1
+            for _ in range(passes):
+                for inner_path, inner_type in _flatten(inner, f"{where}.steps"):
+                    yield inner_path, inner_type
+
+
+def check_plan_semantics(plan: dict) -> list[str]:
+    """Rules a schema cannot express: the shape of a `repeat` step, and an `external.ui` step must not run inside a measured probe window of a performance plan
+    (inner steps of a `repeat` included)."""
+    errors: list[str] = []
+    for section in ("setup", "steps"):
+        for index, step in enumerate(plan.get(section) or []):
+            if isinstance(step, dict) and step.get("type") == "repeat":
+                errors.extend(_repeat_errors(step, f"$.{section}[{index}]"))
     if plan.get("kind") != "performance":
         return errors
     measuring = False
-    for index, step in enumerate(plan.get("steps", [])):
-        step_type = step.get("type")
+    for path, step_type in _flatten(plan.get("steps", []), "$.steps"):
         if step_type == "probe.start":
             measuring = True
         elif step_type == "probe.stop":
             measuring = False
         elif step_type == "external.ui" and measuring:
-            errors.append(f"$.steps[{index}]: external.ui is forbidden between probe.start and probe.stop in a performance plan")
+            message = f"{path}: external.ui is forbidden between probe.start and probe.stop in a performance plan"
+            if message not in errors:  # a list that repeats is read twice and names the same step twice
+                errors.append(message)
     return errors
 
 

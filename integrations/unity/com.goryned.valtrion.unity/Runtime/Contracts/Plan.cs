@@ -145,12 +145,54 @@ namespace Valtrion.Unity.Contracts
                 Cleanup = reader.OptChoice("cleanup", Enums.Cleanups),
             };
             reader.Done();
+            CheckRepeat(plan);
             CheckExternalUi(plan);
             return plan;
         }
 
+        static bool Whole(JsonValue value, long minimum) =>
+            value != null && value.Kind == JsonKind.Number && value.AsNumber == System.Math.Floor(value.AsNumber) && value.AsNumber >= minimum && value.AsNumber <= int.MaxValue;
+
+        /// <summary>The shape of a <c>repeat</c> step: a whole <c>count</c> of at least 1 and a non-empty list of inner steps, each with a <c>type</c>
+        /// (not <c>repeat</c>) and a <c>timeoutSec</c>.</summary>
+        static void CheckRepeat(PlanDocument plan)
+        {
+            if (plan.Setup != null)
+            {
+                for (var index = 0; index < plan.Setup.Count; index++)
+                    CheckRepeatStep(plan.Setup[index], $"$.setup[{index}]");
+            }
+            for (var index = 0; index < plan.Steps.Count; index++)
+                CheckRepeatStep(plan.Steps[index], $"$.steps[{index}]");
+        }
+
+        static void CheckRepeatStep(PlanStep step, string path)
+        {
+            if (step.Type != "repeat")
+                return;
+            step.Args.TryGet("count", out var count);
+            if (!Whole(count, 1))
+                throw new ContractException($"{path}: repeat needs a whole 'count' of at least 1");
+            if (!step.Args.TryGet("steps", out var inner) || inner.Kind != JsonKind.Array || inner.Count == 0)
+                throw new ContractException($"{path}: repeat needs a non-empty 'steps' list");
+            var number = 0;
+            foreach (var child in inner.Items)
+            {
+                var where = $"{path}.steps[{number++}]";
+                if (child.Kind != JsonKind.Object)
+                    throw new ContractException($"{where}: an inner step is an object with 'type' and 'timeoutSec'");
+                if (!child.TryGet("type", out var type) || type.Kind != JsonKind.String || type.AsString.Length == 0)
+                    throw new ContractException($"{where}: an inner step needs a 'type'");
+                if (type.AsString == "repeat")
+                    throw new ContractException($"{where}: repeat cannot be nested");
+                child.TryGet("timeoutSec", out var timeout);
+                if (!Whole(timeout, 1))
+                    throw new ContractException($"{where}: an inner step needs a whole 'timeoutSec' of at least 1");
+            }
+        }
+
         /// <summary>External UI automation distorts a measurement, so a performance plan must not run an <c>external.ui</c> step
-        /// between <c>probe.start</c> and <c>probe.stop</c>.</summary>
+        /// between <c>probe.start</c> and <c>probe.stop</c>; the inner steps of a <c>repeat</c> count in the order they run.</summary>
         static void CheckExternalUi(PlanDocument plan)
         {
             if (plan.Kind != "performance")
@@ -158,14 +200,34 @@ namespace Valtrion.Unity.Contracts
             var measuring = false;
             for (var index = 0; index < plan.Steps.Count; index++)
             {
-                var type = plan.Steps[index].Type;
-                if (type == "probe.start")
-                    measuring = true;
-                else if (type == "probe.stop")
-                    measuring = false;
-                else if (type == "external.ui" && measuring)
-                    throw new ContractException($"$.steps[{index}]: external.ui is forbidden between probe.start and probe.stop in a performance plan");
+                var step = plan.Steps[index];
+                var path = $"$.steps[{index}]";
+                if (step.Type == "repeat" && step.Args.TryGet("steps", out var inner))
+                {
+                    // From the second round on, the inner steps start in the state the first round left: read the list twice when it repeats.
+                    var passes = step.Args.TryGet("count", out var count) && count.Kind == JsonKind.Number && count.AsNumber > 1 ? 2 : 1;
+                    for (var pass = 0; pass < passes; pass++)
+                    {
+                        var number = 0;
+                        foreach (var child in inner.Items)
+                            CheckWindow(child.TryGet("type", out var type) ? type.AsString : null, $"{path}.steps[{number++}]", ref measuring);
+                    }
+                }
+                else
+                {
+                    CheckWindow(step.Type, path, ref measuring);
+                }
             }
+        }
+
+        static void CheckWindow(string type, string path, ref bool measuring)
+        {
+            if (type == "probe.start")
+                measuring = true;
+            else if (type == "probe.stop")
+                measuring = false;
+            else if (type == "external.ui" && measuring)
+                throw new ContractException($"{path}: external.ui is forbidden between probe.start and probe.stop in a performance plan");
         }
 
         public JsonValue ToJson()
