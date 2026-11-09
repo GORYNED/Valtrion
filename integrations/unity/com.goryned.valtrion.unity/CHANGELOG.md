@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **`storage.fill`: optional `staleBytes` (#113).** The guard that stops the fill when the free-space reading does not fall (a stale or wrong reader) counted three writes in a row. On a device whose reading includes space the system can free again, the reading stays on a plateau while that space is reclaimed, and the guard stopped a correct fill. `staleBytes` gives the plateau in bytes: the fill goes on while the amount written since the reading last fell is not more than that. Without it nothing changes (three writes in a row). The floor still cuts the file back at once whenever a reading is below it.
+
 ## 0.16.1 (2026-11-09)
 
 - Compatible Core versions are listed in `compat.json`: package 0.16.1 works with Core 0.8.0 up to, not including, 0.20 (the pairing of 0.16.x is unchanged). Contracts and every step other than `storage.fill` are unchanged. The Editor tests (compilation and EditMode) pass with the change below; update the package tag in `Packages/manifest.json` to `unity-v0.16.1`.

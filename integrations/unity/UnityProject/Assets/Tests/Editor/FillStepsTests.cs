@@ -386,6 +386,63 @@ namespace Valtrion.Unity.Tests
             Assert.AreEqual(0, Used());
         }
 
+        void RegisterPlateauReader()
+        {
+            // Free space as a system reports it when it counts space it can free again: between 20 and 30 MiB written the reading stays where it was.
+            StorageReaders.Shared.Register("free", context => _capacity - Used() + System.Math.Min(System.Math.Max(Used() - 20 * MiB, 0), 10 * MiB));
+        }
+
+        [Test]
+        public void StaleBytesLetsTheFillCrossAPlateauOfTheReading()
+        {
+            RegisterPlateauReader();
+
+            _f.Run(HarnessFixture.Plan(Fill("\"leaveFreeBytes\":" + 40 * MiB + ",\"toleranceBytes\":" + MiB / 2 + ",\"staleBytes\":" + 20 * MiB, 120)));
+
+            var result = _f.ReadResult();
+            Assert.AreEqual("PASS", result.Status);
+            Assert.AreEqual(40 * MiB, Single(result, "fill.freeAfterBytes"), 1 * MiB);
+            Assert.AreEqual(70 * MiB, Single(result, "fill.bytesWritten"), 1 * MiB);
+            Assert.AreEqual(0, Used());
+        }
+
+        [Test]
+        public void ThePlateauStopsTheFillWithoutStaleBytes()
+        {
+            RegisterPlateauReader();
+
+            _f.Run(HarnessFixture.Plan(Fill("\"leaveFreeBytes\":" + 40 * MiB + ",\"toleranceBytes\":" + MiB / 2, 120)));
+
+            var result = _f.ReadResult();
+            Assert.AreEqual("FAIL", result.Status);
+            StringAssert.Contains("did not fall after 3 writes in a row", result.Reason);
+            Assert.AreEqual(0, Used());
+        }
+
+        [Test]
+        public void AStaleBytesSmallerThanThePlateauStillStopsTheFill()
+        {
+            RegisterPlateauReader();
+
+            _f.Run(HarnessFixture.Plan(Fill("\"leaveFreeBytes\":" + 40 * MiB + ",\"toleranceBytes\":" + MiB / 2 + ",\"staleBytes\":" + 5 * MiB, 120)));
+
+            var result = _f.ReadResult();
+            Assert.AreEqual("FAIL", result.Status);
+            StringAssert.Contains("staleBytes", result.Reason);
+            Assert.AreEqual(0, Used());
+        }
+
+        [Test]
+        public void StaleBytesBelowOneIsRefused()
+        {
+            _f.Run(HarnessFixture.Plan(Fill("\"leaveFreeBytes\":" + 40 * MiB + ",\"toleranceBytes\":" + MiB + ",\"staleBytes\":0")));
+
+            var result = _f.ReadResult();
+            Assert.AreEqual("FAIL", result.Status);
+            StringAssert.Contains("invalid arguments", result.Reason);
+            Assert.AreEqual(0, Used());
+        }
+
         [Test]
         public void BytesModeThatTheSystemSqueezedBelowTheFloorCutsTheFileBackAtOnce()
         {
