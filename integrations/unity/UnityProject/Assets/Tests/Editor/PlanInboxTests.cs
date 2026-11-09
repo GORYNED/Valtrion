@@ -355,7 +355,7 @@ namespace Valtrion.Unity.Tests
         {
             var registry = StepRegistry.CreateDefault(false);
 
-            foreach (var type in new[] { "wait", "waitUntil", "mark", "probe.start", "probe.stop", "gc", "idle", "screenshot", "log.expect", "file.put", "app.quit", "external.ui", "session.offsets", "storage.begin", "storage.end", "timer.start", "timer.stop", "counter.start", "counter.stop", "repeat" })
+            foreach (var type in new[] { "wait", "waitUntil", "mark", "probe.start", "probe.stop", "gc", "idle", "screenshot", "log.expect", "file.put", "app.quit", "external.ui", "session.offsets", "storage.begin", "storage.end", "timer.start", "timer.stop", "counter.start", "counter.stop", "repeat", "storage.fill", "storage.release", "call.time" })
                 Assert.IsTrue(registry.TryGet(type, out _), type);
         }
 
