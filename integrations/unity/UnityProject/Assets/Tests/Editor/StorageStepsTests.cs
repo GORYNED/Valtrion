@@ -307,6 +307,42 @@ namespace Valtrion.Unity.Tests
         }
 
         [Test]
+        public void LogSpanSeesTheLinesOfARealUnityDebugLogCall()
+        {
+            _f.Options.AttachLog = true;
+            _f.Registry.Register("test.debugLog", context =>
+            {
+                UnityEngine.Debug.Log(context.String("line"));
+                return new object[0].GetEnumerator();
+            });
+            var plan = HarnessFixture.Plan(
+                "{\"type\":\"probe.start\",\"timeoutSec\":5,\"probes\":[{\"type\":\"logSpan\",\"start\":\"\\\\[Capture\\\\] stop requested\",\"end\":\"\\\\[Capture\\\\] file ready\",\"metric\":\"stopToFileReadyMs\"}]},"
+                + "{\"type\":\"test.debugLog\",\"timeoutSec\":5,\"line\":\"[Capture] stop requested\"},{\"type\":\"wait\",\"timeoutSec\":5,\"seconds\":0.5},"
+                + "{\"type\":\"test.debugLog\",\"timeoutSec\":5,\"line\":\"[Capture] file ready\"},{\"type\":\"probe.stop\",\"timeoutSec\":5}");
+
+            _f.Run(plan);
+
+            var result = _f.ReadResult();
+            Assert.AreEqual("PASS", result.Status);
+            Assert.That(result.Metrics.Single(m => m.Name == "stopToFileReadyMs").Samples.Single(), Is.InRange(500, 600));
+        }
+
+        [Test]
+        public void LogSpanDoesNotSeeALineLoggedAfterTheWindowWasClosed()
+        {
+            var plan = HarnessFixture.Plan(
+                "{\"type\":\"probe.start\",\"timeoutSec\":5,\"probes\":[{\"type\":\"logSpan\",\"start\":\"stop requested\",\"end\":\"file ready\",\"metric\":\"m\"}]},"
+                + "{\"type\":\"test.feed\",\"timeoutSec\":5,\"line\":\"stop requested\"},{\"type\":\"probe.stop\",\"timeoutSec\":5},"
+                + "{\"type\":\"test.feed\",\"timeoutSec\":5,\"line\":\"file ready\"}");
+
+            _f.Run(plan);
+
+            var result = _f.ReadResult();
+            Assert.AreEqual("PASS", result.Status);
+            Assert.IsFalse(result.Metrics.Any(m => m.Name == "m"), "the end line came after probe.stop, so the span is not measured");
+        }
+
+        [Test]
         public void LogSpanWithoutAnEndLineGivesNoSample()
         {
             var plan = HarnessFixture.Plan(
