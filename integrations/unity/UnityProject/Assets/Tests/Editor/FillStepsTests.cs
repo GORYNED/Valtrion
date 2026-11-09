@@ -104,7 +104,8 @@ namespace Valtrion.Unity.Tests
             var result = runner.Result;
             Assert.IsTrue(squeezed);
             Assert.AreEqual("PASS", result.Status, "the file was cut back until the free space was within the tolerance of the target again");
-            Assert.AreEqual(20 * MiB, Single(result, "fill.freeAfterBytes"), 2 * MiB);
+            Assert.AreEqual(18 * MiB, Single(result, "fill.freeAfterBytes"), 64, "cut back to the derived floor (target minus tolerance) and no further: a floor of 1 would have cut back to the target");
+            Assert.AreEqual(34 * MiB, Single(result, "fill.bytesWritten"), 64, "the 16-byte marker counts in the free space");
         }
 
         [Test]
