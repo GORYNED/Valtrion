@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **`session.offsets` step (#113).** Reports the persisted per-stream start offsets and first timestamps of the session just recorded as metrics (`<prefix>.<stream>.offsetMs`, `.firstTimestampMs`, `.firstTimestampFromAnchorMs`, `.offsetFromStreamMs`, `<prefix>.anchorMs`). The project registers its own reader with `SessionReaders.Shared.Register`; Valtrion reads no session format and applies no threshold.
+
 ## 0.15.0 (2026-11-08)
 
 - Compatible Core versions are listed in `compat.json`: package 0.15.0 works with Core 0.8.0 up to, not including, 0.19. A project that uses `extends`, `bindings`, `overridesPreset`, `allowHeavyFallback` or `byContent` in its `checks.json` (Core 0.18.0) needs this package to open the map in Unity; update the package tag in `Packages/manifest.json` to `unity-v0.15.0`. Packages 0.14.x and older are paired with Core below 0.18. The Editor tests (compilation and EditMode) pass with the changes below.

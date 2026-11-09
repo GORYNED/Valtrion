@@ -195,6 +195,12 @@ and returns. A Release player contains no type of the assembly. Start a run by h
 | `file.put` | `path` (relative), `text`, optional `root` (`work`, `persistent`), `overwrite` |
 | `app.quit` | optional `exitCode`; use as the last step |
 | `external.ui` | `action`, optional `args`; writes the request into the heartbeat (state `waiting-host`) and waits for `inbox/reply-<id>.json`; refused inside an open probe window |
+| `session.offsets` | `reader` (a name in `SessionReaders.Shared`; not registered is BLOCKED), optional `prefix` (default `session`), optional `relativeTo` (a stream name). Reports, without judging, the persisted offsets of the session just recorded as metrics: `<prefix>.<stream>.offsetMs`, `.firstTimestampMs`, `.firstTimestampFromAnchorMs` (with an anchor), `.offsetFromStreamMs` (with `relativeTo`) and `<prefix>.anchorMs` |
+
+**Session readers.** `session.offsets` reads a recorded session through code the project registers, because the session format is the
+project's: `SessionReaders.Shared.Register("session", context => { var offsets = new SessionOffsets { AnchorMs = ... }; offsets.Streams.Add(new StreamOffset("video", offsetMs, firstTimestampMs)); return offsets; })`.
+Return what the session stores (its own reader class or its file), not a recomputed value. Valtrion applies no threshold: a plan budgets
+the metrics it cares about in its `metrics` section.
 
 Probes: `FrameTimingProbe`, `ProfilerRecorderProbe` (`gc.allocBytes`, `mainThread.ms`, `memory.totalUsedMB`,
 `memory.systemUsedMB`), `TimerProbe`, `LogTagProbe`. A project adds one with `ProbeFactory.Register`.
