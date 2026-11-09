@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **`storage.fill`: `reserveBytes` may be left out with `leaveFreeBytes` (#113).** The floor is then `leaveFreeBytes` minus `toleranceBytes` (at least 1), the lowest free space the tolerance admits, so a plan that states the target and the tolerance needs no third number; a reading below the floor still cuts the file back at once. With `bytes`, `reserveBytes` stays required, and an explicit `reserveBytes` is used as before.
+
 ## 0.16.0 (2026-11-09)
 
 - Compatible Core versions are listed in `compat.json`: package 0.16.0 works with Core 0.8.0 up to, not including, 0.20 (package 0.15.x now also up to, not including, 0.20). The package adds the plan steps `session.offsets`, `storage.begin`, `storage.end`, `timer.start`, `timer.stop`, `counter.start`, `counter.stop`, `repeat`, `storage.fill`, `storage.release`, `call.time` and `app.background` and the probe `logSpan` (#113); a plan that uses them needs this package, and the shape rules of `repeat` and `app.background` in `validate` need Core 0.19.0. The Editor tests (compilation and EditMode, 277 tests) pass with the changes below; update the package tag in `Packages/manifest.json` to `unity-v0.16.0`. Nothing changes for a plan that uses none of them. None of the steps applies a threshold or has a default norm.

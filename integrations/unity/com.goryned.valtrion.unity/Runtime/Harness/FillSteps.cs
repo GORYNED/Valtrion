@@ -168,8 +168,9 @@ namespace Valtrion.Unity.Harness
 
         /// <summary><c>{ "reader": "free", "reserveBytes": 536870912, "leaveFreeBytes": 1073741824, "toleranceBytes": 1048576 }</c> writes a file of its own until that much
         /// free space is left, or <c>{ "reader": "free", "reserveBytes": 536870912, "bytes": 1073741824 }</c> writes that many bytes (after a 16-byte marker). The step has
-        /// no defaults for these: <c>reserveBytes</c> (at least 1) is the floor that must stay free, <c>toleranceBytes</c> (only with <c>leaveFreeBytes</c>) says how far
-        /// the free space may be from the target when it stops. The free space is read again after every write because the system may reclaim or take space meanwhile:
+        /// no defaults for these: <c>reserveBytes</c> (at least 1) is the floor that must stay free (required with <c>bytes</c>; with <c>leaveFreeBytes</c> it may be left out and
+        /// is then <c>leaveFreeBytes</c> minus <c>toleranceBytes</c>, at least 1: the lowest free space the tolerance admits), <c>toleranceBytes</c> (only with <c>leaveFreeBytes</c>)
+        /// says how far the free space may be from the target when it stops. The free space is read again after every write because the system may reclaim or take space meanwhile:
         /// the step writes more when it is above the target by more than the tolerance and cuts the file when it is below by more than the tolerance (at most
         /// <c>maxAdjustments</c> times, default 10, at most 2147483647). Whenever a reading is below the floor, the file is cut back to the floor at once and the step ends
         /// FAIL. A reader that does not show the free space falling after three writes in a row is not trusted: the step ends FAIL. <c>chunkBytes</c> (default 16 MiB)
@@ -180,9 +181,6 @@ namespace Valtrion.Unity.Harness
         public static IEnumerator Fill(StepContext context)
         {
             var readerName = context.String("reader");
-            var reserve = Bytes(context, "reserveBytes");
-            if (reserve < 1)
-                throw new StepArgumentException("'reserveBytes' must be at least 1: a fill without a floor is refused");
             var hasBytes = context.Args.TryGet("bytes", out _);
             var hasLeave = context.Args.TryGet("leaveFreeBytes", out _);
             if (hasBytes == hasLeave)
@@ -195,6 +193,22 @@ namespace Valtrion.Unity.Harness
             var bytes = hasBytes ? Bytes(context, "bytes") : 0;
             var leave = hasLeave ? Bytes(context, "leaveFreeBytes") : 0;
             var tolerance = hasLeave ? Bytes(context, "toleranceBytes") : 0;
+            // The floor: given, or in leaveFreeBytes mode the lowest free space the tolerance admits. A fill without a floor is refused.
+            long reserve;
+            if (context.Args.TryGet("reserveBytes", out _))
+            {
+                reserve = Bytes(context, "reserveBytes");
+                if (reserve < 1)
+                    throw new StepArgumentException("'reserveBytes' must be at least 1: a fill without a floor is refused");
+            }
+            else if (hasLeave)
+            {
+                reserve = Math.Max(1, leave - tolerance);
+            }
+            else
+            {
+                throw new StepArgumentException("argument 'reserveBytes' is required with 'bytes'");
+            }
             var chunk = context.Args.TryGet("chunkBytes", out _) ? Bytes(context, "chunkBytes") : DefaultChunkBytes;
             if (chunk < 1)
                 throw new StepArgumentException("'chunkBytes' must be at least 1");
