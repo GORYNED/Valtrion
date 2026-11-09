@@ -367,10 +367,91 @@ namespace Valtrion.Unity.Probes
         }
     }
 
+    /// <summary>Measures the time between two log lines inside the probe window: from a line that matches <c>start</c> to the next line that matches
+    /// <c>end</c>, one sample (milliseconds on the run clock) per pair. It measures what happens inside a step that cannot be split, for example the time
+    /// a recording takes to finish after the stop request when both are logged. A second start line before the end line restarts the span (the latest
+    /// start counts); an end line without a start line, and a start line that is never followed by an end line, give no sample.</summary>
+    public sealed class LogSpanProbe : IProbe
+    {
+        readonly string _metric;
+        readonly Regex _start;
+        readonly Regex _end;
+        readonly LogTap _tap;
+        readonly IClock _clock;
+        readonly object _gate = new object();
+        readonly List<double> _values = new List<double>();
+        double? _startedMs;
+        bool _subscribed;
+
+        public LogSpanProbe(string metric, Regex start, Regex end, LogTap tap, IClock clock)
+        {
+            _metric = metric;
+            _start = start;
+            _end = end;
+            _tap = tap;
+            _clock = clock;
+        }
+
+        public string Name => "logSpan:" + _metric;
+
+        public IReadOnlyList<string> Start(IMetricSink sink)
+        {
+            _tap.LineReceived += OnLine;
+            _subscribed = true;
+            return Array.Empty<string>();
+        }
+
+        public void Sample(IMetricSink sink, long frame, double nowMs) => Drain(sink);
+
+        public void Stop(IMetricSink sink)
+        {
+            Unsubscribe();
+            Drain(sink);
+        }
+
+        public void Dispose() => Unsubscribe();
+
+        void Unsubscribe()
+        {
+            if (_subscribed)
+                _tap.LineReceived -= OnLine;
+            _subscribed = false;
+        }
+
+        void OnLine(string line)
+        {
+            var now = _clock.NowMs;
+            lock (_gate)
+            {
+                if (_startedMs.HasValue && _end.IsMatch(line))
+                {
+                    _values.Add(now - _startedMs.Value);
+                    _startedMs = null;
+                }
+                else if (_start.IsMatch(line))
+                {
+                    _startedMs = now;
+                }
+            }
+        }
+
+        void Drain(IMetricSink sink)
+        {
+            double[] taken;
+            lock (_gate)
+            {
+                taken = _values.ToArray();
+                _values.Clear();
+            }
+            foreach (var value in taken)
+                sink.Add(_metric, "ms", value);
+        }
+    }
+
     public delegate IProbe ProbeBuilder(JsonValue spec, RunContext run);
 
     /// <summary>Creates probes from the entries of the <c>probes</c> argument of <c>probe.start</c>. An entry is a name
-    /// (<c>"frameTiming"</c>, <c>"profiler"</c>, <c>"timer:name"</c>, <c>"log:TAG"</c>) or an object with <c>type</c> and the type's properties.
+    /// (<c>"frameTiming"</c>, <c>"profiler"</c>, <c>"timer:name"</c>, <c>"log:TAG"</c>; <c>logSpan</c> is an object) or an object with <c>type</c> and the type's properties.
     /// A project adds probe types with <see cref="Register"/>.</summary>
     public static class ProbeFactory
     {
@@ -381,6 +462,7 @@ namespace Valtrion.Unity.Probes
             { "memory", (spec, run) => new ProfilerRecorderProbe() },
             { "timer", (spec, run) => new TimerProbe(Required(spec, "name"), run.Clock) },
             { "log", BuildLog },
+            { "logSpan", BuildLogSpan },
         };
 
         public static void Register(string type, ProbeBuilder builder) => Builders[type] = builder ?? throw new ArgumentNullException(nameof(builder));
@@ -416,6 +498,24 @@ namespace Valtrion.Unity.Probes
                 throw new StepArgumentException($"log probe pattern is not a regular expression: {ex.Message}");
             }
             return new LogTagProbe(Optional(spec, "metric") ?? "log." + name, regex, Optional(spec, "unit") ?? "count", run.Logs);
+        }
+
+        static IProbe BuildLogSpan(JsonValue spec, RunContext run)
+        {
+            var metric = Required(spec, "metric");
+            return new LogSpanProbe(metric, CompilePattern(Required(spec, "start"), "start"), CompilePattern(Required(spec, "end"), "end"), run.Logs, run.Clock);
+        }
+
+        static Regex CompilePattern(string pattern, string what)
+        {
+            try
+            {
+                return new Regex(pattern, RegexOptions.CultureInvariant);
+            }
+            catch (ArgumentException ex)
+            {
+                throw new StepArgumentException($"logSpan probe '{what}' is not a regular expression: {ex.Message}");
+            }
         }
 
         static string Optional(JsonValue spec, string name) =>

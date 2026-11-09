@@ -41,6 +41,9 @@ namespace Valtrion.Unity.Harness
 
         public List<string> Unverified { get; } = new List<string>();
 
+        /// <summary>State that steps of one run hand to each other (an open storage window, a started timer), by key. Steps own their keys and prefix them.</summary>
+        public Dictionary<string, object> State { get; } = new Dictionary<string, object>(StringComparer.Ordinal);
+
         /// <summary>The open probe window, or null. <c>external.ui</c> is refused while it is open.</summary>
         public ProbeWindow Window { get; internal set; }
 

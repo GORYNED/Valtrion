@@ -187,7 +187,7 @@ and returns. A Release player contains no type of the assembly. Start a run by h
 | `wait` | `seconds` |
 | `waitUntil` | `condition` (a name in `ConditionRegistry.Shared`; not registered is BLOCKED) |
 | `mark` | `name`, optional `metric`; records ms since the iteration start |
-| `probe.start` / `probe.stop` | `probes`: `"frameTiming"`, `"profiler"` (alias `"memory"`), `"timer:<metric>"`, `"log:<TAG>"` or objects (`{"type":"log","name","pattern","unit","metric"}`); `required` makes an unavailable probe BLOCKED, otherwise it is listed as unverified |
+| `probe.start` / `probe.stop` | `probes`: `"frameTiming"`, `"profiler"` (alias `"memory"`), `"timer:<metric>"`, `"log:<TAG>"` or objects (`{"type":"log","name","pattern","unit","metric"}`, `{"type":"logSpan","start","end","metric"}`: the milliseconds from a log line that matches `start` to the next one that matches `end`, one sample per pair, for what happens inside a step that cannot be split, such as the time a recording takes to finish after the stop request); `required` makes an unavailable probe BLOCKED, otherwise it is listed as unverified |
 | `gc` | optional `unloadAssets` (default true) |
 | `idle` | optional `frames` (default 1) |
 | `screenshot` | `name`; writes `<name>.png` into the run folder. Without a graphics device the step ends `BLOCKED` at once |
@@ -196,6 +196,8 @@ and returns. A Release player contains no type of the assembly. Start a run by h
 | `app.quit` | optional `exitCode`; use as the last step |
 | `external.ui` | `action`, optional `args`; writes the request into the heartbeat (state `waiting-host`) and waits for `inbox/reply-<id>.json`; refused inside an open probe window |
 | `session.offsets` | `reader` (a name in `SessionReaders.Shared`; not registered is BLOCKED), optional `prefix` (default `session`), optional `relativeTo` (a stream name). Reports, without judging, the persisted offsets of the session just recorded as metrics: `<prefix>.<stream>.offsetMs`, `.firstTimestampMs`, `.firstTimestampFromAnchorMs` (with an anchor), `.offsetFromStreamMs` (with `relativeTo`) and `<prefix>.anchorMs` |
+| `storage.begin` / `storage.end` | `reader` (a name in `StorageReaders.Shared`; not registered is BLOCKED), optional `prefix` (default `storage`), optional `required`; `storage.end` also takes optional `seconds`. Reports `<prefix>.freeBeforeBytes`, `.freeAfterBytes`, `.usedBytes` (before minus after) and `.bytesPerSecond` (used bytes over `seconds`, or over the time between the two steps). A reader that returns a negative number says "unknown": nothing depending on it is reported, it is listed as unverified, and with `required` the step is BLOCKED. Unknown is never read as zero |
+| `timer.start` / `timer.stop` | `name`; `timer.stop` also takes `metric` and optional `until` (a condition of `ConditionRegistry`, waited for as `waitUntil` does). Reports the milliseconds from `timer.start` to the end of `timer.stop` as `metric`: for example the time from a stop request to a finished file. A timer that was not started is FAIL |
 
 **Session readers.** `session.offsets` reads a recorded session through code the project registers, because the session format is the
 project's: `SessionReaders.Shared.Register("session", context => { var offsets = new SessionOffsets { AnchorMs = ... }; offsets.Streams.Add(new StreamOffset("video", offsetMs, firstTimestampMs)); return offsets; })`.
@@ -203,7 +205,7 @@ Return what the session stores (its own reader class or its file), not a recompu
 the metrics it cares about in its `metrics` section.
 
 Probes: `FrameTimingProbe`, `ProfilerRecorderProbe` (`gc.allocBytes`, `mainThread.ms`, `memory.totalUsedMB`,
-`memory.systemUsedMB`), `TimerProbe`, `LogTagProbe`. A project adds one with `ProbeFactory.Register`.
+`memory.systemUsedMB`), `TimerProbe`, `LogTagProbe`, `LogSpanProbe`. A project adds one with `ProbeFactory.Register`.
 
 **Adding steps.** A project writes `[ValidationStep("app.openMenu")] static IEnumerator OpenMenu(StepContext context)`; the registry
 finds it by attribute in the loaded non-engine assemblies. In IL2CPP the method must survive stripping: preserve its assembly in a
