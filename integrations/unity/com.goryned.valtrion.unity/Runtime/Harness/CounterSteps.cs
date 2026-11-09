@@ -54,6 +54,9 @@ namespace Valtrion.Unity.Harness
             public Regex Pattern;
             public long Lines;
             public long Unparsed;
+            public long TimedOut;
+            public long Readings;
+            public bool WentDown;
             public double Sum;
             public double First;
             public double Last;
@@ -61,11 +64,25 @@ namespace Valtrion.Unity.Harness
             public bool HasValue;
         }
 
+        /// <summary>One counter's numbers, copied under the lock the log threads use.</summary>
+        struct Snapshot
+        {
+            public double? Value;
+            public long Unparsed;
+            public long TimedOut;
+            public long Readings;
+            public bool WentDown;
+        }
+
+        /// <summary>A pattern that backtracks without end must not stall the thread that logs (it can be the main thread): a match that takes longer is not counted.</summary>
+        static readonly TimeSpan MatchTimeout = TimeSpan.FromMilliseconds(50);
+
         sealed class Window : IDisposable
         {
             readonly object _gate = new object();
             readonly LogTap _tap;
             bool _open;
+            bool _closed;
 
             public Window(string name, List<Counter> counters, LogTap tap, string iteration)
             {
@@ -91,15 +108,15 @@ namespace Valtrion.Unity.Harness
                 _open = true;
             }
 
-            /// <summary>Stops following the log and returns after the last line in flight was counted.</summary>
+            /// <summary>Stops following the log. A line that was already on its way to <c>OnLine</c> finds the window closed and is not counted, so nothing changes
+            /// after this returns. Called on the main thread only.</summary>
             public void Close()
             {
                 if (_open)
                     _tap.LineReceived -= OnLine;
                 _open = false;
                 lock (_gate)
-                {
-                }
+                    _closed = true;
             }
 
             public void Dispose() => Close();
@@ -108,9 +125,20 @@ namespace Valtrion.Unity.Harness
             {
                 lock (_gate)
                 {
+                    if (_closed)
+                        return;
                     foreach (var counter in Counters)
                     {
-                        var match = counter.Pattern.Match(line);
+                        Match match;
+                        try
+                        {
+                            match = counter.Pattern.Match(line);
+                        }
+                        catch (RegexMatchTimeoutException)
+                        {
+                            counter.TimedOut++;
+                            continue;
+                        }
                         if (!match.Success)
                             continue;
                         counter.Lines++;
@@ -129,6 +157,11 @@ namespace Valtrion.Unity.Harness
                             counter.Max = value;
                             counter.HasValue = true;
                         }
+                        else if (value < counter.Last)
+                        {
+                            counter.WentDown = true;
+                        }
+                        counter.Readings++;
                         counter.Sum += value;
                         counter.Last = value;
                         counter.Max = Math.Max(counter.Max, value);
@@ -136,11 +169,11 @@ namespace Valtrion.Unity.Harness
                 }
             }
 
-            /// <summary>Takes the counters' numbers under the lock the log threads use.</summary>
-            public T Locked<T>(Func<T> read)
+            /// <summary>Copies the numbers of all counters at once under the lock the log threads use.</summary>
+            public List<Snapshot> Take()
             {
                 lock (_gate)
-                    return read();
+                    return Counters.Select(c => new Snapshot { Value = Result(c), Unparsed = c.Unparsed, TimedOut = c.TimedOut, Readings = c.Readings, WentDown = c.WentDown }).ToList();
             }
         }
 
@@ -224,23 +257,33 @@ namespace Valtrion.Unity.Harness
                 }
                 end = thermal(context);
             }
-            var numbers = window.Locked(() => window.Counters.Select(c => new[] { c.Lines, c.Unparsed }).ToList());
+            var snapshots = window.Take();
             for (var i = 0; i < window.Counters.Count; i++)
             {
                 var counter = window.Counters[i];
-                var value = window.Locked(() => Result(counter));
-                if (value.HasValue)
-                    context.AddMetric(counter.Metric, counter.Unit, value.Value);
+                var snapshot = snapshots[i];
+                if (snapshot.Value.HasValue)
+                    context.AddMetric(counter.Metric, counter.Unit, snapshot.Value.Value);
+                else if (counter.Mode == "increase" && snapshot.Readings == 1)
+                    Unverified(context, $"counter '{counter.Metric}' has no number: 'increase' needs two readings in '{name}' and only one line had a number");
                 else
                     Unverified(context, $"counter '{counter.Metric}' has no number: no log line with a readable value matched in '{name}'");
-                if (numbers[i][1] > 0)
-                    Unverified(context, $"counter '{counter.Metric}': {numbers[i][1]} matching line(s) had no readable number in the group 'value'");
+                if (snapshot.Unparsed > 0)
+                    Unverified(context, $"counter '{counter.Metric}': {snapshot.Unparsed} matching line(s) had no readable number in the group 'value'");
+                if (snapshot.TimedOut > 0)
+                    Unverified(context, $"counter '{counter.Metric}': the pattern took more than {MatchTimeout.TotalMilliseconds:0} ms on {snapshot.TimedOut} line(s), which were not counted");
+                if (snapshot.WentDown && counter.Mode == "increase")
+                    Unverified(context, $"counter '{counter.Metric}': the number went down inside '{name}' (the running counter was reset?), so the value is not an increase");
             }
             var message = $"{window.Counters.Count} counter(s) in '{name}'";
             if (window.ThermalReader != null)
             {
                 if (window.ThermalStart != null)
                     context.AddMetric(name + ".thermalStartLevel", "level", window.ThermalStart.Level);
+                if (window.ThermalStart != null && !IsFinite(window.ThermalStart.Level))
+                    Unverified(context, $"thermal level at the start of '{name}' is not a finite number and was not reported");
+                if (end != null && !IsFinite(end.Level))
+                    Unverified(context, $"thermal level at the end of '{name}' is not a finite number and was not reported");
                 if (end != null)
                     context.AddMetric(name + ".thermalEndLevel", "level", end.Level);
                 else
@@ -249,6 +292,8 @@ namespace Valtrion.Unity.Harness
             }
             context.Pass(message);
         }
+
+        static bool IsFinite(double value) => !double.IsNaN(value) && !double.IsInfinity(value);
 
         static double? Result(Counter counter)
         {
@@ -263,7 +308,8 @@ namespace Valtrion.Unity.Harness
                 case "max":
                     return counter.HasValue ? counter.Max : (double?)null;
                 default:
-                    return counter.HasValue ? counter.Last - counter.First : (double?)null;
+                    // One reading says nothing about an increase: it is unknown, not 0.
+                    return counter.Readings >= 2 ? counter.Last - counter.First : (double?)null;
             }
         }
 
@@ -289,7 +335,7 @@ namespace Valtrion.Unity.Harness
                 Regex regex;
                 try
                 {
-                    regex = new Regex(pattern, RegexOptions.CultureInvariant);
+                    regex = new Regex(pattern, RegexOptions.CultureInvariant, MatchTimeout);
                 }
                 catch (ArgumentException ex)
                 {

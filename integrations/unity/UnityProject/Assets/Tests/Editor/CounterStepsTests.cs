@@ -106,6 +106,103 @@ namespace Valtrion.Unity.Tests
         }
 
         [Test]
+        public void IncreaseNeedsTwoReadingsAndOneIsUnknownNotZero()
+        {
+            var counter = "{\"metric\":\"inc\",\"pattern\":\"n=(?<value>\\\\d+)\",\"mode\":\"increase\"}";
+
+            _f.Run(HarnessFixture.Plan(Start(counter) + "," + Feed("n=4") + "," + Stop));
+
+            var result = _f.ReadResult();
+            Assert.AreEqual("PASS", result.Status);
+            Assert.IsFalse(result.Metrics.Any(m => m.Name == "inc"));
+            Assert.IsTrue(result.Unverified.Any(u => u.Contains("needs two readings")));
+        }
+
+        [Test]
+        public void ARunningCounterThatWentDownIsListedAsUnverified()
+        {
+            var counter = "{\"metric\":\"inc\",\"pattern\":\"n=(?<value>\\\\d+)\",\"mode\":\"increase\"}";
+
+            _f.Run(HarnessFixture.Plan(Start(counter) + "," + Feed("n=9") + "," + Feed("n=2") + "," + Stop));
+
+            var result = _f.ReadResult();
+            Assert.AreEqual(-7, Single(result, "inc"), "the value is reported as it is, not clamped");
+            Assert.IsTrue(result.Unverified.Any(u => u.Contains("went down")));
+        }
+
+        [Test]
+        public void LineThatMatchesWithoutAReadableNumberIsListedAndTheRestAreCounted()
+        {
+            var counter = "{\"metric\":\"sum\",\"pattern\":\"n=(?<value>\\\\w+)\",\"mode\":\"sum\"}";
+
+            _f.Run(HarnessFixture.Plan(Start(counter) + "," + Feed("n=4") + "," + Feed("n=x") + "," + Feed("n=6") + "," + Stop));
+
+            var result = _f.ReadResult();
+            Assert.AreEqual(10, Single(result, "sum"));
+            Assert.IsTrue(result.Unverified.Any(u => u.Contains("1 matching line(s) had no readable number")));
+        }
+
+        [Test]
+        public void PatternThatBacktracksWithoutEndDoesNotStallTheLoggerAndIsListed()
+        {
+            var counter = "{\"metric\":\"bad\",\"pattern\":\"^(a+)+$\"},{\"metric\":\"good\",\"pattern\":\"b\"}";
+            var slow = new string('a', 60) + "!";
+            var watch = System.Diagnostics.Stopwatch.StartNew();
+
+            _f.Run(HarnessFixture.Plan(Start(counter) + "," + Feed(slow) + "," + Feed("b") + "," + Stop));
+
+            Assert.Less(watch.ElapsedMilliseconds, 10000, "the match is bounded by a timeout");
+            var result = _f.ReadResult();
+            Assert.AreEqual("PASS", result.Status);
+            Assert.AreEqual(1, Single(result, "good"));
+            Assert.IsTrue(result.Unverified.Any(u => u.Contains("took more than")));
+        }
+
+        [Test]
+        public void ThermalLevelThatIsNotANumberIsListed()
+        {
+            _thermal = new ThermalReading(double.NaN, "odd");
+
+            _f.Run(HarnessFixture.Plan(Start("{\"metric\":\"dropped\",\"pattern\":\"dropped\"}", ",\"thermal\":\"device\"") + "," + Stop));
+
+            var result = _f.ReadResult();
+            Assert.IsFalse(result.Metrics.Any(m => m.Name.Contains("thermal")));
+            Assert.IsTrue(result.Unverified.Any(u => u.Contains("not a finite number")));
+        }
+
+        [Test]
+        public void ThermalStateUnknownAtTheStartButKnownAtTheEndIsReportedHonestly()
+        {
+            _thermal = null;
+            _f.Registry.Register("test.cool", context =>
+            {
+                _thermal = new ThermalReading(1, "fair");
+                return new object[0].GetEnumerator();
+            });
+
+            _f.Run(HarnessFixture.Plan(Start("{\"metric\":\"dropped\",\"pattern\":\"dropped\"}", ",\"thermal\":\"device\"") + ",{\"type\":\"test.cool\",\"timeoutSec\":5}," + Stop));
+
+            var result = _f.ReadResult();
+            Assert.IsFalse(result.Metrics.Any(m => m.Name == "faults.thermalStartLevel"));
+            Assert.AreEqual(1, Single(result, "faults.thermalEndLevel"));
+            StringAssert.Contains("unknown -> fair", result.Steps.Last().Message);
+        }
+
+        [Test]
+        public void ThermalReaderUnregisteredBetweenStartAndStopIsBlocked()
+        {
+            _f.Registry.Register("test.unregister", context =>
+            {
+                ThermalReaders.Shared.Unregister("device");
+                return new object[0].GetEnumerator();
+            });
+
+            _f.Run(HarnessFixture.Plan(Start("{\"metric\":\"dropped\",\"pattern\":\"dropped\"}", ",\"thermal\":\"device\"") + ",{\"type\":\"test.unregister\",\"timeoutSec\":5}," + Stop));
+
+            Assert.AreEqual("BLOCKED", _f.ReadResult().Status);
+        }
+
+        [Test]
         public void ThermalStateIsReportedNextToTheNumbers()
         {
             var plan = HarnessFixture.Plan(Start("{\"metric\":\"dropped\",\"pattern\":\"dropped\"}", ",\"thermal\":\"device\"") + ",{\"type\":\"test.heat\",\"timeoutSec\":5}," + Feed("dropped") + "," + Stop);
