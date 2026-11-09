@@ -47,7 +47,7 @@ class GoldenFixtureTests(unittest.TestCase):
 
     def test_the_c_sharp_reader_enforces_the_same_rules_as_this_validator(self):
         # Semantic rules live in both implementations; this guards the fixtures that only they reject.
-        for name in ("plan-external-ui-in-probe", "plan-external-ui-in-probe-in-repeat", "plan-external-ui-in-probe-in-second-round", "plan-repeat-without-count", "plan-repeat-nested",
+        for name in ("plan-external-ui-in-probe", "plan-external-ui-in-probe-in-repeat", "plan-external-ui-in-probe-in-second-round", "plan-app-background-in-probe", "plan-repeat-without-count", "plan-repeat-nested",
                      "plan-repeat-inner-step-without-timeout", "result-pass-with-reason", "result-pass-with-failed-layer",
                      "result-blocked-without-reason", "hosts-duplicate-id", "hosts-ssh-without-target", "hosts-ssh-target-option"):
             with self.subTest(name):
@@ -226,6 +226,11 @@ class ValidatorTests(unittest.TestCase):
         plan = {"kind": "performance", "steps": [
             {"type": "repeat", "count": 2, "steps": [{"type": "probe.start", "timeoutSec": 5}]}, {"type": "external.ui"}]}
         self.assertTrue(any("external.ui" in message for message in check_plan_semantics(plan)))
+
+    def test_app_background_is_forbidden_in_a_probe_window_like_external_ui(self):
+        plan = {"kind": "performance", "steps": [{"type": "probe.start"}, {"type": "app.background", "timeoutSec": 30}, {"type": "probe.stop"}, {"type": "app.background"}]}
+        self.assertEqual(["$.steps[1]: app.background is forbidden between probe.start and probe.stop in a performance plan"], check_plan_semantics(plan))
+        self.assertEqual([], check_plan_semantics({"kind": "functional", "steps": plan["steps"]}))
 
     def test_a_probe_window_left_open_by_one_round_covers_the_next_round(self):
         plan = {"kind": "performance", "steps": [

@@ -1,0 +1,31 @@
+{
+  "schema": "gdv.plan/1",
+  "id": "example.func.background",
+  "kind": "functional",
+  "dataPolicy": "isolated",
+  "budgetSeconds": 300,
+  "steps": [
+    {
+      "type": "app.waitScreen",
+      "timeoutSec": 60,
+      "screen": "Menu"
+    },
+    {
+      "type": "app.background",
+      "timeoutSec": 120,
+      "seconds": 10,
+      "metric": "backgroundMs"
+    },
+    {
+      "type": "app.waitScreen",
+      "timeoutSec": 60,
+      "screen": "Menu"
+    }
+  ],
+  "metrics": {
+    "backgroundMs": {
+      "unit": "ms",
+      "direction": "lower"
+    }
+  }
+}
