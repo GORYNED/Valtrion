@@ -143,6 +143,16 @@ namespace Valtrion.Unity.Harness
             _startedUtc = _clock.UtcNow;
             DeleteStale(_paths.ResultPath);
             DeleteStale(_paths.HeartbeatPath);
+            // A fill file that an earlier launch left (the app was killed, the connection was lost) is removed before anything else runs.
+            try
+            {
+                foreach (var removed in FillSteps.SweepOrphans(_paths, null))
+                    _run.Unverified.Add("removed a fill file left by an earlier launch: " + removed);
+            }
+            catch (Exception ex)
+            {
+                _options.Log($"GDV: cannot look for fill files left by an earlier launch: {ex.Message}");
+            }
             _run.RunStartMs = _clock.NowMs;
             _run.IterationStartMs = _run.RunStartMs;
             try

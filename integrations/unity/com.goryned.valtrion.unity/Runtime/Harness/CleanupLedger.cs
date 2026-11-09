@@ -104,6 +104,21 @@ namespace Valtrion.Unity.Harness
             Persist();
         }
 
+        /// <summary>Takes the newest entry of this kind and key out of the ledger, because the step that created it has already undone it. Returns false when there is none.</summary>
+        public bool Forget(string kind, string key)
+        {
+            for (var index = _entries.Count - 1; index >= 0; index--)
+            {
+                if (_entries[index].Kind == kind && _entries[index].Key == key)
+                {
+                    _entries.RemoveAt(index);
+                    Persist();
+                    return true;
+                }
+            }
+            return false;
+        }
+
         /// <summary>Runs the handlers of the recorded entries, newest first. Returns one message per entry that could not be cleaned.</summary>
         public List<string> Cleanup()
         {
