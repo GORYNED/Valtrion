@@ -1,0 +1,20 @@
+{
+  "schema": "gdv.plan/1",
+  "id": "example.func.bad",
+  "kind": "functional",
+  "dataPolicy": "isolated",
+  "budgetSeconds": 60,
+  "steps": [
+    {
+      "type": "repeat",
+      "timeoutSec": 30,
+      "steps": [
+        {
+          "type": "wait",
+          "timeoutSec": 5,
+          "seconds": 1
+        }
+      ]
+    }
+  ]
+}

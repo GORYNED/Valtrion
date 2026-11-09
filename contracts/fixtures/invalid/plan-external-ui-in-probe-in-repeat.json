@@ -1,0 +1,29 @@
+{
+  "schema": "gdv.plan/1",
+  "id": "example.perf.bad",
+  "kind": "performance",
+  "dataPolicy": "isolated",
+  "budgetSeconds": 60,
+  "steps": [
+    {
+      "type": "probe.start",
+      "timeoutSec": 5
+    },
+    {
+      "type": "repeat",
+      "timeoutSec": 30,
+      "count": 2,
+      "steps": [
+        {
+          "type": "external.ui",
+          "timeoutSec": 30,
+          "action": "system.allowCamera"
+        }
+      ]
+    },
+    {
+      "type": "probe.stop",
+      "timeoutSec": 5
+    }
+  ]
+}

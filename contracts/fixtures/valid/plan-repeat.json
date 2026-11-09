@@ -1,0 +1,34 @@
+{
+  "schema": "gdv.plan/1",
+  "id": "example.func.arm-cycles",
+  "kind": "functional",
+  "dataPolicy": "isolated",
+  "budgetSeconds": 600,
+  "steps": [
+    {
+      "type": "repeat",
+      "timeoutSec": 300,
+      "count": 50,
+      "continueOnFail": true,
+      "prefix": "armCycle",
+      "roundMetric": "armCycleMs",
+      "steps": [
+        {
+          "type": "scenario.arm",
+          "timeoutSec": 20,
+          "holdSeconds": 2
+        },
+        {
+          "type": "scenario.disarm",
+          "timeoutSec": 20
+        }
+      ]
+    }
+  ],
+  "metrics": {
+    "armCycleMs": {
+      "unit": "ms",
+      "direction": "lower"
+    }
+  }
+}

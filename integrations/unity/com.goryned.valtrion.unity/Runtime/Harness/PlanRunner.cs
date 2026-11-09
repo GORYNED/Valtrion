@@ -112,7 +112,7 @@ namespace Valtrion.Unity.Harness
             foreach (var handler in _options.CleanupHandlers)
                 ledger.Register(handler);
             ledger.LoadExisting();
-            _run = new RunContext(plan, RunId, _clock, _paths, new LogTap(_options.AttachLog), ledger, _options.Conditions ?? ConditionRegistry.Shared);
+            _run = new RunContext(plan, RunId, _clock, _paths, new LogTap(_options.AttachLog), ledger, _options.Conditions ?? ConditionRegistry.Shared) { Steps = _steps };
         }
 
         /// <summary>A runner for a plan that could not be read: it writes a FAIL result naming the reason and runs nothing.</summary>

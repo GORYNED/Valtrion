@@ -45,7 +45,7 @@ Comparison verdicts are `PASS`, `REGRESSION`, `IMPROVED`, `NOISY`, `NOT_COMPARAB
 
 ## Rules beyond the schemas
 
-The validator also enforces: an `external.ui` step must not run between `probe.start` and `probe.stop` in a `performance` plan; a `PASS` result has no `reason` and no layer that is not `PASS`, any other status carries a `reason`; host ids are unique, at most one host is `local`, an `ssh` host names its target and a `local` host has none, and a target never starts with `-`.
+The validator also enforces: an `external.ui` step must not run between `probe.start` and `probe.stop` in a `performance` plan (the inner steps of a `repeat` step count in the order they run); a `repeat` step has a whole `count` of at least 1 and a non-empty `steps` list whose items each have a `type` (not `repeat`) and a `timeoutSec` of at least 1; a `PASS` result has no `reason` and no layer that is not `PASS`, any other status carries a `reason`; host ids are unique, at most one host is `local`, an `ssh` host names its target and a `local` host has none, and a target never starts with `-`.
 
 Parsing is strict: no comments, trailing commas, duplicate property names, NaN or infinity, nesting deeper than 64 levels; counts, seconds and process ids are capped at 2147483647. A text file is read as UTF-8 with at most one byte-order mark. A file that cannot be read or decoded makes `valtrion validate` exit 2; malformed content exits 1. `events.jsonl` is split on `\n` only.
 

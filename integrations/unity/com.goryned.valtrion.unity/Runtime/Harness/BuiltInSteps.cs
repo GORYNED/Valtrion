@@ -12,7 +12,7 @@ using UnityEngine;
 namespace Valtrion.Unity.Harness
 {
     /// <summary>The step types every plan can use: <c>wait</c>, <c>waitUntil</c>, <c>mark</c>, <c>probe.start</c>, <c>probe.stop</c>, <c>gc</c>,
-    /// <c>idle</c>, <c>screenshot</c>, <c>log.expect</c>, <c>file.put</c>, <c>app.quit</c>, <c>external.ui</c>, <c>session.offsets</c>, <c>storage.begin</c>, <c>storage.end</c>, <c>timer.start</c>, <c>timer.stop</c>, <c>counter.start</c> and <c>counter.stop</c>. They are registered by an explicit table, so they
+    /// <c>idle</c>, <c>screenshot</c>, <c>log.expect</c>, <c>file.put</c>, <c>app.quit</c>, <c>external.ui</c>, <c>session.offsets</c>, <c>storage.begin</c>, <c>storage.end</c>, <c>timer.start</c>, <c>timer.stop</c>, <c>counter.start</c>, <c>counter.stop</c> and <c>repeat</c>. They are registered by an explicit table, so they
     /// need neither reflection nor linker preservation.</summary>
     public static class BuiltInSteps
     {
@@ -33,6 +33,7 @@ namespace Valtrion.Unity.Harness
             SessionSteps.RegisterAll(registry);
             StorageSteps.RegisterAll(registry);
             CounterSteps.RegisterAll(registry);
+            RepeatStep.RegisterAll(registry);
         }
 
         /// <summary><c>{ "seconds": 2 }</c> waits that long on the run clock.</summary>
@@ -207,9 +208,11 @@ namespace Valtrion.Unity.Harness
             }
             Directory.CreateDirectory(context.Run.Paths.RunDirectory);
             // One file per iteration: a repeated plan must not overwrite a file an earlier artifact entry still hashes.
-            var file = context.Phase == "run" ? $"{name}-i{context.Iteration + 1}-s{context.Index}.png" : $"{name}-setup-s{context.Index}.png";
+            var file = context.Phase == "run" ? $"{name}-i{context.Iteration + 1}-s{context.Index}" : $"{name}-setup-s{context.Index}";
             if (context.Iteration < 0)
-                file = $"{name}-warmup{-context.Iteration}-s{context.Index}.png";
+                file = $"{name}-warmup{-context.Iteration}-s{context.Index}";
+            // A screenshot inside a repeat step is taken once per round: the round is a part of the name, so no round overwrites an earlier one.
+            file += (context.Round > 0 ? $"-r{context.Round}" : string.Empty) + ".png";
             File.WriteAllBytes(Path.Combine(context.Run.Paths.RunDirectory, file), png);
             context.Run.Artifacts.Add(new ResultArtifact { Kind = "screenshot", Path = file, Sha256 = Hashing.Sha256Hex(png) });
             context.Pass(file);

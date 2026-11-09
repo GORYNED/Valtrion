@@ -47,7 +47,8 @@ class GoldenFixtureTests(unittest.TestCase):
 
     def test_the_c_sharp_reader_enforces_the_same_rules_as_this_validator(self):
         # Semantic rules live in both implementations; this guards the fixtures that only they reject.
-        for name in ("plan-external-ui-in-probe", "result-pass-with-reason", "result-pass-with-failed-layer",
+        for name in ("plan-external-ui-in-probe", "plan-external-ui-in-probe-in-repeat", "plan-repeat-without-count", "plan-repeat-nested",
+                     "plan-repeat-inner-step-without-timeout", "result-pass-with-reason", "result-pass-with-failed-layer",
                      "result-blocked-without-reason", "hosts-duplicate-id", "hosts-ssh-without-target", "hosts-ssh-target-option"):
             with self.subTest(name):
                 self.assertTrue((FIXTURES / "invalid" / f"{name}.json").is_file())
@@ -214,6 +215,47 @@ class ValidatorTests(unittest.TestCase):
     def test_external_ui_is_allowed_in_a_functional_plan(self):
         plan = {"kind": "functional", "steps": [{"type": "probe.start"}, {"type": "external.ui"}]}
         self.assertEqual([], check_plan_semantics(plan))
+
+    def test_external_ui_is_forbidden_in_a_probe_window_inside_a_repeat(self):
+        plan = {"kind": "performance", "steps": [
+            {"type": "probe.start"}, {"type": "repeat", "count": 2, "steps": [{"type": "external.ui", "timeoutSec": 5}]}, {"type": "probe.stop"}]}
+        self.assertEqual(["$.steps[1].steps[0]: external.ui is forbidden between probe.start and probe.stop in a performance plan"], [
+            message for message in check_plan_semantics(plan) if "external.ui" in message])
+
+    def test_a_probe_window_opened_inside_a_repeat_is_seen_by_the_steps_after_it(self):
+        plan = {"kind": "performance", "steps": [
+            {"type": "repeat", "count": 2, "steps": [{"type": "probe.start", "timeoutSec": 5}]}, {"type": "external.ui"}]}
+        self.assertTrue(any("external.ui" in message for message in check_plan_semantics(plan)))
+
+    def test_a_repeat_with_a_count_and_inner_steps_is_accepted(self):
+        step = {"type": "repeat", "timeoutSec": 30, "count": 3, "steps": [{"type": "wait", "timeoutSec": 5}]}
+        for kind in ("functional", "performance"):
+            self.assertEqual([], check_plan_semantics({"kind": kind, "steps": [step]}))
+            self.assertEqual([], check_plan_semantics({"kind": kind, "setup": [step], "steps": [{"type": "wait"}]}))
+
+    def test_a_repeat_with_a_bad_shape_is_rejected(self):
+        inner = [{"type": "wait", "timeoutSec": 5}]
+        cases = {
+            "no count": {"type": "repeat", "steps": inner},
+            "zero count": {"type": "repeat", "count": 0, "steps": inner},
+            "fractional count": {"type": "repeat", "count": 1.5, "steps": inner},
+            "boolean count": {"type": "repeat", "count": True, "steps": inner},
+            "text count": {"type": "repeat", "count": "3", "steps": inner},
+            "count beyond int32": {"type": "repeat", "count": 2 ** 31, "steps": inner},
+            "no steps": {"type": "repeat", "count": 2},
+            "empty steps": {"type": "repeat", "count": 2, "steps": []},
+            "steps not a list": {"type": "repeat", "count": 2, "steps": {}},
+            "inner step not an object": {"type": "repeat", "count": 2, "steps": [5]},
+            "inner step without type": {"type": "repeat", "count": 2, "steps": [{"timeoutSec": 5}]},
+            "inner step without timeout": {"type": "repeat", "count": 2, "steps": [{"type": "wait"}]},
+            "inner step with zero timeout": {"type": "repeat", "count": 2, "steps": [{"type": "wait", "timeoutSec": 0}]},
+            "nested repeat": {"type": "repeat", "count": 2, "steps": [{"type": "repeat", "timeoutSec": 5, "count": 2, "steps": inner}]},
+        }
+        for name, step in cases.items():
+            with self.subTest(name):
+                for section in ("steps", "setup"):
+                    errors = check_plan_semantics({"kind": "functional", section: [step]})
+                    self.assertTrue(errors and errors[0].startswith(f"$.{section}[0]"), errors)
 
 
 class ConstantsTests(unittest.TestCase):
