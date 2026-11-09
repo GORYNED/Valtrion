@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- **`storage.begin`, `storage.end`, `timer.start`, `timer.stop` steps (#113).** Report the free space of the device before and after a recording step, the bytes used and written per second, and the time from a start stamp to the end of a condition (the time a recording takes to finish after the stop request) as metrics. The free space comes from a reader the project registers with `StorageReaders.Shared.Register`; a negative value means unknown and is never read as zero. `RunContext.State` lets steps of one run hand state to each other. No threshold is applied. The probe `{"type":"logSpan","start":"...","end":"...","metric":"..."}` measures the milliseconds between two log lines inside a probe window, for a span that happens inside one step.
 - **`session.offsets` step (#113).** Reports the persisted per-stream start offsets and first timestamps of the session just recorded as metrics (`<prefix>.<stream>.offsetMs`, `.firstTimestampMs`, `.firstTimestampFromAnchorMs`, `.offsetFromStreamMs`, `<prefix>.anchorMs`). The project registers its own reader with `SessionReaders.Shared.Register`; Valtrion reads no session format and applies no threshold.
 
 ## 0.15.0 (2026-11-08)
