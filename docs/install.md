@@ -22,7 +22,7 @@ Without pipx: `python -m venv <dir>` then `<dir>/bin/pip install valtrion` (`Scr
 The Unity package has its own version and is not on PyPI. Add it to `Packages/manifest.json` (or Package Manager → Add package from git URL):
 
 ```json
-"com.goryned.valtrion.unity": "https://github.com/GORYNED/Valtrion.git?path=integrations/unity/com.goryned.valtrion.unity#unity-v0.15.0"
+"com.goryned.valtrion.unity": "https://github.com/GORYNED/Valtrion.git?path=integrations/unity/com.goryned.valtrion.unity#unity-v0.16.0"
 ```
 
 Since package 0.11.0 the `PlanTest` helper is an ordinary package assembly and no `testables` entry is needed (remove it when upgrading); the package's own tests run only in the repository's verification project. Projects that stay on package 0.10.x still need `"testables": ["com.goryned.valtrion.unity"]` so Unity compiles the helper, as in the [Unity Quick Start](unity-quick-start.md). The package and Core versions pair as listed in [compat.json](../compat.json) (package 0.11.2 works with Core 0.8.0 up to but not including 0.15). Tags are `unity-vX.Y.Z`; pin a tag or a full commit SHA for shared projects, not a branch.
@@ -30,8 +30,8 @@ Since package 0.11.0 the `PlanTest` helper is an ordinary package assembly and n
 ## Updating
 
 - Core: `pipx upgrade valtrion`. On SSH hosts run `valtrion hosts sync` so every host has the same version.
-- Unity: change the tag in the manifest URL (for example `#unity-v0.15.0` to a newer `unity-vX.Y.Z`), let Unity resolve it, and commit `Packages/manifest.json` and `packages-lock.json`.
-- Core 0.18.0 is paired with package 0.15.x. Packages 0.13.x and 0.14.x are paired with Core below 0.18 (Core 0.17.1 pairs with both): `valtrion doctor --project` reports a project that still has one of them as `BLOCKED` with Core 0.18.0, because they cannot read the new keys of `checks.json` (`extends`, `bindings`, `overridesPreset`, `allowHeavyFallback`, `byContent`; `equivalenceRules` needs package 0.14.0). Change the manifest tag to `unity-v0.15.0`, or stay on Core 0.17.x. A project that still has package 0.12.x (or 0.11.x) gets `BLOCKED` with Core 0.16.0 or newer in the same way. The package 0.13.0 and newer is also what hides the windows that tests open on macOS (`unity run`).
+- Unity: change the tag in the manifest URL (for example `#unity-v0.16.0` to a newer `unity-vX.Y.Z`), let Unity resolve it, and commit `Packages/manifest.json` and `packages-lock.json`.
+- Core 0.19.0 is paired with packages 0.15.x and 0.16.x (Core 0.18.0 with 0.15.x). A plan that uses the steps added for device measurements (`session.offsets`, `storage.*`, `timer.*`, `counter.*`, `repeat`, `call.time`, `app.background`) needs package 0.16.0. Packages 0.13.x and 0.14.x are paired with Core below 0.18 (Core 0.17.1 pairs with both): `valtrion doctor --project` reports a project that still has one of them as `BLOCKED` with Core 0.18.0, because they cannot read the new keys of `checks.json` (`extends`, `bindings`, `overridesPreset`, `allowHeavyFallback`, `byContent`; `equivalenceRules` needs package 0.14.0). Change the manifest tag to `unity-v0.16.0`, or stay on Core 0.17.x. A project that still has package 0.12.x (or 0.11.x) gets `BLOCKED` with Core 0.16.0 or newer in the same way. The package 0.13.0 and newer is also what hides the windows that tests open on macOS (`unity run`).
 - Then run `valtrion doctor --project <Unity project>`: it reports `BLOCKED` with the action to take if the pair is not listed in [compat.json](../compat.json). Read the changelogs ([Core](../CHANGELOG.md), [Unity](../integrations/unity/com.goryned.valtrion.unity/CHANGELOG.md)) before upgrading.
 
 ## From a checkout
