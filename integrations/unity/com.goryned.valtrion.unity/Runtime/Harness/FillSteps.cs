@@ -173,7 +173,10 @@ namespace Valtrion.Unity.Harness
         /// says how far the free space may be from the target when it stops. The free space is read again after every write because the system may reclaim or take space meanwhile:
         /// the step writes more when it is above the target by more than the tolerance and cuts the file when it is below by more than the tolerance (at most
         /// <c>maxAdjustments</c> times, default 10, at most 2147483647). Whenever a reading is below the floor, the file is cut back to the floor at once and the step ends
-        /// FAIL. A reader that does not show the free space falling after three writes in a row is not trusted: the step ends FAIL. <c>chunkBytes</c> (default 16 MiB)
+        /// FAIL. A reader that does not show the free space falling after three writes in a row is not trusted: the step ends FAIL. <c>staleBytes</c> replaces the three writes with an amount: how many bytes may be written
+        /// while the reading does not fall (by at least half of what was written) before it is not trusted; for a reader that reports space the system can free again, whose reading stays on a plateau while
+        /// it is reclaimed. The floor still cuts the file back whenever a reading is below it. Up to <c>staleBytes</c> plus one chunk are written without the reading confirming them, so
+        /// <c>staleBytes</c> should be less than the gap between the reading and the floor. <c>chunkBytes</c> (default 16 MiB)
         /// is how much one frame writes. The file is recorded in the cleanup ledger before it is created and removed when the run ends however it ends. It ends BLOCKED,
         /// writing nothing, when the reader is not registered or says unknown (a negative number), when the target is below the floor, when the free space is already
         /// below the target, when a fill file of this run exists, or when the fill folder holds a file this harness did not create. Reports <c>fill.bytesWritten</c> (the
@@ -217,6 +220,11 @@ namespace Valtrion.Unity.Harness
                 throw new StepArgumentException("'maxAdjustments' must not be more than 2147483647");
             if (hasLeave && leave < reserve)
                 throw new StepArgumentException("'leaveFreeBytes' must not be below 'reserveBytes'");
+            // How much may be written while the reading does not fall before it is not trusted. Without staleBytes: three writes in a row.
+            var hasStaleBytes = context.Args.TryGet("staleBytes", out _);
+            var staleLimitBytes = hasStaleBytes ? Bytes(context, "staleBytes") : 0;
+            if (hasStaleBytes && staleLimitBytes < 1)
+                throw new StepArgumentException("'staleBytes' must be at least 1");
             if (!StorageReaders.Shared.TryGet(readerName, out var reader))
             {
                 context.Blocked($"storage reader '{readerName}' is not registered in this build");
@@ -275,6 +283,7 @@ namespace Valtrion.Unity.Harness
             var adjustments = 0;
             var floorReached = false;
             var stale = 0;
+            long staleWritten = 0;
             var lastFree = free;
             long lastChange = 0;
             while (true)
@@ -287,12 +296,22 @@ namespace Valtrion.Unity.Harness
                 }
                 // A reader that stays where it was while we write does not tell the truth (a cached value, a wrong volume): do not write on.
                 if (lastChange > 0 && free > lastFree - lastChange / 2)
-                    stale++;
-                else if (lastChange != 0)
-                    stale = 0;
-                if (stale >= StaleReadingsLimit)
                 {
-                    context.Fail($"free space did not fall after {StaleReadingsLimit} writes in a row (the reader says {Text(free)} bytes): it cannot keep the floor, the fill stopped and the file is removed by the cleanup");
+                    stale++;
+                    staleWritten += lastChange;
+                }
+                else if (lastChange != 0)
+                {
+                    stale = 0;
+                    staleWritten = 0;
+                }
+                if (hasStaleBytes ? staleWritten > staleLimitBytes : stale >= StaleReadingsLimit)
+                {
+                    // A reading below the floor is acted on before the step ends: the space goes back at once, whatever the guard says.
+                    if (free < reserve && written > 0)
+                        Truncate(path, Magic.Length + written - Math.Min(reserve - free, written));
+                    var how = hasStaleBytes ? $"after {Text(staleWritten)} bytes written (more than staleBytes, {Text(staleLimitBytes)})" : $"after {StaleReadingsLimit} writes in a row";
+                    context.Fail($"free space did not fall {how} (the reader says {Text(free)} bytes): it cannot keep the floor, the fill stopped and the file is removed by the cleanup");
                     yield break;
                 }
                 lastFree = free;
