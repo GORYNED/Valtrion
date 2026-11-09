@@ -221,6 +221,74 @@ namespace Valtrion.Unity.Tests
         }
 
         [Test]
+        public void WarmupIterationsReportNothingAndNotesAreNotRepeated()
+        {
+            for (var i = 0; i < 3; i++)
+                _reads.Enqueue(-1);
+            for (var i = 0; i < 3; i++)
+                _reads.Enqueue(100);
+
+            _f.Run(HarnessFixture.Plan(Begin + "}," + End + ",\"seconds\":1}", ",\"repeat\":2,\"warmup\":1"));
+
+            var result = _f.ReadResult();
+            Assert.AreEqual("PASS", result.Status);
+            Assert.AreEqual(2, result.Metrics.Single(m => m.Name == "storage.freeAfterBytes").Samples.Count, "the warm-up iteration adds no sample");
+            Assert.AreEqual(1, result.Unverified.Count(u => u.Contains("before 'storage' is unknown")), "the same note is listed once");
+        }
+
+        [Test]
+        public void WindowOfAnEarlierIterationIsReplacedWithANote()
+        {
+            _reads.Enqueue(1000);
+            _reads.Enqueue(900);
+
+            _f.Run(HarnessFixture.Plan(Begin + "}", ",\"repeat\":2"));
+
+            var result = _f.ReadResult();
+            Assert.AreEqual("PASS", result.Status);
+            Assert.IsTrue(result.Unverified.Any(u => u.Contains("earlier iteration")));
+        }
+
+        [Test]
+        public void EndOfAWindowOpenedInAnotherIterationFails()
+        {
+            _reads.Enqueue(1000);
+            _reads.Enqueue(900);
+
+            _f.Run(HarnessFixture.Plan(End + ",\"seconds\":1}", ",\"setup\":[" + Begin + "}]"));
+
+            var result = _f.ReadResult();
+            Assert.AreEqual("FAIL", result.Status);
+            StringAssert.Contains("another iteration", result.Reason);
+            Assert.IsFalse(result.Metrics.Any(m => m.Name == "storage.usedBytes"));
+        }
+
+        [Test]
+        public void TimerStartedInAnotherIterationFails()
+        {
+            var plan = HarnessFixture.Plan("{\"type\":\"timer.stop\",\"timeoutSec\":5,\"name\":\"t\",\"metric\":\"m\"}", ",\"setup\":[{\"type\":\"timer.start\",\"timeoutSec\":5,\"name\":\"t\"}]");
+
+            _f.Run(plan);
+
+            var result = _f.ReadResult();
+            Assert.AreEqual("FAIL", result.Status);
+            StringAssert.Contains("another iteration", result.Reason);
+            Assert.IsEmpty(result.Metrics);
+        }
+
+        [Test]
+        public void ConditionThatThrowsFailsTheTimerStep()
+        {
+            _f.Options.Conditions.Register("boom", () => throw new System.InvalidOperationException("no file"));
+
+            _f.Run(HarnessFixture.Plan("{\"type\":\"timer.start\",\"timeoutSec\":5,\"name\":\"t\"},{\"type\":\"timer.stop\",\"timeoutSec\":5,\"name\":\"t\",\"metric\":\"m\",\"until\":\"boom\"}"));
+
+            var result = _f.ReadResult();
+            Assert.AreEqual("FAIL", result.Status);
+            StringAssert.Contains("no file", result.Reason);
+        }
+
+        [Test]
         public void LogSpanMeasuresTheTimeBetweenTwoLogLinesInsideOneStep()
         {
             var plan = HarnessFixture.Plan(

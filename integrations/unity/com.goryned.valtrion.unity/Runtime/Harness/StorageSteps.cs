@@ -36,6 +36,7 @@ namespace Valtrion.Unity.Harness
         sealed class Stamp
         {
             public double StartMs;
+            public string Iteration;
         }
 
         public static void RegisterAll(StepRegistry registry)
@@ -56,11 +57,15 @@ namespace Valtrion.Unity.Harness
             var key = WindowKey(prefix);
             if (!TryReader(context, out var reader))
                 yield break;
-            var identity = context.Phase + ":" + context.Iteration;
-            if (context.Run.State.TryGetValue(key, out var open) && ((Window)open).Iteration == identity)
+            var identity = Identity(context);
+            if (context.Run.State.TryGetValue(key, out var open))
             {
-                context.Fail($"storage window '{prefix}' is already open: call storage.end first");
-                yield break;
+                if (((Window)open).Iteration == identity)
+                {
+                    context.Fail($"storage window '{prefix}' is already open: call storage.end first");
+                    yield break;
+                }
+                Unverified(context, $"storage window '{prefix}' of an earlier iteration was never closed and was replaced");
             }
             var free = reader(context);
             if (free < 0)
@@ -71,7 +76,7 @@ namespace Valtrion.Unity.Harness
                     context.Blocked(note);
                     yield break;
                 }
-                context.Run.Unverified.Add(note);
+                Unverified(context, note);
             }
             else
             {
@@ -100,6 +105,12 @@ namespace Valtrion.Unity.Harness
                 yield break;
             }
             var window = (Window)open;
+            if (window.Iteration != Identity(context))
+            {
+                context.Run.State.Remove(key);
+                context.Fail($"storage window '{prefix}' was opened in another iteration (a step failed before storage.end?): call storage.begin in this iteration");
+                yield break;
+            }
             var elapsedSeconds = seconds ?? (context.Clock.NowMs - window.StartMs) / 1000.0;
             var free = reader(context);
             context.Run.State.Remove(key);
@@ -117,7 +128,7 @@ namespace Valtrion.Unity.Harness
                 if (elapsedSeconds > 0)
                     context.AddMetric(prefix + ".bytesPerSecond", "B/s", used / elapsedSeconds);
                 else
-                    context.Run.Unverified.Add($"bytes per second of '{prefix}' was not reported: no time passed between storage.begin and storage.end");
+                    Unverified(context, $"bytes per second of '{prefix}' was not reported: no time passed between storage.begin and storage.end");
             }
             if (unknown.Count == 0)
                 yield break;
@@ -125,13 +136,13 @@ namespace Valtrion.Unity.Harness
             if (context.Bool("required", false))
                 context.Blocked(text);
             else
-                context.Run.Unverified.Add(text);
+                Unverified(context, text);
         }
 
         /// <summary><c>{ "name": "stop" }</c> remembers now as the start of the timer <c>name</c>, for <c>timer.stop</c>. Starting a timer again restarts it.</summary>
         public static IEnumerator TimerStart(StepContext context)
         {
-            context.Run.State[TimerKey(context.String("name"))] = new Stamp { StartMs = context.Clock.NowMs };
+            context.Run.State[TimerKey(context.String("name"))] = new Stamp { StartMs = context.Clock.NowMs, Iteration = Identity(context) };
             yield break;
         }
 
@@ -159,6 +170,13 @@ namespace Valtrion.Unity.Harness
                 context.Fail($"timer '{name}' was not started: call timer.start first");
                 yield break;
             }
+            var stamp = (Stamp)started;
+            if (stamp.Iteration != Identity(context))
+            {
+                context.Run.State.Remove(TimerKey(name));
+                context.Fail($"timer '{name}' was started in another iteration (a step failed before timer.stop?): call timer.start in this iteration");
+                yield break;
+            }
             while (condition != null)
             {
                 bool met;
@@ -176,7 +194,16 @@ namespace Valtrion.Unity.Harness
                 yield return null;
             }
             context.Run.State.Remove(TimerKey(name));
-            context.AddMetric(metric, "ms", context.Clock.NowMs - ((Stamp)started).StartMs);
+            context.AddMetric(metric, "ms", context.Clock.NowMs - stamp.StartMs);
+        }
+
+        static string Identity(StepContext context) => context.Phase + ":" + context.Iteration;
+
+        /// <summary>Lists a note as unverified once: a repeated plan would otherwise repeat the same text for every iteration.</summary>
+        static void Unverified(StepContext context, string note)
+        {
+            if (!context.Run.Unverified.Contains(note))
+                context.Run.Unverified.Add(note);
         }
 
         static string Prefix(StepContext context) => Identifiers.Sanitize(context.String("prefix", "storage"), "storage");
