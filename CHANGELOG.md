@@ -2,7 +2,9 @@
 
 Core (the `valtrion` Python package) and the Unity package `com.goryned.valtrion.unity` are versioned independently. The Unity changelog is in `integrations/unity/com.goryned.valtrion.unity/CHANGELOG.md`; `compat.json` lists compatible pairs.
 
-## Unreleased
+## 0.19.1 (2026-11-09)
+
+- **Upgrade note.** `compat.json` is unchanged: Core 0.19.1 pairs with Unity packages 0.15.x and 0.16.x like 0.19.0. Update with `pipx upgrade valtrion` (and `valtrion hosts sync` on SSH hosts). On a Mac, give the account that runs the host Full Disk Access for the cleanup below to read its folder.
 
 - **Copies of installed apps on a Mac are pruned (`disk.deviceInstallCacheKeep`).** `devicectl device install app` makes Apple's device service keep a copy of every installed app in `~/Library/Containers/com.apple.CoreDevice.CoreDeviceService/Data/Library/Caches/AppInstallationBinaryDeltas`, about the size of the app, and never removes one; a host that installs builds many times a day filled the volume with them. Valtrion now keeps the newest 2 copies of each app (`disk.deviceInstallCacheKeep`, a non-negative integer, `null` to leave the folder alone) and removes the rest after every passing `install` stage, in `valtrion gc` and in the cleanup under `disk.minFreeGiB`; `valtrion doctor` shows the folder's size (`storage.deviceServiceCopies`) and a `BLOCKED` disk reason names it among the largest consumers. The folder is in a protected container: without Full Disk Access nothing can be read and `gc` and `doctor` say so. The removed copies only mean that the next install of that app sends the whole app once. Additive to `host.json`.
 
