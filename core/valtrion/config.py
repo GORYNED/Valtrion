@@ -15,7 +15,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Sequence
 
-from . import buildcache, constants, core, resultcache, workroot
+from . import buildcache, constants, core, devicecache, resultcache, workroot
 from .adapter import DeviceInfo
 from .resolver import HostInfo
 from .schema import Validator, validate_document
@@ -147,6 +147,9 @@ class HostSettings:
     repeat_guard_sec: float = 0.0
     #: `scratch.maxAgeHours`: the default lifetime of a scratch copy and the idle time before the sweep removes an expired one.
     scratch_max_age_hours: float = DEFAULT_SCRATCH_MAX_AGE_HOURS
+    #: `disk.deviceInstallCacheKeep`: how many copies of each installed app valtrion leaves in the device service's cache on a Mac
+    #: (`devicecache.py`); None (`null`) leaves that cache alone.
+    device_install_cache_keep: int | None = devicecache.DEFAULT_KEEP
 
     def project(self, name: str) -> "ManagedProject | None":
         return next((item for item in self.projects if item.name == name), None)
@@ -229,6 +232,9 @@ def _load_host_settings(home: Path | None = None) -> HostSettings:
     wait_sec = disk.get("waitSec", 0)
     if isinstance(wait_sec, bool) or not isinstance(wait_sec, (int, float)) or not math.isfinite(wait_sec) or wait_sec < 0:
         raise ConfigError("host.json: disk.waitSec must be a non-negative number")
+    cache_keep = disk.get("deviceInstallCacheKeep", devicecache.DEFAULT_KEEP)
+    if cache_keep is not None and (isinstance(cache_keep, bool) or not isinstance(cache_keep, int) or cache_keep < 0):
+        raise ConfigError("host.json: disk.deviceInstallCacheKeep must be a non-negative integer or null")
     projects = _load_projects(document.get("projects", {}), home)
     return HostSettings(Path(root).expanduser() if root else default_root, float(days),
                         Path(work).expanduser() if work else default_work, float(minimum) if minimum is not None else None,
@@ -237,7 +243,8 @@ def _load_host_settings(home: Path | None = None) -> HostSettings:
                         build_cache=_load_build_cache(document.get("buildCache")),
                         result_cache=_load_result_cache(document.get("resultCache")),
                         repeat_guard_sec=_load_repeat_guard(document.get("repeatGuard")),
-                        scratch_max_age_hours=_load_scratch(document.get("scratch")))
+                        scratch_max_age_hours=_load_scratch(document.get("scratch")),
+                        device_install_cache_keep=cache_keep)
 
 
 def _load_result_cache(value: Any) -> resultcache.Settings:

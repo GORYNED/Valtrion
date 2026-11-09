@@ -22,7 +22,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
-from . import __version__, artifacts, buildcache, checkout, compare, config, constants, core, diskspace, externalui, gitstate, incremental, lease, providers, resultcache, resume, supervise, unityguard
+from . import __version__, artifacts, buildcache, checkout, compare, config, constants, core, devicecache, diskspace, externalui, gitstate, incremental, lease, providers, resultcache, resume, supervise, unityguard
 from .adapter import DeviceHealth, DeviceInfo, PlatformAdapter, StepOutcome
 from .jobs import JobContext
 from .jobs import reap_cancelled_jobs as jobs_reap
@@ -1429,6 +1429,7 @@ def execute(pipeline: Mapping[str, Any], pipeline_path: Path | None, ctx: JobCon
                 record(index, "ran", installed.status, f"install failed: {installed.reason}", deviceId=device.id if device else None)
                 return fail(installed.status, f"install failed: {installed.reason}")
             record(index, "ran", constants.PASS, deviceId=device.id if device else None)
+            _prune_device_copies(events, ctx.home, name)
             if used_entry is not None and Path(chosen) == used_entry.path and used_entry.cacheable and resultcache.clean_build_of(
                     used_entry.key, used_entry.manifest.get("sha"), used_entry.manifest.get("dirty"), used_entry.manifest.get("platform"),
                     candidate_sha, platform):
@@ -1522,6 +1523,23 @@ def _reused_result(hit: resultcache.Hit, job_id: str, index: int, plan: Mapping[
     document["unverified"] = [*original["unverified"], f"reused from run {original['runId']} (job {hit.job_id}): this job did not run the "
                               "plan; the result cache matched the commit, plan, device class, profile, stage and Valtrion version"]
     return finalize_result(document, run_directory, run_directory / "result.json", include_top=True)
+
+
+def _prune_device_copies(events, home, step: str) -> None:
+    """After an install: Apple's device service has just stored one more copy of the app (`devicecache.py`); leave only the newest few of
+    each app. Best effort: a cache that cannot be read or a broken `host.json` never fails the install."""
+    try:
+        keep = config.load_host_settings(home).device_install_cache_keep
+        if keep is None:
+            return
+        report = devicecache.prune(devicecache.default_root(), keep)
+    except (config.ConfigError, OSError):
+        return
+    if report.removed:
+        events.emit("log", f"device service copies: removed {len(report.removed)} older copie(s) of installed apps, "
+                           f"{report.freed / 1024 ** 3:.1f} GiB freed", step=step)
+    elif report.errors:
+        events.emit("log", f"device service copies: not cleaned up: {report.errors[0]}", step=step)
 
 
 def _bounded(call: Callable[[], StepOutcome], stage: Mapping[str, Any], adapter_name: str, default_sec: float = 3600.0) -> StepOutcome:

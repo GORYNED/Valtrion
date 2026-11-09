@@ -4,7 +4,8 @@
 pipeline checks the free space of the work root's volume; below the threshold it removes, in this order, what no job needs:
 abandoned job folders of the work root (`workroot.sweep`; a running job, a retained run and a protected path are never touched),
 expired idle scratch copies (`scratch.sweep`; one in use or of another host user is never touched), run folders older than `disk.keepDaysUnderPressure` (`artifacts.gc`; active, retained and `--protect`ed runs are kept) and
-published builds beyond the build-cache retention (`buildcache.gc`). Still below the threshold afterwards: the build is `BLOCKED`
+published builds beyond the build-cache retention (`buildcache.gc`), the older copies of installed apps that Apple's device service keeps
+on a Mac (`devicecache.prune`; `disk.deviceInstallCacheKeep` copies of each app stay) and, last, idle persistent build folders. Still below the threshold afterwards: the build is `BLOCKED`
 with the numbers and the largest consumers, and no toolchain starts. With a wait (`disk.waitSec`, `--disk-wait`) the pipeline first
 waits, before it takes the project and Editor leases, up to the limit for the space to appear (`wait_for_space`).
 """
@@ -18,7 +19,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Iterable, Sequence
 
-from . import artifacts, buildcache, config, core, incremental, jobs, lease, scratch, workroot
+from . import artifacts, buildcache, config, core, devicecache, incremental, jobs, lease, scratch, workroot
 
 GIB = 1024 ** 3
 #: Under pressure a job folder untouched for this long counts as abandoned (the usual sweep waits `workroot.STALE_JOB_DIRECTORY_SEC`).
@@ -114,6 +115,9 @@ def largest_consumers(settings: config.HostSettings, home: Path | None, limit: i
     items.append((f"{cache} (build cache)", folder_bytes(cache) if cache.is_dir() else 0))
     for folder in incremental.folders(home):
         items.append((f"{folder} (incremental build)", folder_bytes(folder)))
+    copies = devicecache.default_root()
+    if devicecache.present(copies):
+        items.append((f"{copies} (device service copies of installed apps)", devicecache.size_bytes(copies)))
     return sorted(items, key=lambda item: item[1], reverse=True)[:limit]
 
 
@@ -152,6 +156,9 @@ def ensure_free(settings: config.HostSettings, home: Path | None, protected: Seq
                                                     protected=protected_paths).removed),
         ("expired builds", lambda: buildcache.gc(buildcache.builds_root(home), protect=active_build_keys(home, active),
                                                   **settings.build_cache.limits()).removed)]
+    if settings.device_install_cache_keep is not None:
+        # Apple's device service keeps a copy of every app installed on a device and never removes one (`devicecache.py`).
+        steps.append(("device service copies of installed apps", lambda: prune_device_copies(settings)))
     if not keep_incremental:
         # Last: the next build there compiles everything again, so it goes only when nothing else was enough.
         steps.append(("idle incremental build folders", lambda: release_idle_incremental(home)))
@@ -171,6 +178,14 @@ def ensure_free(settings: config.HostSettings, home: Path | None, protected: Seq
     return Outcome(False, f"only {_gib(after)} free on the volume of {settings.work_root}, below the {settings.min_free_gib:g} GiB "
                           f"minimum (host.json disk.minFreeGiB) after removing {len(removed)} abandoned or expired item(s); "
                           f"largest: {consumers}{problems}", tuple(removed), before, after)
+
+
+def prune_device_copies(settings: config.HostSettings) -> list[str]:
+    """Remove all but the newest `settings.device_install_cache_keep` copies of each installed app from the device service's cache."""
+    report = devicecache.prune(devicecache.default_root(), settings.device_install_cache_keep)
+    if report.errors and not report.removed:
+        raise OSError("; ".join(report.errors))
+    return [f"{path} (device service copy)" for path in report.removed]
 
 
 def releasable_bytes(settings: config.HostSettings, home: Path | None, own_job_id: str) -> int:
