@@ -79,6 +79,7 @@ namespace Valtrion.Unity.Tests
             Assert.AreEqual("FAIL", result.Status);
             StringAssert.Contains("the app did not return", result.Reason);
             Assert.IsEmpty(result.Metrics);
+            Assert.IsNull(HeartbeatDocument.Parse(File.ReadAllText(Path.Combine(_f.RunDirectory, "heartbeat.json"))).Request, "the request left the heartbeat");
         }
 
         [Test]
@@ -97,6 +98,7 @@ namespace Valtrion.Unity.Tests
             var result = _f.ReadResult();
             Assert.AreEqual("TIMEOUT", result.Status);
             StringAssert.Contains("step timeout of 3 s", result.Reason);
+            Assert.IsNull(HeartbeatDocument.Parse(File.ReadAllText(Path.Combine(_f.RunDirectory, "heartbeat.json"))).Request, "the request left the heartbeat");
         }
 
         [Test]
