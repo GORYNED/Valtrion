@@ -204,10 +204,13 @@ namespace Valtrion.Unity.Contracts
                 var path = $"$.steps[{index}]";
                 if (step.Type == "repeat" && step.Args.TryGet("steps", out var inner))
                 {
-                    var number = 0;
-                    foreach (var child in inner.Items)
+                    // From the second round on, the inner steps start in the state the first round left: read the list twice when it repeats.
+                    var passes = step.Args.TryGet("count", out var count) && count.Kind == JsonKind.Number && count.AsNumber > 1 ? 2 : 1;
+                    for (var pass = 0; pass < passes; pass++)
                     {
-                        CheckWindow(child.TryGet("type", out var type) ? type.AsString : null, $"{path}.steps[{number++}]", ref measuring);
+                        var number = 0;
+                        foreach (var child in inner.Items)
+                            CheckWindow(child.TryGet("type", out var type) ? type.AsString : null, $"{path}.steps[{number++}]", ref measuring);
                     }
                 }
                 else

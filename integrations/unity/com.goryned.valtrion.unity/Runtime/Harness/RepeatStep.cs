@@ -21,7 +21,7 @@ namespace Valtrion.Unity.Harness
         /// runs <c>steps</c> (each with its own <c>type</c> and <c>timeoutSec</c>, as in a plan; <c>repeat</c> cannot be nested) <c>count</c> times in order. The
         /// <c>timeoutSec</c> of the <c>repeat</c> step bounds the whole loop. The metrics of the inner steps get one sample per round, so the result has their
         /// n, median, p90 and max over the rounds. The step itself reports <c>&lt;prefix&gt;.rounds</c> (rounds run) and <c>&lt;prefix&gt;.failedRounds</c>, and the
-        /// duration of every round as <c>roundMetric</c> when given (<c>prefix</c> defaults to <c>repeat</c>). A round whose step ends FAIL is a failed round: the rest
+        /// duration of every round that ran to its end (a failed one included) as <c>roundMetric</c> when given (<c>prefix</c> defaults to <c>repeat</c>). A round whose step ends FAIL is a failed round: the rest
         /// of that round is skipped; the loop stops there, or goes on with the next round when <c>continueOnFail</c> is true, and the step ends FAIL naming the
         /// number of failed rounds and the first failure. A step that ends BLOCKED, NEEDS_PERMISSION or TIMEOUT stops the loop with that status.</summary>
         public static IEnumerator Repeat(StepContext context)
@@ -61,34 +61,42 @@ namespace Valtrion.Unity.Harness
                             childContext.SetStatus(ValidationStatus.Fail, Faults.Describe(ex));
                         }
                         var startMs = context.Clock.NowMs;
-                        while (routine != null)
+                        // The inner routine is disposed however this step ends, also when the runner disposes this iterator because the step timed out,
+                        // the plan budget ran out or the run was aborted: the inner step's own cleanup (finally blocks) must run.
+                        try
                         {
-                            bool more;
-                            try
+                            while (routine != null)
                             {
-                                more = routine.MoveNext();
+                                bool more;
+                                try
+                                {
+                                    more = routine.MoveNext();
+                                }
+                                catch (Exception ex)
+                                {
+                                    childContext.SetStatus(ValidationStatus.Fail, Faults.Describe(ex));
+                                    break;
+                                }
+                                if (!more)
+                                    break;
+                                if (context.Clock.NowMs - startMs > child.TimeoutSec * 1000.0)
+                                {
+                                    childContext.SetStatus(ValidationStatus.Timeout, $"step timeout of {child.TimeoutSec} s" + Suffix(childContext.Message));
+                                    break;
+                                }
+                                var yielded = routine.Current;
+                                if (yielded != null && !(yielded is WaitForEndOfFrame))
+                                {
+                                    childContext.SetStatus(ValidationStatus.Fail, $"step yielded {yielded.GetType().Name}; a step may yield only null or WaitForEndOfFrame so its timeout holds");
+                                    break;
+                                }
+                                yield return yielded;
                             }
-                            catch (Exception ex)
-                            {
-                                childContext.SetStatus(ValidationStatus.Fail, Faults.Describe(ex));
-                                break;
-                            }
-                            if (!more)
-                                break;
-                            if (context.Clock.NowMs - startMs > child.TimeoutSec * 1000.0)
-                            {
-                                childContext.SetStatus(ValidationStatus.Timeout, $"step timeout of {child.TimeoutSec} s" + Suffix(childContext.Message));
-                                break;
-                            }
-                            var yielded = routine.Current;
-                            if (yielded != null && !(yielded is WaitForEndOfFrame))
-                            {
-                                childContext.SetStatus(ValidationStatus.Fail, $"step yielded {yielded.GetType().Name}; a step may yield only null or WaitForEndOfFrame so its timeout holds");
-                                break;
-                            }
-                            yield return yielded;
                         }
-                        Dispose(routine);
+                        finally
+                        {
+                            Dispose(routine);
+                        }
                     }
                     // At least one frame per inner step: a long repeat of instant steps must not freeze the player or outrun the budget.
                     yield return null;
@@ -106,14 +114,14 @@ namespace Valtrion.Unity.Harness
                     break;
                 }
                 rounds++;
+                if (roundMetric != null && stoppedStatus == null)
+                    context.AddMetric(roundMetric, "ms", context.Clock.NowMs - roundStartMs);
                 if (roundFailed)
                 {
                     failedRounds++;
                     if (!continueOnFail)
                         break;
                 }
-                if (roundMetric != null && stoppedStatus == null)
-                    context.AddMetric(roundMetric, "ms", context.Clock.NowMs - roundStartMs);
             }
             context.AddMetric(prefix + ".rounds", "count", rounds);
             context.AddMetric(prefix + ".failedRounds", "count", failedRounds);

@@ -257,7 +257,11 @@ def _describe(value: Any) -> str:
 
 
 def _whole(value: Any, minimum: int) -> bool:
-    return isinstance(value, (int, float)) and not isinstance(value, bool) and float(value).is_integer() and minimum <= value <= 2_147_483_647
+    if isinstance(value, bool):
+        return False
+    if isinstance(value, int):
+        return minimum <= value <= 2_147_483_647
+    return isinstance(value, float) and value.is_integer() and minimum <= value <= 2_147_483_647
 
 
 def _repeat_errors(step: dict, path: str) -> list[str]:
@@ -285,7 +289,8 @@ def _repeat_errors(step: dict, path: str) -> list[str]:
 
 
 def _flatten(steps: list, path: str):
-    """The steps in the order they run, with the inner steps of a `repeat` in place, as `(path, type)`."""
+    """The steps in the order they run, with the inner steps of a `repeat` in place, as `(path, type)`. From the second round on, the inner steps start in
+    the state the first round left, so a list that repeats is read twice."""
     for index, step in enumerate(steps):
         if not isinstance(step, dict):
             continue
@@ -293,8 +298,11 @@ def _flatten(steps: list, path: str):
         yield where, step.get("type")
         inner = step.get("steps")
         if step.get("type") == "repeat" and isinstance(inner, list):
-            for inner_path, inner_type in _flatten(inner, f"{where}.steps"):
-                yield inner_path, inner_type
+            count = step.get("count")
+            passes = 2 if isinstance(count, (int, float)) and not isinstance(count, bool) and count > 1 else 1
+            for _ in range(passes):
+                for inner_path, inner_type in _flatten(inner, f"{where}.steps"):
+                    yield inner_path, inner_type
 
 
 def check_plan_semantics(plan: dict) -> list[str]:
@@ -314,7 +322,9 @@ def check_plan_semantics(plan: dict) -> list[str]:
         elif step_type == "probe.stop":
             measuring = False
         elif step_type == "external.ui" and measuring:
-            errors.append(f"{path}: external.ui is forbidden between probe.start and probe.stop in a performance plan")
+            message = f"{path}: external.ui is forbidden between probe.start and probe.stop in a performance plan"
+            if message not in errors:  # a list that repeats is read twice and names the same step twice
+                errors.append(message)
     return errors
 
 

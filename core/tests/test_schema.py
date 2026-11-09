@@ -47,7 +47,7 @@ class GoldenFixtureTests(unittest.TestCase):
 
     def test_the_c_sharp_reader_enforces_the_same_rules_as_this_validator(self):
         # Semantic rules live in both implementations; this guards the fixtures that only they reject.
-        for name in ("plan-external-ui-in-probe", "plan-external-ui-in-probe-in-repeat", "plan-repeat-without-count", "plan-repeat-nested",
+        for name in ("plan-external-ui-in-probe", "plan-external-ui-in-probe-in-repeat", "plan-external-ui-in-probe-in-second-round", "plan-repeat-without-count", "plan-repeat-nested",
                      "plan-repeat-inner-step-without-timeout", "result-pass-with-reason", "result-pass-with-failed-layer",
                      "result-blocked-without-reason", "hosts-duplicate-id", "hosts-ssh-without-target", "hosts-ssh-target-option"):
             with self.subTest(name):
@@ -226,6 +226,20 @@ class ValidatorTests(unittest.TestCase):
         plan = {"kind": "performance", "steps": [
             {"type": "repeat", "count": 2, "steps": [{"type": "probe.start", "timeoutSec": 5}]}, {"type": "external.ui"}]}
         self.assertTrue(any("external.ui" in message for message in check_plan_semantics(plan)))
+
+    def test_a_probe_window_left_open_by_one_round_covers_the_next_round(self):
+        plan = {"kind": "performance", "steps": [
+            {"type": "repeat", "count": 2, "timeoutSec": 30, "steps": [{"type": "external.ui", "timeoutSec": 5}, {"type": "probe.start", "timeoutSec": 5}]}]}
+        self.assertTrue(any("external.ui" in message for message in check_plan_semantics(plan)))
+        once = {"kind": "performance", "steps": [
+            {"type": "repeat", "count": 1, "timeoutSec": 30, "steps": [{"type": "external.ui", "timeoutSec": 5}, {"type": "probe.start", "timeoutSec": 5}]}]}
+        self.assertEqual([], check_plan_semantics(once))
+
+    def test_a_huge_count_is_rejected_not_a_crash(self):
+        step = {"type": "repeat", "timeoutSec": 5, "count": 10 ** 400, "steps": [{"type": "wait", "timeoutSec": 5}]}
+        self.assertTrue(check_plan_semantics({"kind": "functional", "steps": [step]}))
+        step["count"] = 1e300
+        self.assertTrue(check_plan_semantics({"kind": "functional", "steps": [step]}))
 
     def test_a_repeat_with_a_count_and_inner_steps_is_accepted(self):
         step = {"type": "repeat", "timeoutSec": 30, "count": 3, "steps": [{"type": "wait", "timeoutSec": 5}]}

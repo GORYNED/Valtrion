@@ -207,6 +207,53 @@ namespace Valtrion.Unity.Tests
         }
 
         [Test]
+        public void InnerStepCleansUpWhenTheRepeatStepTimesOut()
+        {
+            var cleaned = 0;
+            _f.Registry.Register("test.cleanup", context => Cleaning(() => cleaned++));
+
+            _f.Run(HarnessFixture.Plan(Repeat(5, "{\"type\":\"test.cleanup\",\"timeoutSec\":50}", "", 2)));
+
+            Assert.AreEqual("TIMEOUT", _f.ReadResult().Status);
+            Assert.AreEqual(1, cleaned, "the inner step's finally block ran when the outer step was cut off");
+        }
+
+        [Test]
+        public void InnerStepCleansUpWhenThePlanBudgetRunsOut()
+        {
+            var cleaned = 0;
+            _f.Registry.Register("test.cleanup", context => Cleaning(() => cleaned++));
+
+            _f.Run(HarnessFixture.Plan(Repeat(5, "{\"type\":\"test.cleanup\",\"timeoutSec\":50}", "", 50), "", "functional", 2));
+
+            Assert.AreEqual("TIMEOUT", _f.ReadResult().Status);
+            Assert.AreEqual(1, cleaned);
+        }
+
+        static IEnumerator Cleaning(System.Action cleanup)
+        {
+            try
+            {
+                while (true)
+                    yield return null;
+            }
+            finally
+            {
+                cleanup();
+            }
+        }
+
+        [Test]
+        public void RoundMetricGetsTheDurationOfEveryRoundAlsoAFailedOne()
+        {
+            _failOnCall = 2;
+
+            _f.Run(HarnessFixture.Plan(Repeat(3, CallStep, ",\"roundMetric\":\"roundMs\",\"continueOnFail\":true")));
+
+            Assert.AreEqual(3, _f.ReadResult().Metrics.Single(m => m.Name == "roundMs").Samples.Count);
+        }
+
+        [Test]
         public void RoundMetricGetsTheDurationOfEveryRound()
         {
             _f.Run(HarnessFixture.Plan(Repeat(3, "{\"type\":\"wait\",\"timeoutSec\":5,\"seconds\":0.5}", ",\"roundMetric\":\"roundMs\"")));
