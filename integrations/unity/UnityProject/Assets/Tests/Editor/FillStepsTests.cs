@@ -71,6 +71,65 @@ namespace Valtrion.Unity.Tests
         }
 
         [Test]
+        public void LeaveFreeModeNeedsNoReserveAndKeepsTheFloorTheToleranceAdmits()
+        {
+            var plan = HarnessFixture.Plan(Fill("\"leaveFreeBytes\":" + 30 * MiB + ",\"toleranceBytes\":" + MiB / 2));
+
+            _f.Run(plan);
+
+            var result = _f.ReadResult();
+            Assert.AreEqual("PASS", result.Status);
+            Assert.AreEqual(30 * MiB, Single(result, "fill.freeAfterBytes"), 1 * MiB);
+            Assert.AreEqual(0, Used());
+        }
+
+        [Test]
+        public void WithoutAReserveTheFloorIsTheTargetMinusTheTolerance()
+        {
+            _capacity = 60 * MiB;
+            var plan = HarnessFixture.Plan(Fill("\"leaveFreeBytes\":" + 20 * MiB + ",\"toleranceBytes\":" + 2 * MiB));
+            var runner = new PlanRunner(plan, null, _f.Options);
+            var squeezed = false;
+
+            _f.Pump(runner, () =>
+            {
+                // Just before the target the system takes 8 MiB: free space falls to 16 MiB, below the floor of 18 MiB.
+                if (!squeezed && Used() >= 36 * MiB)
+                {
+                    squeezed = true;
+                    _takenBySystem = 8 * MiB;
+                }
+            });
+
+            var result = runner.Result;
+            Assert.IsTrue(squeezed);
+            Assert.AreEqual("PASS", result.Status, "the file was cut back until the free space was within the tolerance of the target again");
+            Assert.AreEqual(18 * MiB, Single(result, "fill.freeAfterBytes"), 64, "cut back to the derived floor (target minus tolerance) and no further: a floor of 1 would have cut back to the target");
+            Assert.AreEqual(34 * MiB, Single(result, "fill.bytesWritten"), 64, "the 16-byte marker counts in the free space");
+        }
+
+        [Test]
+        public void AnExplicitReserveIsUsedAsBefore()
+        {
+            _f.Run(HarnessFixture.Plan(Fill("\"reserveBytes\":" + 25 * MiB + ",\"leaveFreeBytes\":" + 20 * MiB + ",\"toleranceBytes\":" + MiB)));
+
+            var result = _f.ReadResult();
+            Assert.AreEqual("FAIL", result.Status, "leaveFreeBytes below an explicit reserveBytes is refused");
+            StringAssert.Contains("invalid arguments", result.Reason);
+        }
+
+        [Test]
+        public void BytesModeStillNeedsAReserve()
+        {
+            _f.Run(HarnessFixture.Plan(Fill("\"bytes\":" + MiB)));
+
+            var result = _f.ReadResult();
+            Assert.AreEqual("FAIL", result.Status);
+            StringAssert.Contains("reserveBytes", result.Reason);
+            Assert.AreEqual(0, Used());
+        }
+
+        [Test]
         public void BytesModeWritesExactlyThatManyBytes()
         {
             _f.Run(HarnessFixture.Plan(Fill("\"reserveBytes\":" + 10 * MiB + ",\"bytes\":" + 5 * MiB) + ",{\"type\":\"storage.release\",\"timeoutSec\":5}"));
@@ -425,6 +484,7 @@ namespace Valtrion.Unity.Tests
             {
                 "\"bytes\":1",
                 "\"reserveBytes\":1",
+                "\"leaveFreeBytes\":10",
                 "\"reserveBytes\":1,\"bytes\":1,\"leaveFreeBytes\":10,\"toleranceBytes\":1",
                 "\"reserveBytes\":1,\"leaveFreeBytes\":10",
                 "\"reserveBytes\":-1,\"bytes\":1",
