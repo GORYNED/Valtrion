@@ -2,6 +2,10 @@
 
 Core (the `valtrion` Python package) and the Unity package `com.goryned.valtrion.unity` are versioned independently. The Unity changelog is in `integrations/unity/com.goryned.valtrion.unity/CHANGELOG.md`; `compat.json` lists compatible pairs.
 
+## Unreleased
+
+- **Copies of installed apps on a Mac are pruned (`disk.deviceInstallCacheKeep`).** `devicectl device install app` makes Apple's device service keep a copy of every installed app in `~/Library/Containers/com.apple.CoreDevice.CoreDeviceService/Data/Library/Caches/AppInstallationBinaryDeltas`, about the size of the app, and never removes one; a host that installs builds many times a day filled the volume with them. Valtrion now keeps the newest 2 copies of each app (`disk.deviceInstallCacheKeep`, a non-negative integer, `null` to leave the folder alone) and removes the rest after every passing `install` stage, in `valtrion gc` and in the cleanup under `disk.minFreeGiB`; `valtrion doctor` shows the folder's size (`storage.deviceServiceCopies`) and a `BLOCKED` disk reason names it among the largest consumers. The folder is in a protected container: without Full Disk Access nothing can be read and `gc` and `doctor` say so. The removed copies only mean that the next install of that app sends the whole app once. Additive to `host.json`.
+
 ## 0.19.0 (2026-11-09)
 
 - **Upgrade note.** `compat.json` pairs Core 0.19.0 with Unity packages 0.15.x and 0.16.x (Core 0.8.0 up to, not including, 0.20): `valtrion doctor --project` does not block a project that stays on package 0.15.x. A plan that uses the new steps `session.offsets`, `storage.begin`, `storage.end`, `timer.start`, `timer.stop`, `counter.start`, `counter.stop`, `repeat`, `storage.fill`, `storage.release`, `call.time` or `app.background`, or the probe `logSpan`, needs package 0.16.0 to run: with 0.15.x the step type is not registered and the step ends `BLOCKED`. Update the package tag in `Packages/manifest.json` to `unity-v0.16.0`. Other hosts need the same Core version (`valtrion hosts sync`).

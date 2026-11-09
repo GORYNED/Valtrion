@@ -15,7 +15,7 @@ import subprocess
 from pathlib import Path
 from typing import Callable, Sequence
 
-from . import __version__, buildcache, checkout, compare, core, diskspace, incremental, lease, nowindow, scratch, workroot
+from . import __version__, buildcache, checkout, compare, core, devicecache, diskspace, incremental, lease, nowindow, scratch, workroot
 from .resolver import HostCapabilities
 
 PROBE_TIMEOUT_SEC = 20
@@ -233,6 +233,12 @@ def storage_report(work_root: Path, artifacts_root: Path, min_free_gib: float | 
                        "entries": len(buildcache.entries(cache))},
         "incremental": [{"path": str(path), "bytes": diskspace.folder_bytes(path)} for path in incremental.folders(home)],
         "freeBytes": free}
+    copies = devicecache.default_root()
+    if devicecache.present(copies):
+        found = devicecache.listing(copies)
+        report["deviceServiceCopies"] = {"path": str(copies), "bytes": devicecache.size_bytes(copies), "copies": len(found.copies)}
+        if found.error:
+            report["deviceServiceCopies"]["error"] = found.error
     if min_free_gib:
         report["minFreeGiB"] = min_free_gib
         report["belowMinimum"] = free < min_free_gib * diskspace.GIB
@@ -396,6 +402,12 @@ def render(report: dict) -> str:
                      f"{storage['freeBytes'] / gib:.1f} GiB free")
         for item in storage.get("incremental", []):
             lines.append(f"  incremental build folder {item['path']}: {item['bytes'] / gib:.1f} GiB")
+        copies = storage.get("deviceServiceCopies")
+        if copies:
+            lines.append(f"  device service copies of installed apps {copies['path']}: {copies['bytes'] / gib:.1f} GiB in {copies['copies']} copie(s); "
+                         "`valtrion gc` keeps the newest ones of each app (host.json disk.deviceInstallCacheKeep)")
+            if copies.get("error"):
+                lines.append(f"  WARNING {copies['error']}")
         for item in (report.get("checkouts") or {}).get("managed", []):
             state = (f"at {item['commit'][:12]}" if item["commit"] else "not a git checkout" if item["exists"] else
                      f"was created, now missing (last used {item.get('lastUsed') or 'unknown'})" if item.get("missing") else "not created yet")

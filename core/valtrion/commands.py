@@ -18,7 +18,7 @@ import tempfile
 from pathlib import Path
 from typing import Any, Callable, Sequence
 
-from . import artifacts, buildcache, compare as comparing, config, constants, core, diskspace, doctor, hostsync, jobs, lease, outputs, project, providers, remote, repeatguard, scratch, submit, supervise, wheel, workroot
+from . import artifacts, buildcache, compare as comparing, config, constants, core, devicecache, diskspace, doctor, hostsync, jobs, lease, outputs, project, providers, remote, repeatguard, scratch, submit, supervise, wheel, workroot
 from . import __version__
 from .adapter import DeviceInfo
 from .cli import Command, register
@@ -1294,6 +1294,13 @@ def _gc(arguments: argparse.Namespace) -> int:
                           **settings.build_cache.limits())
     for item in built.removed:
         print(f"{verb} build {item}")
+    copies = devicecache.prune(devicecache.default_root(), settings.device_install_cache_keep, dry_run=arguments.dry_run)
+    for path in copies.removed:
+        print(f"{verb} {path} (copy of an installed app kept by Apple's device service)")
+    for error in copies.errors:
+        print(f"WARNING device service copies: {error}")
+    if copies.removed:
+        print(f"{verb} {len(copies.removed)} device service copie(s), {copies.freed / 1024 ** 3:.1f} GiB")
     return constants.EXIT_PASS
 
 
