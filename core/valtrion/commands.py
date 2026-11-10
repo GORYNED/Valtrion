@@ -184,15 +184,25 @@ def _hosts_sync(arguments: argparse.Namespace, entries: Sequence[config.HostEntr
         print("no SSH hosts are configured; nothing to sync")
         return constants.EXIT_PASS
     import tempfile
+
+    def progress(text: str) -> None:  # on stderr, so that --json and the final table stay clean; a wait with no output looks like a hang
+        print(text, file=sys.stderr, flush=True)
+
     with tempfile.TemporaryDirectory(prefix="valtrion-wheel-") as folder:
+        progress(f"building the wheel of core {__version__}...")
         built = wheel.build_wheel(Path(folder))
         rows = []
         for entry in remote_entries:
+            progress(f"{entry.id}: checking that the host answers (up to {hostsync.REACH_TIMEOUT_SEC} s)...")
             transport = remote.make_transport(entry)
-            row = hostsync.sync_host(entry, transport, built, config.set_host_command, prune_pipx=arguments.prune)
-            if arguments.ensure_path and row.command and row.status in (hostsync.OK, hostsync.UPDATED):
-                note = hostsync.ensure_path(entry, transport, row.command)
-                row = dataclasses.replace(row, reason="; ".join(part for part in (row.reason, note) if part))
+            row = hostsync.unreachable_row(entry, transport)
+            if row is None:
+                progress(f"{entry.id}: syncing...")
+                row = hostsync.sync_host(entry, transport, built, config.set_host_command, prune_pipx=arguments.prune)
+                if arguments.ensure_path and row.command and row.status in (hostsync.OK, hostsync.UPDATED):
+                    note = hostsync.ensure_path(entry, transport, row.command)
+                    row = dataclasses.replace(row, reason="; ".join(part for part in (row.reason, note) if part))
+            progress(f"{entry.id}: {row.status}")
             rows.append(row)
     if arguments.json:
         _out([row.document() for row in rows])

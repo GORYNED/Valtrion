@@ -2,6 +2,12 @@
 
 Core (the `valtrion` Python package) and the Unity package `com.goryned.valtrion.unity` are versioned independently. The Unity changelog is in `integrations/unity/com.goryned.valtrion.unity/CHANGELOG.md`; `compat.json` lists compatible pairs.
 
+## 0.21.1 (2026-11-10)
+
+- **Upgrade note.** `compat.json` is unchanged: Core 0.21.1 pairs with Unity packages 0.17.x and 0.18.x like 0.21.0. Update with `pipx upgrade valtrion` (and `valtrion hosts sync` on SSH hosts).
+
+- **`hosts sync` shows its progress and gives up on a dead host quickly.** It used to print nothing until every host was done, so a host that did not answer made the command look hung. It now writes to stderr what it is doing (building the wheel, then for each host the check and the result), and a host that does not answer one trivial command within 20 s is reported `unreachable` and left out, instead of every step waiting for its own timeout. The final table and `--json` output are unchanged.
+
 ## 0.21.0 (2026-11-10)
 
 - **Upgrade note.** `compat.json` pairs Core 0.21.0 with Unity package 0.18.x (Core 0.8.0 up to, not including, 0.22) and keeps package 0.17.x paired with Core below 0.22 as well: 0.17.x reads every key of a map except the new `fullSetReasons`, so a project that declares it needs package 0.18.0. **Behavior change:** `valtrion select` without `--level` now selects up to `L2` (the checks the change affects); it used to select up to `L4`. A script that relied on the old default passes `--mode release` or `--level L4`. Update with `pipx upgrade valtrion` (and `valtrion hosts sync` on SSH hosts).
