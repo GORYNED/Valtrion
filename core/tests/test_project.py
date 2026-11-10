@@ -140,7 +140,7 @@ class CheckTests(ProjectCase):
         self.assertEqual("ok", self.check()["status"])
 
     def test_the_shipped_compat_table_is_valid_and_lists_this_core(self):
-        self.lock({"version": "0.16.0", "source": "registry"})
+        self.lock({"version": "0.17.0", "source": "registry"})
         self.assertEqual("ok", project.check_project(self.unity)["status"])
 
 
@@ -163,7 +163,7 @@ class DoctorProjectTests(ProjectCase):
         self.assertEqual("skipped", json.loads(out)["project"]["status"])
 
     def test_supported_package_passes(self):
-        self.lock({"version": "0.15.0", "source": "registry"})
+        self.lock({"version": "0.17.0", "source": "registry"})
         code, out, _ = self.doctor("--project", str(self.unity))
         self.assertEqual((0, "ok"), (code, json.loads(out)["project"]["status"]))
 
