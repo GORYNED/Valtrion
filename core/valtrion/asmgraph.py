@@ -176,8 +176,7 @@ def changed_assemblies(
     files of the new commit, `package` the graph of its assemblies. A renamed assembly is listed under both names.
 
     Raises `GraphError` for a file that belongs to no assembly (a document and the meta file of a folder do not), for an `.asmref` that names an
-    assembly outside the package, for a GUID that changed and for a change in a test assembly of the package (a project may list it in
-    `testables`)."""
+    assembly outside the package, for a GUID that changed and for precompiled code."""
     files = set(tree)
     definitions: dict[str, str] = {}
     references: dict[str, str] = {}
@@ -255,27 +254,27 @@ def changed_assemblies(
                     continue
                 raise GraphError(f"{relative}: belongs to no assembly")
             add(owner, relative)
-    for name in sorted(changed):
-        if name in package.by_name and package.by_name[name].test:
-            raise GraphError(f"{package.by_name[name].path}: a test assembly of the package changed; a project may list it in testables")
     return changed
 
 
-def narrow(project: Sequence[Assembly], package: Sequence[Assembly], package_name: str, changed: Mapping[str, Sequence[str]]) -> list[dict[str, Any]]:
-    """The test assemblies of `project` that reach a changed assembly of the package: `{assembly, mode, via, files}` sorted by name, `via`
-    being the chain of references from the test assembly to the changed assembly. An assembly of the project or the package that sets a define
-    from the version of the package (`versionDefines`) counts as changed too: the version moves with every pin.
+def narrow(
+        project: Sequence[Assembly], packages: Mapping[str, Sequence[Assembly]], package_name: str, changed: Mapping[str, Sequence[str]],
+        testables: Iterable[str] = ()) -> list[dict[str, Any]]:
+    """The test assemblies that reach a changed assembly of the package: `{assembly, mode, via, files}` sorted by name, `via` being the chain
+    of references from the test assembly to the changed assembly. `project` are the assemblies of the project and `packages` those of every
+    package the graph needs (the changed one, named `package_name`, and the ones that depend on it), by package name. A test assembly of the
+    project is selectable; one of a package only when the package is in `testables` (otherwise the project never runs it). An assembly that
+    sets a define from the version of the package (`versionDefines`) counts as changed too: the version moves with every pin.
 
-    Raises `GraphError` when the two sets of assemblies clash."""
-    graph = Graph([*project, *package])
+    Raises `GraphError` when the sets of assemblies clash."""
+    members = [assembly for items in packages.values() for assembly in items]
+    graph = Graph([*project, *members])
     seeds: dict[str, list[str]] = {name: list(files) for name, files in changed.items()}
     for assembly in graph.assemblies:
         if package_name in assembly.version_defines:
             seeds.setdefault(assembly.name, []).append(f"(versionDefines of {package_name})")
     reached = graph.dependents(seeds)
-    in_package = {assembly.name for assembly in package if assembly.test}.intersection(reached)
-    if in_package:
-        raise GraphError(f"a test assembly of the package ({', '.join(sorted(in_package))}) references what changed; a project may list it in testables")
-    names = {assembly.name for assembly in project}
+    listed = set(testables)
+    selectable = {assembly.name for assembly in project} | {assembly.name for name, items in packages.items() if name in listed for assembly in items}
     return [{"assembly": name, "mode": graph.by_name[name].mode, "via": chain, "files": seeds[chain[-1]]}
-            for name, chain in sorted(reached.items()) if name in names and graph.by_name[name].test]
+            for name, chain in sorted(reached.items()) if name in selectable and graph.by_name[name].test]
