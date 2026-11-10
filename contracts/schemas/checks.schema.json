@@ -69,7 +69,18 @@
                   "additionalProperties": false,
                   "properties": {
                     "managed": { "$ref": "common.schema.json#/$defs/identifier" },
-                    "platform": { "$ref": "common.schema.json#/$defs/identifier" }
+                    "platform": { "$ref": "common.schema.json#/$defs/identifier" },
+                    "assemblies": {
+                      "type": "object",
+                      "required": ["kind", "runner"],
+                      "additionalProperties": false,
+                      "properties": {
+                        "kind": { "$ref": "common.schema.json#/$defs/identifier" },
+                        "runner": { "type": "string", "minLength": 1 },
+                        "playmodeRunner": { "type": "string", "minLength": 1 },
+                        "level": { "enum": ["L1", "L2", "L3", "L4"] }
+                      }
+                    }
                   }
                 }
               }

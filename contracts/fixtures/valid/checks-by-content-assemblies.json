@@ -1,0 +1,23 @@
+{
+  "schema": "gdv.checks/1",
+  "platforms": { "required": ["ios"], "dev": ["editor"] },
+  "runners": { "unity-editmode": "run-tests --mode editmode --assemblies {assemblies}", "unity-playmode": "run-tests --mode playmode --assemblies {assemblies}" },
+  "areas": [
+    { "glob": "**/*.cs", "kind": "managed" }
+  ],
+  "jsonRules": [
+    { "glob": "Packages/packages-lock.json", "root": "dependencies", "keys": [
+      { "match": "com.example.*", "kind": "native", "byContent": {
+        "managed": "whole-set", "platform": "native",
+        "assemblies": { "kind": "narrowed", "runner": "unity-editmode", "playmodeRunner": "unity-playmode", "level": "L2" } } },
+      { "match": "*", "kind": "native", "allowHeavyFallback": true }
+    ] }
+  ],
+  "kinds": {
+    "managed": { "L2": ["editmode:Example.Tests"] },
+    "whole-set": { "L2": ["editmode:Example.Tests,Example.Other.Tests"] },
+    "narrowed": { "L0": ["l0"], "L3": ["editmode:Example.Tests,Example.Other.Tests"] },
+    "native": { "L2": ["editmode:Example.Tests"], "L3": ["player:ios"] }
+  },
+  "unclassified": "widest"
+}
