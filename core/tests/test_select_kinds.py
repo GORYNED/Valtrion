@@ -41,7 +41,7 @@ class NamedKindTests(RepoCase):
     checks = MAP
 
     def select_json(self, *arguments):
-        code, out, err = run("select", "--checks", str(self.checks_path), "--json", *arguments)
+        code, out, err = run("select", "--level", "L4", "--checks", str(self.checks_path), "--json", *arguments)
         return code, (json.loads(out) if out.strip().startswith("{") else None), err
 
     def test_a_named_kind_is_selected_without_a_diff(self):
@@ -55,13 +55,17 @@ class NamedKindTests(RepoCase):
         self.assertEqual(["editmode:Media.Tests", "editmode:Slow.Tests"], keys(payload))
         self.assertEqual(["player:win64"], keys(payload, "playerTests"))
 
-    def test_the_level_is_cumulative_and_defaults_to_l4(self):
+    def test_the_level_is_cumulative_and_the_default_is_the_affected_checks(self):
         _, low, _ = self.select_json("--kind", "scheduled", "--level", "L2")
         self.assertEqual([], low["playerTests"])
-        _, full, _ = self.select_json("--kind", "release")
+        _, full, _ = self.select_json("--kind", "release", "--level", "L4")
         self.assertEqual(["example.perf.open-playback"], keys(full, "devicePlans"))
         _, lower, _ = self.select_json("--kind", "release", "--level", "L3")
         self.assertEqual([], lower["devicePlans"])
+        code, out, _ = run("select", "--checks", str(self.checks_path), "--kind", "release", "--json")
+        default = json.loads(out)
+        self.assertEqual(("L2", "affected", None), (default["level"], default["mode"], default["fullSet"]))
+        self.assertEqual([], default["devicePlans"])
 
     def test_the_option_repeats_and_takes_a_comma_list(self):
         _, payload, _ = self.select_json("--kind", "scheduled", "--kind", "ui,release", "--level", "L2")

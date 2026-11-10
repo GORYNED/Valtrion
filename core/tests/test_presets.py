@@ -75,7 +75,7 @@ class PresetCase(RepoCase):
         git(self.root, "checkout", "-q", "-B", "work")
 
     def select_json(self, *arguments):
-        code, out, err = run("select", "--checks", str(self.checks_path), "--base-ref", "main", "--json", *arguments)
+        code, out, err = run("select", "--level", "L4", "--checks", str(self.checks_path), "--base-ref", "main", "--json", *arguments)
         self.assertIn(code, (0, 1), err)
         payload = json.loads(out)
         # The test rewrites checks.json itself; leave that path out of what is compared.
@@ -236,7 +236,7 @@ class SelectionTests(PresetCase):
         for path in ("tools/Showcase/Assets/Hero.prefab", "docs/Sample/Assets/Scene.unity"):
             write(self.root, path, "changed\n")
             self.commit()
-            code, out, _ = run("select", "--checks", str(self.checks_path), "--base-ref", "main", "--json")
+            code, out, _ = run("select", "--level", "L4", "--checks", str(self.checks_path), "--base-ref", "main", "--json")
             self.assertEqual(1, code, path)
             self.assertIn(path, json.loads(out)["unclassifiedPaths"], path)
             git(self.root, "reset", "-q", "--hard", "main")
@@ -244,7 +244,7 @@ class SelectionTests(PresetCase):
     def test_the_preset_does_not_hide_an_unclassified_path_from_the_policy(self):
         write(self.root, "other/x.txt", "changed\n")
         self.commit()
-        code, out, _ = run("select", "--checks", str(self.checks_path), "--base-ref", "main", "--json")
+        code, out, _ = run("select", "--level", "L4", "--checks", str(self.checks_path), "--base-ref", "main", "--json")
         self.assertEqual(1, code)
         self.assertIn("other/x.txt", json.loads(out)["unclassifiedPaths"])
 
@@ -254,7 +254,7 @@ class SelectionTests(PresetCase):
         payload = self.select_json("--explain")
         because = next(item for item in payload["explain"] if item["check"] == "player:android")["because"]
         self.assertTrue(all(item["from"] == PRESET for item in because), because)
-        code, out, _ = run("select", "--checks", str(self.checks_path), "--base-ref", "main", "--explain")
+        code, out, _ = run("select", "--level", "L4", "--checks", str(self.checks_path), "--base-ref", "main", "--explain")
         self.assertIn(f"glob **/Android/** of {PRESET}", out)
 
     def test_a_project_rule_is_named_without_the_preset(self):
@@ -269,6 +269,7 @@ class SelectionTests(PresetCase):
 
 class CheckConfigTests(PresetCase):
     def test_a_valid_map_has_no_warning_about_the_presets_own_kinds_or_rules(self):
+        self.write_map(fullSetReasons=["release"])
         errors, warnings = select.validate_config(self.load())
         self.assertEqual([], errors)
         self.assertEqual([], warnings)

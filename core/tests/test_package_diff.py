@@ -327,7 +327,7 @@ class OutputTests(PackageCase):
         new = self.package_commit({"Plugins/Android/lib.aar": "x"})
         self.pin(new)
         self.commit()
-        code, out, _ = run("select", "--checks", str(self.checks_path), "--base-ref", "main", "--explain")
+        code, out, _ = run("select", "--level", "L4", "--checks", str(self.checks_path), "--base-ref", "main", "--explain")
         self.assertEqual(0, code)
         self.assertIn("PACKAGE DIFF (1)", out)
         self.assertIn(f"{LOCK}: {NAME}: platform ({self.old[:8]}..{new[:8]}, 1 file(s))", out)
@@ -356,7 +356,7 @@ class OutputTests(PackageCase):
         new = self.package_commit({"Plugins/lib.so": "x", "Runtime/Effect.shader": "x"})
         self.pin(new)
         self.commit()
-        code, out, _ = run("select", "--checks", str(self.checks_path), "--base-ref", "main", "--json")
+        code, out, _ = run("select", "--level", "L4", "--checks", str(self.checks_path), "--base-ref", "main", "--json")
         record = json.loads(out)["packageDiffs"][LOCK][NAME]
         self.assertEqual("platform", record["verdict"], record)
 

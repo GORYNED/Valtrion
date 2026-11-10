@@ -1,0 +1,12 @@
+{
+  "schema": "gdv.checks/1",
+  "platforms": { "required": ["ios"], "dev": ["editor"] },
+  "fullSetReasons": [],
+  "areas": [
+    { "glob": "**/*.cs", "kind": "managed" }
+  ],
+  "kinds": {
+    "managed": { "L2": ["editmode:Example.Tests"] }
+  },
+  "unclassified": "widest"
+}

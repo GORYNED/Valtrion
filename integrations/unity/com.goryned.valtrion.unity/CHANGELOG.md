@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.18.0 (2026-11-10)
+
+- Compatible Core versions are listed in `compat.json`: package 0.18.0 works with Core 0.8.0 up to, not including, 0.22. Package 0.17.x is paired with Core below 0.22 too, but cannot read `fullSetReasons`. The Editor tests of the contract fixtures pass with the change below; update the package tag in `Packages/manifest.json` to `unity-v0.18.0`.
+
+- **`checks.json`: `fullSetReasons`.** The map reader accepts the new optional top-level list of reasons (identifiers, at least one, each once) that Core 0.21.0 checks `select --reason` against, and writes it back. A map without it reads as before.
+
 ## 0.17.0 (2026-11-09)
 
 - Compatible Core versions are listed in `compat.json`: package 0.17.0 works with Core 0.8.0 up to, not including, 0.21. Packages 0.15.x and 0.16.x are paired with Core below 0.20. The Editor tests of the contract fixtures (100) pass with the change below; update the package tag in `Packages/manifest.json` to `unity-v0.17.0`.

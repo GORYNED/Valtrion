@@ -23,6 +23,12 @@ from . import asmgraph, constants, nowindow, packagediff, presets, project
 from .schema import SchemaError, UnreadableInput, Validator, parse_json, validate_file
 
 LEVELS = ("L0", "L1", "L2", "L3", "L4")
+#: What `valtrion select` selects without `--level`: the checks the change affects. Every level above it is a full set and is asked for
+#: explicitly (with a reason when the map lists them: `fullSetReasons`).
+DEFAULT_LEVEL = "L2"
+#: Named modes over the levels: `fast` (L0 and L1), `affected` (up to L2, the default), `full` (up to L3, only with a reason from the map's
+#: `fullSetReasons`) and `release` (up to L4, only when asked for). `--level` stays for compatibility.
+MODES = {"fast": "L1", "affected": "L2", "full": "L3", "release": "L4"}
 DEFAULT_CHECKS_PATH = Path("validation") / "device" / "checks.json"
 
 
@@ -136,6 +142,11 @@ class Config:
     def equivalence_rules(self) -> list[dict]:
         """The optional top-level `equivalenceRules`: paths whose change a project command can prove value-preserving get a cheaper kind."""
         return self.data.get("equivalenceRules", [])
+
+    @property
+    def full_set_reasons(self) -> list[str]:
+        """The optional top-level `fullSetReasons`: the closed list of reasons for selecting a level above `DEFAULT_LEVEL` (empty: not declared)."""
+        return self.data.get("fullSetReasons", [])
 
     @property
     def runners(self) -> dict[str, str]:
@@ -262,6 +273,8 @@ def validate_config(config: Config, validator: Validator | None = None) -> tuple
                     parse_spec(raw)
                 except ValueError as error:
                     errors.append(f"bindings.{slot}[{position}]: {error}")
+    for reason in sorted({item for item in config.full_set_reasons if config.full_set_reasons.count(item) > 1}):
+        errors.append(f"fullSetReasons: {reason!r} is listed twice")
     for index, area in enumerate(config.areas):
         glob = area["glob"]
         if area["kind"] not in kinds:
@@ -324,6 +337,9 @@ def validate_config(config: Config, validator: Validator | None = None) -> tuple
         if _NAME.match(name) and shutil.which(name):
             warnings.append(f"runners.{name}: the name is also a program on PATH; an entry whose text after '@' is exactly {name!r} "
                             "used to be that command and now uses this runner")
+    if not config.full_set_reasons and any(kinds[kind].get(level) for kind in kinds for level in LEVELS[LEVELS.index(DEFAULT_LEVEL) + 1:]):
+        warnings.append(f"fullSetReasons: not declared, so `select --level {LEVELS[-1]}` and `--level {LEVELS[LEVELS.index(DEFAULT_LEVEL) + 1]}` need no reason; "
+                        "list the reasons a full set may be asked for (for example release, data-migration, unity-version)")
     for kind in sorted(set(kinds) - used - set(config.preset["kinds"] if config.preset else ())):
         warnings.append(f"kind {kind!r} is not used by any area (selected only by the widest set)")
     plan_ids: dict[str, str] = {}
@@ -1076,6 +1092,27 @@ class Selection:
     #: The verdict of each changed dependency a `byContent` key judged by what changed inside it (lock file -> dependency -> {verdict, from, to,
     #: files, reasons | reason}).
     package_diffs: dict[str, dict[str, dict[str, Any]]] = field(default_factory=dict)
+    #: The reason a level above `DEFAULT_LEVEL` was asked for (`--reason`), or None.
+    full_set_reason: str | None = None
+    #: The mode the caller named (`--mode`), or None when the level was given or defaulted.
+    mode: str | None = None
+
+    @property
+    def mode_name(self) -> str | None:
+        """The mode of the selected level (the one named, else the one that owns the level), None for L0."""
+        return self.mode or next((name for name, level in MODES.items() if level == self.level), None)
+
+    @property
+    def full_set(self) -> bool:
+        """Whether the selection goes above the checks the change affects (a level above `DEFAULT_LEVEL`)."""
+        return LEVELS.index(self.level) > LEVELS.index(DEFAULT_LEVEL)
+
+    def level_breakdown(self) -> dict[str, list[str]]:
+        """The keys of the selected checks by the level that brought each in (every level up to the selected one is listed)."""
+        result: dict[str, list[str]] = {level: [] for level in LEVELS[: LEVELS.index(self.level) + 1]}
+        for check in self.checks:
+            result[check.level].append(check.key)
+        return result
 
     def of_type(self, *types: str) -> list[Check]:
         return [check for check in self.checks if check.type in types]
@@ -1192,6 +1229,10 @@ class Selection:
         return {
             "version": 1,
             "level": self.level,
+            "defaultLevel": DEFAULT_LEVEL,
+            "mode": self.mode_name,
+            "fullSet": {"level": self.level, "reason": self.full_set_reason} if self.full_set else None,
+            "levelBreakdown": self.level_breakdown(),
             "baseRef": self.base_ref,
             "mergeBase": self.merge_base,
             "includeWorktree": self.include_worktree,
@@ -1354,11 +1395,44 @@ def _add_common(parser: argparse.ArgumentParser) -> None:
 
 def _configure_select(parser: argparse.ArgumentParser) -> None:
     _add_common(parser)
-    parser.add_argument("--level", choices=LEVELS, default="L4", help="highest level to select, cumulative (default: L4, everything the change needs)")
+    parser.add_argument("--mode", choices=tuple(MODES),
+                        help="named level: fast (up to L1), affected (up to L2, the default: the checks the change affects), full (up to L3; needs --reason from "
+                             "the map's fullSetReasons) or release (up to L4; only when asked for); not with --level")
+    parser.add_argument("--level", choices=LEVELS, default=None,
+                        help=f"highest level to select, cumulative (default: {DEFAULT_LEVEL}, the checks the change affects; a higher level is a full set "
+                             "and needs --reason when the map lists fullSetReasons); kept for compatibility, --mode names the same levels")
+    parser.add_argument("--reason", metavar="ID",
+                        help="why a level above the default is asked for: one of the map's fullSetReasons (required for such a level when the map lists them)")
     parser.add_argument("--json", action="store_true", help="print the selection as JSON")
     parser.add_argument("--explain", action="store_true",
                         help="also name, for every selected check, the kind and the rule (area, jsonRules key, contentRules, equivalenceRules, "
                              "--kind or the widest set) that brought it in; the selection itself does not change")
+
+
+def full_set_reason(config: Config, level: str, reason: str | None, mode: str | None = None) -> str | None:
+    """The reason to record for `level`, after checking it against the map. A level above `DEFAULT_LEVEL` needs a reason from the map's
+    `fullSetReasons` when the map declares them (without the list any level is allowed and a reason is recorded as given); a reason with the
+    default level or lower is an error, because nothing needs it. `--mode full` always needs a reason from the list (the map must declare
+    one); `--mode release` needs none (asking for it is the reason; one that is given is checked like any other). Raises `ConfigError`."""
+    full = LEVELS.index(level) > LEVELS.index(DEFAULT_LEVEL)
+    if mode == "full":
+        if not config.full_set_reasons:
+            raise ConfigError(["--mode full needs fullSetReasons in the map: the closed list of reasons a full set may be asked for"])
+        if reason is None:
+            raise ConfigError([f"--mode full is a full set: name the reason with --reason, one of: {', '.join(config.full_set_reasons)}"])
+    if mode == "release" and reason is None:
+        return "release"
+    if reason is not None and not full:
+        raise ConfigError([f"--reason applies to a level above {DEFAULT_LEVEL} (a full set), not to {level}"])
+    if not full:
+        return None
+    allowed = config.full_set_reasons
+    if allowed and reason is None:
+        raise ConfigError([f"level {level} is a full set: name the reason with --reason, one of: {', '.join(allowed)} (the checks the change affects "
+                           f"are selected at the default level {DEFAULT_LEVEL})"])
+    if allowed and reason not in allowed:
+        raise ConfigError([f"--reason {reason!r} is not in fullSetReasons of the map ({', '.join(allowed)})"])
+    return reason
 
 
 def resolve_selection(arguments: argparse.Namespace) -> Selection:
@@ -1369,6 +1443,12 @@ def resolve_selection(arguments: argparse.Namespace) -> Selection:
     if checks_path is None:
         checks_path = default_checks_path(root, start)
     config = load_config(Path(checks_path))
+    mode = getattr(arguments, "mode", None)
+    if mode is not None and getattr(arguments, "level", None) is not None:
+        raise ConfigError(["give --mode or --level, not both"])
+    if getattr(arguments, "level", None) is None:  # `select` has no default of its own; `report` keeps its own
+        arguments.level = MODES[mode] if mode else DEFAULT_LEVEL
+    reason = full_set_reason(config, arguments.level, getattr(arguments, "reason", None), mode) if hasattr(arguments, "reason") else None
     named = [name.strip() for item in arguments.kind for name in item.split(",") if name.strip()]
     if arguments.base_ref:
         paths, merge_base = changed_paths(root, arguments.base_ref, arguments.include_worktree)
@@ -1382,9 +1462,12 @@ def resolve_selection(arguments: argparse.Namespace) -> Selection:
     json_keys = json_rule_paths(root, config, paths, merge_base, include_worktree)
     json_keys, package_diffs = package_diff_paths(root, config, json_keys, merge_base, include_worktree, bool(getattr(arguments, "offline", False)))
     equivalent, unproven = equivalent_paths(root, config, paths, merge_base, include_worktree, skip=set(cosmetic) | set(json_keys))
-    return select(config, paths, arguments.level, base_ref=arguments.base_ref, merge_base=merge_base,
-                  include_worktree=include_worktree, named_kinds=named, cosmetic=cosmetic, json_keys=json_keys,
-                  equivalent=equivalent, equivalence_unproven=unproven, package_diffs=package_diffs)
+    selection = select(config, paths, arguments.level, base_ref=arguments.base_ref, merge_base=merge_base,
+                       include_worktree=include_worktree, named_kinds=named, cosmetic=cosmetic, json_keys=json_keys,
+                       equivalent=equivalent, equivalence_unproven=unproven, package_diffs=package_diffs)
+    selection.full_set_reason = reason
+    selection.mode = mode
+    return selection
 
 
 def run_guarded(name: str, action) -> int:
@@ -1427,6 +1510,20 @@ def format_explain(selection: Selection) -> list[str]:
             shown = ", ".join(paths[:3]) + (f" +{len(paths) - 3} more" if len(paths) > 3 else "")
             parts.append(f"kind {entry['kind']}: {_rule_text(entry)}" + (f" ({shown})" if shown else ""))
         lines.append(f"  {item['check']} [{item['level']}] <- " + ("; ".join(parts) or "-"))
+    return lines
+
+
+def format_levels(selection: Selection) -> list[str]:
+    """Why the level is what it is, and what each level brought in."""
+    if selection.full_set:
+        why = f"{selection.level} is a full set" + (f", reason {selection.full_set_reason}" if selection.full_set_reason else ", no reason (the map lists none)")
+    else:
+        why = f"{selection.level}: the checks the change affects" + (" (default)" if selection.level == DEFAULT_LEVEL and not selection.mode else "")
+    if selection.mode_name:
+        why = f"mode {selection.mode_name}, {why}"
+    lines = [f"Level: {why}", "By level:"]
+    for level, keys in selection.level_breakdown().items():
+        lines.append(f"  {level}: {len(keys)}" + (f" ({', '.join(keys[:6])}" + (f" +{len(keys) - 6} more" if len(keys) > 6 else "") + ")" if keys else ""))
     return lines
 
 
@@ -1502,6 +1599,8 @@ def format_selection(selection: Selection, explain: bool = False) -> str:
     lines.append("Required platforms: " + (", ".join(selection.required_platforms()) or "-"))
     if not selection.checks and not selection.failed:
         lines.append("Nothing selected.")
+    if explain:
+        lines.extend(format_levels(selection))
     if explain and selection.checks:
         lines.extend(format_explain(selection))
     return "\n".join(lines)

@@ -1,0 +1,12 @@
+{
+  "schema": "gdv.checks/1",
+  "platforms": { "required": ["ios"], "dev": ["editor"] },
+  "fullSetReasons": ["release", "data-migration", "unity-version"],
+  "areas": [
+    { "glob": "**/*.cs", "kind": "managed" }
+  ],
+  "kinds": {
+    "managed": { "L2": ["editmode:Example.Tests"], "L3": ["player:ios"] }
+  },
+  "unclassified": "widest"
+}

@@ -26,7 +26,7 @@ class ConfigWarningTests(RepoCase):
         self.checks_path.write_text(json.dumps(data), encoding="utf-8")
         errors, warnings = select.validate_config(select.load_config(self.checks_path))
         self.assertEqual([], errors)
-        return warnings
+        return [message for message in warnings if not message.startswith("fullSetReasons")]  # tested in test_select_modes
 
     def matching(self, warnings, text):
         return [item for item in warnings if text in item]

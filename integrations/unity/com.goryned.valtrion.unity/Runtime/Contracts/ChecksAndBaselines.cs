@@ -359,6 +359,9 @@ namespace Valtrion.Unity.Contracts
 
         public string Unclassified { get; set; }
 
+        /// <summary>The closed list of reasons a level above L2 (a full set) may be asked for with <c>select --reason</c>; null when the map names none.</summary>
+        public List<string> FullSetReasons { get; set; }
+
         public static ChecksDocument Parse(string json) => FromJson(JsonValue.Parse(json));
 
         public static ChecksDocument FromJson(JsonValue value)
@@ -373,8 +376,23 @@ namespace Valtrion.Unity.Contracts
             var extends = reader.OptStr("extends", 1);
             if (extends != null && !System.Text.RegularExpressions.Regex.IsMatch(extends, "^valtrion:[a-z0-9-]+/[0-9]+$"))
                 throw new ContractException($"{reader.Path}.extends: expected a preset id such as valtrion:unity/1");
+            var fullSetReasons = reader.OptStrings("fullSetReasons");
+            if (fullSetReasons != null)
+            {
+                if (fullSetReasons.Count == 0)
+                    throw new ContractException($"{reader.Path}.fullSetReasons: expected at least one reason");
+                var seen = new HashSet<string>();
+                foreach (var reason in fullSetReasons)
+                {
+                    if (!System.Text.RegularExpressions.Regex.IsMatch(reason, "^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$"))
+                        throw new ContractException($"{reader.Path}.fullSetReasons: {reason} is not an identifier");
+                    if (!seen.Add(reason))
+                        throw new ContractException($"{reader.Path}.fullSetReasons: {reason} is listed twice");
+                }
+            }
             var checks = new ChecksDocument
             {
+                FullSetReasons = fullSetReasons,
                 Platforms = ChecksPlatforms.Read(reader.Object("platforms")),
                 UnityEditorSlots = reader.OptInt32("unityEditorSlots", 1),
                 Runners = runners,
@@ -396,6 +414,7 @@ namespace Valtrion.Unity.Contracts
         {
             var node = JsonValue.NewObject()
                 .Set("schema", JsonValue.From(Schema)).Set("platforms", Platforms.Write()).SetIf("unityEditorSlots", UnityEditorSlots);
+            if (FullSetReasons != null) node.Set("fullSetReasons", JsonBuild.Strings(FullSetReasons));
             if (Runners != null) node.Set("runners", JsonBuild.StringMap(Runners));
             if (Extends != null) node.Set("extends", JsonValue.From(Extends));
             if (Bindings != null) node.Set("bindings", JsonBuild.Map(Bindings, list => JsonBuild.Strings(list)));
