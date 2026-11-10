@@ -2,6 +2,14 @@
 
 Core (the `valtrion` Python package) and the Unity package `com.goryned.valtrion.unity` are versioned independently. The Unity changelog is in `integrations/unity/com.goryned.valtrion.unity/CHANGELOG.md`; `compat.json` lists compatible pairs.
 
+## 0.21.0 (2026-11-10)
+
+- **Upgrade note.** `compat.json` pairs Core 0.21.0 with Unity package 0.18.x (Core 0.8.0 up to, not including, 0.22) and keeps package 0.17.x paired with Core below 0.22 as well: 0.17.x reads every key of a map except the new `fullSetReasons`, so a project that declares it needs package 0.18.0. **Behavior change:** `valtrion select` without `--level` now selects up to `L2` (the checks the change affects); it used to select up to `L4`. A script that relied on the old default passes `--mode release` or `--level L4`. Update with `pipx upgrade valtrion` (and `valtrion hosts sync` on SSH hosts).
+
+- **`select --mode`: fast, affected, full, release.** Named modes over the levels: `fast` up to `L1`, `affected` up to `L2` (the default), `full` up to `L3` and `release` up to `L4`. `--level` stays for compatibility and cannot be combined with `--mode`.
+- **A full set needs a reason from the map (`fullSetReasons`, `--reason`).** A map may declare the closed list of reasons a level above `L2` may be asked for. With it, `--mode full` and `--level L3` or `L4` need `--reason` with one of them; `--mode release` needs none. A map without the list works as before and `check-config` warns that it declares none. Additive to `gdv.checks/1`.
+- **`select --explain` names the reason and the checks by level.** A `Level:` line says the mode and, for a full set, the reason; a `By level` block lists the checks that each level brought in. `--json` has `mode`, `defaultLevel`, `fullSet` and `levelBreakdown`.
+
 ## 0.20.1 (2026-11-09)
 
 - **Upgrade note.** `compat.json` is unchanged: Core 0.20.1 pairs with Unity package 0.17.x like 0.20.0. Update with `pipx upgrade valtrion` (and `valtrion hosts sync` on SSH hosts).

@@ -11,7 +11,7 @@ from .test_select import CHECKS, RepoCase, git, run, write
 class ExplainTests(RepoCase):
     def select_json(self, *arguments, explain=True):
         extra = ["--explain"] if explain else []
-        code, out, err = run("select", "--checks", str(self.checks_path), "--base-ref", "main", "--json", *extra, *arguments)
+        code, out, err = run("select", "--level", "L4", "--checks", str(self.checks_path), "--base-ref", "main", "--json", *extra, *arguments)
         self.assertEqual(0, code, err)
         return json.loads(out)
 
@@ -30,10 +30,10 @@ class ExplainTests(RepoCase):
         explained = self.select_json()
         self.assertNotIn("explain", plain)
         self.assertEqual(plain, {key: value for key, value in explained.items() if key != "explain"})
-        code, text, _ = run("select", "--checks", str(self.checks_path), "--base-ref", "main")
+        code, text, _ = run("select", "--level", "L4", "--checks", str(self.checks_path), "--base-ref", "main")
         self.assertEqual(0, code)
         self.assertNotIn("Explain", text)
-        code, with_flag, _ = run("select", "--checks", str(self.checks_path), "--base-ref", "main", "--explain")
+        code, with_flag, _ = run("select", "--level", "L4", "--checks", str(self.checks_path), "--base-ref", "main", "--explain")
         self.assertEqual(0, code)
         self.assertTrue(with_flag.startswith(text), "the selection part of the text is the same, the explanation is appended")
 
@@ -54,7 +54,7 @@ class ExplainTests(RepoCase):
         self.assertEqual([("media", "areas[2]"), ("ui", "areas[3]")], [(item["kind"], item["rule"]) for item in because])
 
     def test_a_named_kind_has_no_path(self):
-        code, out, err = run("select", "--checks", str(self.checks_path), "--kind", "docs", "--json", "--explain")
+        code, out, err = run("select", "--level", "L4", "--checks", str(self.checks_path), "--kind", "docs", "--json", "--explain")
         self.assertEqual(0, code, err)
         because = self.entry(json.loads(out), "l0")["because"]
         self.assertEqual([{"kind": "docs", "rule": "--kind", "paths": []}], because)
@@ -149,7 +149,7 @@ class ExplainTests(RepoCase):
     def test_the_text_has_one_line_per_check_with_the_rule(self):
         write(self.root, "src/media/a.cs", "changed\n")
         self.commit()
-        code, out, _ = run("select", "--checks", str(self.checks_path), "--base-ref", "main", "--explain")
+        code, out, _ = run("select", "--level", "L4", "--checks", str(self.checks_path), "--base-ref", "main", "--explain")
         self.assertEqual(0, code)
         self.assertIn("Explain (why each check is selected):", out)
         self.assertIn("  player:win64 [L3] <- kind media: areas[0] glob src/media/** (src/media/a.cs)", out)
@@ -159,7 +159,7 @@ class ExplainTests(RepoCase):
         for name in ("a", "b", "c", "d", "e"):
             write(self.root, f"src/media/{name}.cs", "changed\n")
         self.commit()
-        code, out, _ = run("select", "--checks", str(self.checks_path), "--base-ref", "main", "--explain")
+        code, out, _ = run("select", "--level", "L4", "--checks", str(self.checks_path), "--base-ref", "main", "--explain")
         self.assertEqual(0, code)
         self.assertIn("+2 more", out)
         self.assertEqual(5, len(self.entry(self.select_json(), "player:win64")["because"][0]["paths"]))
@@ -168,10 +168,10 @@ class ExplainTests(RepoCase):
         self.write_map(unclassified="fail")
         write(self.root, "other/x.txt", "changed\n")
         self.commit()
-        code, out, _ = run("select", "--checks", str(self.checks_path), "--base-ref", "main", "--json", "--explain")
+        code, out, _ = run("select", "--level", "L4", "--checks", str(self.checks_path), "--base-ref", "main", "--json", "--explain")
         self.assertEqual(1, code)
         self.assertEqual([], json.loads(out)["explain"])
-        code, text, _ = run("select", "--checks", str(self.checks_path), "--base-ref", "main", "--explain")
+        code, text, _ = run("select", "--level", "L4", "--checks", str(self.checks_path), "--base-ref", "main", "--explain")
         self.assertEqual(1, code)
         self.assertNotIn("Explain", text)
 
@@ -183,7 +183,7 @@ class ExplainTests(RepoCase):
         self.assertIn("Explain", text, "L0 still selects the l0 check of the docs kind")
         git(self.root, "checkout", "-q", "main")
         git(self.root, "checkout", "-q", "-B", "work")
-        code, text, _ = run("select", "--checks", str(self.checks_path), "--base-ref", "main", "--explain")
+        code, text, _ = run("select", "--level", "L4", "--checks", str(self.checks_path), "--base-ref", "main", "--explain")
         self.assertEqual(0, code)
         self.assertIn("Nothing selected.", text)
         self.assertNotIn("Explain", text)

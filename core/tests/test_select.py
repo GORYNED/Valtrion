@@ -187,7 +187,7 @@ class SelectionTests(RepoCase):
         selection = self.selection()
         self.assertTrue(selection.failed)
         self.assertEqual([], selection.checks)
-        code, _, err = run("select", "--base-ref", "main", "--checks", str(self.checks_path))
+        code, _, err = run("select", "--level", "L4", "--base-ref", "main", "--checks", str(self.checks_path))
         self.assertEqual(1, code)
         self.assertIn("other/x.txt", err + _)
 
@@ -204,7 +204,7 @@ class SelectionTests(RepoCase):
         selection = self.selection()
         self.assertEqual([], selection.paths)
         self.assertEqual([], selection.checks)
-        code, out, _ = run("select", "--base-ref", "main", "--checks", str(self.checks_path))
+        code, out, _ = run("select", "--level", "L4", "--base-ref", "main", "--checks", str(self.checks_path))
         self.assertEqual(0, code)
         self.assertIn("Nothing selected", out)
 
@@ -272,8 +272,8 @@ class SelectionTests(RepoCase):
         self.commit()
         outputs = {json.dumps(self.selection().to_json()) for _ in range(3)}
         self.assertEqual(1, len(outputs))
-        first = run("select", "--base-ref", "main", "--checks", str(self.checks_path), "--json")
-        second = run("select", "--base-ref", "main", "--checks", str(self.checks_path), "--json")
+        first = run("select", "--level", "L4", "--base-ref", "main", "--checks", str(self.checks_path), "--json")
+        second = run("select", "--level", "L4", "--base-ref", "main", "--checks", str(self.checks_path), "--json")
         self.assertEqual(first, second)
 
     def test_cli_json_and_text(self):
@@ -285,7 +285,7 @@ class SelectionTests(RepoCase):
         self.assertEqual("L2", payload["level"])
         self.assertEqual([], payload["devicePlans"])
         self.assertEqual(["Media.More.Tests", "Media.Play.Tests", "Media.Tests"], payload["editorCommands"][0]["assemblies"])
-        code, out, _ = run("select", "--base-ref", "main", "--checks", str(self.checks_path))
+        code, out, _ = run("select", "--level", "L4", "--base-ref", "main", "--checks", str(self.checks_path))
         self.assertEqual(0, code)
         self.assertIn("Editor suites:", out)
         self.assertIn("Device plans", out)
@@ -301,7 +301,7 @@ class SelectionTests(RepoCase):
         self.assertEqual(2, code)
         self.assertIn("BLOCKED", err)
         self.checks_path.write_text(json.dumps({**CHECKS, "unclassified": "maybe"}), encoding="utf-8")
-        code, _, err = run("select", "--base-ref", "main", "--checks", str(self.checks_path))
+        code, _, err = run("select", "--level", "L4", "--base-ref", "main", "--checks", str(self.checks_path))
         self.assertEqual(1, code)
         self.assertIn("unclassified", err)
 
@@ -309,7 +309,7 @@ class SelectionTests(RepoCase):
         write(self.root, "src/media/a.cs", "changed\n")
         self.commit()
         (self.root / "validation" / "device" / "plans" / "open-playback.plan.json").write_text("{}", encoding="utf-8")
-        code, _, err = run("select", "--base-ref", "main", "--checks", str(self.checks_path))
+        code, _, err = run("select", "--level", "L4", "--base-ref", "main", "--checks", str(self.checks_path))
         self.assertEqual(1, code)
         self.assertIn("open-playback", err)
 

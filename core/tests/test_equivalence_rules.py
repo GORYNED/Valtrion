@@ -71,7 +71,7 @@ class EquivalenceTests(RepoCase):
         self.checks_path.write_text(json.dumps(data), encoding="utf-8")
 
     def select_json(self, *arguments):
-        code, out, err = run("select", "--checks", str(self.checks_path), "--base-ref", "main", "--json", *arguments)
+        code, out, err = run("select", "--level", "L4", "--checks", str(self.checks_path), "--base-ref", "main", "--json", *arguments)
         self.assertEqual(0, code, err)
         payload = json.loads(out)
         # The test rewrites checks.json itself, which the map classifies as docs: leave that path out of what is compared.
@@ -136,7 +136,7 @@ class EquivalenceTests(RepoCase):
         write(self.root, "other/x.txt", "changed\n")
         write(self.root, "assets/a.asset", "beta: 2\nalpha: 1\n")
         self.commit()
-        code, out, _ = run("select", "--checks", str(self.checks_path), "--base-ref", "main", "--json")
+        code, out, _ = run("select", "--level", "L4", "--checks", str(self.checks_path), "--base-ref", "main", "--json")
         payload = json.loads(out)
         self.assertEqual(1, code)
         self.assertEqual(["other/x.txt"], payload["unclassifiedPaths"])
@@ -187,7 +187,7 @@ class EquivalenceTests(RepoCase):
         write(self.root, "assets/a.asset", "beta: 2\nalpha: 1\n")
         write(self.root, "assets/b.asset", "gamma: 4\n")
         self.commit()
-        code, out, _ = run("select", "--checks", str(self.checks_path), "--base-ref", "main")
+        code, out, _ = run("select", "--level", "L4", "--checks", str(self.checks_path), "--base-ref", "main")
         self.assertEqual(0, code)
         self.assertIn("EQUIVALENT (1)", out)
         self.assertIn("assets/a.asset -> layout (equivalenceRules[0]", out)
