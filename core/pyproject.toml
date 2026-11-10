@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "valtrion"
-version = "0.19.1"
+version = "0.20.0"
 description = "Repeatable checks, supervised execution and verifiable evidence on local and SSH hosts."
 readme = "README.md"
 license = "MIT"
