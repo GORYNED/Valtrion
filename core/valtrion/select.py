@@ -792,9 +792,10 @@ def lock_path_of(path: str) -> str:
 MAX_PROJECT_ASSEMBLIES = 2000
 
 
-def _project_assemblies(root: Path, lock_path: str, include_worktree: bool) -> list[asmgraph.Assembly]:
-    """The assemblies of the Unity project that `lock_path` (`<project>/Packages/packages-lock.json`) belongs to: every `.asmdef` under its
-    `Assets` and `Packages` folders (embedded packages included), as of `HEAD` or, with `include_worktree`, of the working tree."""
+def _project_assemblies(root: Path, lock_path: str, include_worktree: bool) -> tuple[list[asmgraph.Assembly], list[str]]:
+    """The assemblies of the Unity project that `lock_path` (`<project>/Packages/packages-lock.json`) belongs to and its `testables`: every
+    `.asmdef` under its `Assets` and `Packages` folders (embedded packages included), as of `HEAD` or, with `include_worktree`, of the
+    working tree."""
     folder, _, _ = lock_path.rpartition("/")
     project, _, packages = folder.rpartition("/")
     if packages != "Packages":
@@ -826,15 +827,22 @@ def _project_assemblies(root: Path, lock_path: str, include_worktree: bool) -> l
             continue
         meta = read(path + ".meta") if path + ".meta" in files else None
         found.append(asmgraph.parse_definition(path, data, asmgraph.guid_of_meta(meta) if meta is not None else None))
-    return found
+    manifest = read(f"{folder}/manifest.json")
+    try:
+        testables = parse_json_object(manifest).get("testables", []) if manifest is not None else []
+    except _NotJson as error:
+        raise asmgraph.GraphError(f"{folder}/manifest.json cannot be read: {error}") from error
+    if not isinstance(testables, list) or not all(isinstance(item, str) for item in testables):
+        raise asmgraph.GraphError(f"{folder}/manifest.json: testables is not a list of strings")
+    return found, testables
 
 
-def _unreadable_dependents(lock: Mapping[str, Any], key: str) -> list[str]:
-    """The packages of a lock file that depend on `key`, directly or not, and whose assemblies cannot be read from the project: everything but
-    an embedded package (it is in the project) and a built-in module. Their assemblies might reference the package's assemblies."""
+def _dependents(lock: Mapping[str, Any], key: str) -> dict[str, Any]:
+    """The packages of a lock file that depend on `key`, directly or not, whose assemblies are not in the project: everything but an embedded
+    package (it is in the project) and a built-in module. Their assemblies might reference the package's assemblies. Name -> lock entry."""
     dependencies = lock.get("dependencies")
     if not isinstance(dependencies, dict):
-        return []
+        return {}
     closure = {key}
     grown = True
     while grown:
@@ -844,24 +852,45 @@ def _unreadable_dependents(lock: Mapping[str, Any], key: str) -> list[str]:
             if name not in closure and isinstance(declared, dict) and closure.intersection(declared):
                 closure.add(name)
                 grown = True
-    return sorted(name for name in closure - {key}
-                  if not isinstance(dependencies[name], dict) or dependencies[name].get("source") not in ("embedded", "builtin"))
+    return {name: dependencies[name] for name in sorted(closure - {key})
+            if not isinstance(dependencies[name], dict) or dependencies[name].get("source") not in ("embedded", "builtin")}
+
+
+def _dependent_assemblies(name: str, entry: Any) -> list[asmgraph.Assembly]:
+    """The assemblies of a git package at the commit the lock file pins now. Raises `GraphError` for a package that is not a git dependency
+    with a commit (a registry or local package: its files are not at hand) and when its repository cannot be read."""
+    source = packagediff.entry_source(entry)
+    if source is None:
+        raise asmgraph.GraphError(f"{name} depends on it and is not a git dependency with a commit and a usable URL: its assemblies cannot be read")
+    try:
+        repo = packagediff.PackageRepo(source, source.commit, source.commit)
+    except (packagediff.Unresolved, OSError, ValueError) as error:
+        raise asmgraph.GraphError(f"{name} depends on it and cannot be read: {error}") from error
+    try:
+        return asmgraph.package_assemblies(repo.files(), lambda path: repo.read(repo.new, path))
+    except (packagediff.Unresolved, OSError, ValueError) as error:
+        raise asmgraph.GraphError(f"{name} depends on it and cannot be read: {error}") from error
+    finally:
+        repo.close()
 
 
 def _narrow_record(
         root: Path, lock_path: str, key: str, new_lock: Mapping[str, Any], repo: packagediff.PackageRepo, files: Sequence[tuple[str, str]],
         include_worktree: bool, member: Mapping[str, Any]) -> dict[str, Any]:
     """The test assemblies of the project that reach what changed in a package judged `managed`, or why they cannot be named:
-    `{"status": "narrowed", kind, level, changed, tests}` or `{"status": "unresolved", "reason"}` (the caller then keeps the `managed` kind)."""
+    `{"status": "narrowed", kind, level, changed, tests}` or `{"status": "unresolved", "reason"}` (the caller then keeps the `managed` kind).
+    The git packages that depend on it are read at the commit the lock file pins now; one whose pin changed in the same change is judged by its
+    own key, so only what it is now is needed here."""
     level = member.get("level", ASSEMBLIES_LEVEL)
     try:
-        dependents = _unreadable_dependents(new_lock, key)
-        if dependents:
-            raise asmgraph.GraphError("other packages depend on it and their assemblies are not read: " + ", ".join(dependents))
         tree = repo.files()
         package = asmgraph.Graph(asmgraph.package_assemblies(tree, lambda path: repo.read(repo.new, path)))
         changed = asmgraph.changed_assemblies(files, tree, package, lambda path: repo.read(repo.new, path), lambda path: repo.read(repo.old, path))
-        tests = asmgraph.narrow(_project_assemblies(root, lock_path, include_worktree), package.assemblies, key, changed)
+        packages = {key: package.assemblies}
+        for name, entry in _dependents(new_lock, key).items():
+            packages[name] = _dependent_assemblies(name, entry)
+        project, testables = _project_assemblies(root, lock_path, include_worktree)
+        tests = asmgraph.narrow(project, packages, key, changed, testables)
         for test in tests:
             runner = member["runner"] if test["mode"] == "editmode" else member.get("playmodeRunner")
             if runner is None:

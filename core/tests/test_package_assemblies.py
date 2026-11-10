@@ -35,7 +35,8 @@ def checks_map(**assemblies):
         "schema": "gdv.checks/1", "platforms": {"required": ["ios"], "dev": ["editor"]}, "unclassified": "widest", "runners": dict(RUNNERS),
         "areas": [{"glob": "**/*", "kind": "light"}],
         "jsonRules": [{"glob": "Packages/packages-lock.json", "root": "dependencies", "keys": [
-            {"match": NAME, "kind": "heavy", "byContent": {"managed": "whole", "platform": "heavy", "assemblies": member}}]}],
+            {"match": NAME, "kind": "heavy", "byContent": {"managed": "whole", "platform": "heavy", "assemblies": member}},
+            {"match": "com.example.dep", "kind": "light"}]}],
         "kinds": {
             "light": {"L0": ["l0"]},
             "whole": {"L0": ["l0"], "L2": [WHOLE_EDIT, "playmode:P.Tests@play"]},
@@ -57,8 +58,14 @@ PROJECT = {
 }
 
 
+DEP = "com.example.dep"
+
+
 class AssemblyCase(PackageCase):
     others = False
+    #: A second git package of the same repository (folder `Dep`) that depends on the one under test; pinned at the same commit.
+    dependent = False
+    testables = ()
 
     def setUp(self):
         super().setUp()
@@ -88,13 +95,19 @@ class AssemblyCase(PackageCase):
 
     def pin(self, commit, branch_main=False, **options):
         super().pin(commit, branch_main=branch_main, **options)
-        if self.others:  # another git package that depends on the one under test: its assemblies cannot be read
+        if self.others or self.dependent or self.testables:
             lock = json.loads((self.root / LOCK).read_text(encoding="utf-8"))
-            lock["dependencies"]["com.example.other"] = {"version": f"{self.url}#{'a' * 40}", "source": "git", "dependencies": {NAME: "1.0.0"}, "hash": "a" * 40}
+            manifest = json.loads((self.root / "Packages/manifest.json").read_text(encoding="utf-8"))
+            if self.others:  # another git package that depends on the one under test, in a repository that cannot be fetched
+                lock["dependencies"]["com.example.other"] = {"version": f"{self.url}#{'a' * 40}", "source": "git", "dependencies": {NAME: "1.0.0"}, "hash": "a" * 40}
+            if self.dependent:
+                location = f"{self.url}?path=Dep#{commit}"
+                lock["dependencies"][DEP] = {"version": location, "source": "git", "dependencies": {NAME: "1.0.0"}, "hash": commit, "depth": 0}
+                manifest["dependencies"][DEP] = location
+            if self.testables:
+                manifest["testables"] = list(self.testables)
             write(self.root, LOCK, json.dumps(lock))
-            if branch_main:
-                git(self.root, "add", "-A")
-                git(self.root, "commit", "-q", "--amend", "-m", "pin")
+            write(self.root, "Packages/manifest.json", json.dumps(manifest))
 
     def narrowed(self, files, *arguments, **options):
         payload = self.verdict(files, *arguments, **options)
@@ -173,6 +186,17 @@ class NarrowingTests(AssemblyCase):
         payload, _ = self.narrowed({"Editor/Game.Editor.asmdef": asm("Game.Editor", ["Game.Extras"], editor=True)}, (), "--level", "L2")
         self.assertEqual([], self.suites(payload))  # the editor assembly changed; nothing references it
 
+    def test_a_test_assembly_of_the_package_is_selected_only_when_the_project_lists_the_package_in_testables(self):
+        files = {"Tests/Editor/Game.Tests.asmdef": asm("Game.Tests", ["Game"], test=True, editor=True)}
+        payload, record = self.narrowed(files, (), "--level", "L2")
+        self.assertEqual("narrowed", record["assemblies"]["status"], record["assemblies"])
+        self.assertNotIn("editmode:Game.Tests", self.suites(payload))
+        git(self.package, "reset", "-q", "--hard", self.old)
+        self.pin(self.old)
+        self.testables = (NAME,)
+        payload, record = self.narrowed(files, (), "--level", "L2")
+        self.assertIn("editmode:Game.Tests", self.suites(payload))
+
     def test_an_assembly_that_takes_a_define_from_the_version_of_the_package_is_changed_with_every_pin(self):
         git(self.root, "checkout", "-q", "main")
         write(self.root, "Assets/Ver/App.Ver.asmdef", asm("App.Ver", versionDefines=[{"name": NAME, "expression": "1.0.0", "define": "HAS_LIB"}]))
@@ -193,6 +217,56 @@ class NarrowingTests(AssemblyCase):
         write(self.root, "Assets/Tests/W/W.Tests.asmdef.meta", meta("d" * 32))
         self.assertNotIn("editmode:W.Tests", self.suites(self.select_json("--level", "L2")))
         self.assertIn("editmode:W.Tests", self.suites(self.select_json("--level", "L2", "--include-worktree")))
+
+
+class DependentTests(AssemblyCase):
+    """Git packages of the lock file that depend on the changed one are read at the commit the lock file pins."""
+
+    def setUp(self):
+        super().setUp()
+        self.dependent = True
+        base = self.package_commit({}, outside={
+            "Dep/package.json": json.dumps({"name": DEP, "version": "1.0.0"}),
+            "Dep/Runtime/D.cs": "public class D { }\n",
+            "Dep/Runtime/Game.Dep.asmdef": asm("Game.Dep", ["Game"]),
+            "Dep/Runtime/Game.Dep.asmdef.meta": meta("5" * 32),
+            "Dep/Tests/Game.Dep.Tests.asmdef": asm("Game.Dep.Tests", ["Game.Dep"], test=True, editor=True),
+            "Dep/Tests/Game.Dep.Tests.asmdef.meta": meta("6" * 32),
+        })
+        self.old = base
+        git(self.root, "checkout", "-q", "main")
+        self.pin(base)
+        write(self.root, "Assets/Tests/D/D.Tests.asmdef", asm("D.Tests", ["Game.Dep"], test=True, editor=True))
+        write(self.root, "Assets/Tests/D/D.Tests.asmdef.meta", meta("b" * 32))
+        git(self.root, "add", "-A")
+        git(self.root, "commit", "-q", "-m", "dependent package and its project test")
+        git(self.root, "checkout", "-q", "-B", "work")
+
+    def test_a_test_assembly_that_reaches_the_change_through_another_package_is_selected(self):
+        payload, record = self.narrowed({"Runtime/Foo.cs": "public class Foo { int a; }\n"}, (), "--level", "L2")
+        self.assertEqual("narrowed", record["assemblies"]["status"], record["assemblies"])
+        tests = {item["assembly"]: item for item in record["assemblies"]["tests"]}
+        self.assertEqual(["D.Tests", "Game.Dep", "Game"], tests["D.Tests"]["via"])
+        self.assertEqual(["editmode:A.Tests", "editmode:B.Tests", "editmode:D.Tests", "editmode:U.Tests", "playmode:P.Tests"], self.suites(payload))
+
+    def test_a_change_in_an_assembly_the_other_package_does_not_reference_leaves_its_tests_out(self):
+        payload, _ = self.narrowed({"Extras/E.cs": "public class E { int a; }\n"}, (), "--level", "L2")
+        self.assertEqual(["editmode:U.Tests"], self.suites(payload))
+
+    def test_the_tests_of_the_other_package_follow_testables(self):
+        files = {"Runtime/Foo.cs": "public class Foo { int a; }\n"}
+        payload, _ = self.narrowed(files, (), "--level", "L2")
+        self.assertNotIn("editmode:Game.Dep.Tests", self.suites(payload))
+        git(self.package, "reset", "-q", "--hard", self.old)
+        self.testables = (DEP,)
+        self.pin(self.old)
+        payload, _ = self.narrowed(files, (), "--level", "L2")
+        self.assertIn("editmode:Game.Dep.Tests", self.suites(payload))
+
+    def test_a_package_that_is_not_a_git_dependency_cannot_be_read(self):
+        for entry in ({"source": "registry", "version": "1.0.0"}, "text"):
+            with self.assertRaises(asmgraph.GraphError):
+                select._dependent_assemblies("com.example.reg", entry)
 
 
 class LevelTests(AssemblyCase):
@@ -230,9 +304,6 @@ class FallbackTests(AssemblyCase):
 
     def test_a_changed_file_outside_any_assembly(self):
         self.unresolved({"Loose/Thing.cs": "public class Thing { }\n"}, "Loose/Thing.cs: belongs to no assembly")
-
-    def test_a_change_of_a_test_assembly_of_the_package(self):
-        self.unresolved({"Tests/Editor/FooTests.cs": "class T { }\n"}, "a test assembly of the package changed")
 
     def test_an_assembly_definition_of_the_project_that_cannot_be_read(self):
         git(self.root, "checkout", "-q", "main")
@@ -286,7 +357,7 @@ class FallbackTests(AssemblyCase):
         git(self.root, "add", "-A")
         git(self.root, "commit", "-q", "-m", "other package on main")
         git(self.root, "checkout", "-q", "-B", "work")
-        self.unresolved({"Runtime/Foo.cs": "public class Foo { int a; }\n"}, "com.example.other")
+        self.unresolved({"Runtime/Foo.cs": "public class Foo { int a; }\n"}, "com.example.other depends on it and cannot be read")
 
     def test_an_offline_run_and_a_platform_verdict_keep_what_they_always_kept(self):
         new = self.package_commit({"Runtime/Foo.cs": "public class Foo { int a; }\n"})
@@ -376,10 +447,13 @@ class GraphTests(unittest.TestCase):
     def changes(self, graph, tree, changes):
         return asmgraph.changed_assemblies(changes, tree, graph, lambda path: b"", lambda path: b"")
 
-    def test_a_test_assembly_of_the_package_that_references_what_changed_is_an_error(self):
-        package = self.package(("Lib", [], False), ("Lib.Tests", ["Lib"], True))
-        with self.assertRaises(asmgraph.GraphError):
-            asmgraph.narrow([], package.assemblies, "com.example.lib", {"Lib": ["Runtime/a.cs"]})
+    def test_a_test_assembly_of_a_package_is_selectable_only_when_the_package_is_testable(self):
+        lib = asmgraph.parse_definition("Lib.asmdef", asm("Lib").encode(), None)
+        tests = asmgraph.parse_definition("Lib.Tests.asmdef", asm("Lib.Tests", ["Lib"], test=True, editor=True).encode(), None)
+        packages = {"com.example.lib": [lib, tests]}
+        self.assertEqual([], asmgraph.narrow([], packages, "com.example.lib", {"Lib": ["a.cs"]}))
+        found = asmgraph.narrow([], packages, "com.example.lib", {"Lib": ["a.cs"]}, ["com.example.lib"])
+        self.assertEqual([("Lib.Tests", "editmode", ["Lib.Tests", "Lib"])], [(item["assembly"], item["mode"], item["via"]) for item in found])
 
     def test_precompiled_code_an_added_asmref_and_a_file_outside_any_assembly_are_errors(self):
         graph = asmgraph.Graph([asmgraph.parse_definition("Lib/Lib.asmdef", asm("Lib").encode(), None)])

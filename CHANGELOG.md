@@ -2,6 +2,12 @@
 
 Core (the `valtrion` Python package) and the Unity package `com.goryned.valtrion.unity` are versioned independently. The Unity changelog is in `integrations/unity/com.goryned.valtrion.unity/CHANGELOG.md`; `compat.json` lists compatible pairs.
 
+## 0.20.1 (2026-11-09)
+
+- **Upgrade note.** `compat.json` is unchanged: Core 0.20.1 pairs with Unity package 0.17.x like 0.20.0. Update with `pipx upgrade valtrion` (and `valtrion hosts sync` on SSH hosts).
+
+- **`byContent.assemblies` reads the git packages that depend on the changed one (#136).** In a lock file where several git packages depend on each other, the narrowing no longer falls back to the `managed` kind. Every git package that depends on the changed one, directly or not, is read at the commit the lock file pins now and its assemblies join the graph, so project tests that reach the change through them are selected; a dependent that cannot be read (not a git dependency, no network, a commit that cannot be fetched) still keeps the `managed` kind. A test assembly that belongs to a package is selectable only when the project lists the package in `testables` (a changed test assembly of the package no longer ends the narrowing; it is selected when the package is testable and ignored otherwise). Core only: the contract is unchanged.
+
 ## 0.20.0 (2026-11-09)
 
 - **Upgrade note.** `compat.json` pairs Core 0.20.0 with Unity package 0.17.x (Core 0.8.0 up to, not including, 0.21). Packages 0.15.x and 0.16.x are paired with Core below 0.20: `valtrion doctor --project` reports a project that still has one of them as `BLOCKED` with Core 0.20.0, because they cannot read `byContent.assemblies`. Update the package tag in `Packages/manifest.json` to `unity-v0.17.0` together with Core, or stay on Core 0.19.x. Update with `pipx upgrade valtrion` (and `valtrion hosts sync` on SSH hosts). A map that does not use the member selects as before.
