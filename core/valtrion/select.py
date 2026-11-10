@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Collection, Mapping, Sequence
 
-from . import constants, nowindow, packagediff, presets, project
+from . import asmgraph, constants, nowindow, packagediff, presets, project
 from .schema import SchemaError, UnreadableInput, Validator, parse_json, validate_file
 
 LEVELS = ("L0", "L1", "L2", "L3", "L4")
@@ -40,6 +40,8 @@ TYPES = (L0, EDITMODE, PLAYMODE, PLAYER, DEVICE)
 _EDITOR_TYPES = (EDITMODE, PLAYMODE)
 
 _NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+#: The level at which `byContent.assemblies` puts the test assemblies it selects, when the member names none.
+ASSEMBLIES_LEVEL = "L2"
 _GIT_TIMEOUT_SEC = 60
 
 
@@ -288,9 +290,12 @@ def validate_config(config: Config, validator: Validator | None = None) -> tuple
             for name in key_kinds(entry):
                 if name not in kinds:
                     errors.append(f"{where}.keys[{position}]: kind {name!r} has no entry in kinds")
-            for role, name in sorted(entry.get("byContent", {}).items()):
+            by_content = entry.get("byContent", {})
+            for role, name in sorted((role, name) for role, name in by_content.items() if isinstance(name, str)):
                 if name not in kinds:
                     errors.append(f"{where}.keys[{position}].byContent.{role}: kind {name!r} has no entry in kinds")
+            if "assemblies" in by_content:
+                _validate_assemblies(config, f"{where}.keys[{position}].byContent.assemblies", by_content["assemblies"], errors, warnings)
     for index, rule in enumerate(config.content_rules):
         where = f"contentRules[{index}]"
         if rule["kind"] not in kinds:
@@ -354,6 +359,32 @@ def validate_config(config: Config, validator: Validator | None = None) -> tuple
     if not errors:  # the helpers read kinds and keys the checks above have just proven valid
         warnings.extend(_over_selection_warnings(config))
     return errors, warnings
+
+
+def _validate_assemblies(config: Config, where: str, member: Mapping[str, Any], errors: list[str], warnings: list[str]) -> None:
+    """`byContent.assemblies`: the kind exists, the runners are usable and the narrowed kind does not already hold the whole set."""
+    kind = member["kind"]
+    if kind not in config.kinds:
+        errors.append(f"{where}.kind: kind {kind!r} has no entry in kinds")
+    else:
+        level = member.get("level", ASSEMBLIES_LEVEL)
+        for current in LEVELS[1: LEVELS.index(level) + 1]:
+            editor = [raw for raw in config.kinds[kind].get(current, ()) if raw.strip().lower().startswith(_EDITOR_TYPES)]
+            if editor:
+                warnings.append(f"{where}.kind: kind {kind!r} has {', '.join(editor)} at {current}, so the narrowed suites add nothing to them; "
+                                "keep the whole set in the key's other kinds and leave this kind without Editor suites up to the level")
+    for field_name in ("runner", "playmodeRunner"):
+        text = member.get(field_name)
+        if text is None:
+            continue
+        template, name = config.resolve_runner(text)
+        if name is None:
+            if config.runners and _NAME.match(text):
+                warnings.append(f"{where}.{field_name}: {text!r} is not a key of runners ({', '.join(sorted(config.runners))}); it is used as a literal command")
+        errors.extend(f"{where}.{field_name}: {message}" for message in _placeholder_problems(template or ""))
+        if ASSEMBLIES_COMMA not in (template or "") and ASSEMBLIES_SEMICOLON not in (template or ""):
+            warnings.append(f"{where}.{field_name}: the runner has no {ASSEMBLIES_COMMA} or {ASSEMBLIES_SEMICOLON} placeholder, so it cannot filter by "
+                            "assembly and runs the same tests whichever assemblies are selected")
 
 
 #: A dependency manifest and its lock file: a change of one almost always comes with a change of the other.
@@ -757,8 +788,96 @@ def lock_path_of(path: str) -> str:
     return path if path.rsplit("/", 1)[-1] == "packages-lock.json" else (f"{folder}/" if folder else "") + "packages-lock.json"
 
 
+#: More assembly definitions in the project than this are not read one by one: the assembly graph is not used.
+MAX_PROJECT_ASSEMBLIES = 2000
+
+
+def _project_assemblies(root: Path, lock_path: str, include_worktree: bool) -> list[asmgraph.Assembly]:
+    """The assemblies of the Unity project that `lock_path` (`<project>/Packages/packages-lock.json`) belongs to: every `.asmdef` under its
+    `Assets` and `Packages` folders (embedded packages included), as of `HEAD` or, with `include_worktree`, of the working tree."""
+    folder, _, _ = lock_path.rpartition("/")
+    project, _, packages = folder.rpartition("/")
+    if packages != "Packages":
+        raise asmgraph.GraphError(f"{lock_path} is not the lock file of a Unity project (`Packages/packages-lock.json`)")
+    scopes = [f"{project}/Assets" if project else "Assets", f"{project}/Packages" if project else "Packages"]
+    if include_worktree:
+        listed = _split_z(_git(root, "ls-files", "-z", "--cached", "--others", "--exclude-standard", "--", *(":(literal)" + scope for scope in scopes)))
+    else:
+        listed = _split_z(_git(root, "ls-tree", "-r", "--name-only", "-z", "HEAD", "--", *scopes))
+    files = set(listed)
+
+    def read(path: str) -> bytes | None:
+        if not include_worktree:
+            return _git(root, "show", f"HEAD:{path}")
+        target = root / path
+        if target.is_symlink():
+            raise asmgraph.GraphError(f"{path} is a symbolic link")
+        if not target.is_file():
+            return None  # deleted in the working tree
+        return target.read_bytes()
+
+    definitions = sorted(path for path in files if path.endswith(".asmdef"))
+    if len(definitions) > MAX_PROJECT_ASSEMBLIES:
+        raise asmgraph.GraphError(f"the project has {len(definitions)} assembly definitions: more than {MAX_PROJECT_ASSEMBLIES} are not read one by one")
+    found = []
+    for path in definitions:
+        data = read(path)
+        if data is None:
+            continue
+        meta = read(path + ".meta") if path + ".meta" in files else None
+        found.append(asmgraph.parse_definition(path, data, asmgraph.guid_of_meta(meta) if meta is not None else None))
+    return found
+
+
+def _unreadable_dependents(lock: Mapping[str, Any], key: str) -> list[str]:
+    """The packages of a lock file that depend on `key`, directly or not, and whose assemblies cannot be read from the project: everything but
+    an embedded package (it is in the project) and a built-in module. Their assemblies might reference the package's assemblies."""
+    dependencies = lock.get("dependencies")
+    if not isinstance(dependencies, dict):
+        return []
+    closure = {key}
+    grown = True
+    while grown:
+        grown = False
+        for name, entry in dependencies.items():
+            declared = entry.get("dependencies") if isinstance(entry, dict) else None
+            if name not in closure and isinstance(declared, dict) and closure.intersection(declared):
+                closure.add(name)
+                grown = True
+    return sorted(name for name in closure - {key}
+                  if not isinstance(dependencies[name], dict) or dependencies[name].get("source") not in ("embedded", "builtin"))
+
+
+def _narrow_record(
+        root: Path, lock_path: str, key: str, new_lock: Mapping[str, Any], repo: packagediff.PackageRepo, files: Sequence[tuple[str, str]],
+        include_worktree: bool, member: Mapping[str, Any]) -> dict[str, Any]:
+    """The test assemblies of the project that reach what changed in a package judged `managed`, or why they cannot be named:
+    `{"status": "narrowed", kind, level, changed, tests}` or `{"status": "unresolved", "reason"}` (the caller then keeps the `managed` kind)."""
+    level = member.get("level", ASSEMBLIES_LEVEL)
+    try:
+        dependents = _unreadable_dependents(new_lock, key)
+        if dependents:
+            raise asmgraph.GraphError("other packages depend on it and their assemblies are not read: " + ", ".join(dependents))
+        tree = repo.files()
+        package = asmgraph.Graph(asmgraph.package_assemblies(tree, lambda path: repo.read(repo.new, path)))
+        changed = asmgraph.changed_assemblies(files, tree, package, lambda path: repo.read(repo.new, path), lambda path: repo.read(repo.old, path))
+        tests = asmgraph.narrow(_project_assemblies(root, lock_path, include_worktree), package.assemblies, key, changed)
+        for test in tests:
+            runner = member["runner"] if test["mode"] == "editmode" else member.get("playmodeRunner")
+            if runner is None:
+                raise asmgraph.GraphError(f"the play mode test assembly {test['assembly']} is selected but byContent.assemblies has no playmodeRunner")
+            if not _NAME.match(test["assembly"]):
+                raise asmgraph.GraphError(f"the test assembly name {test['assembly']!r} is not a valid assembly name for a check")
+            test["runner"] = runner
+    except (asmgraph.GraphError, packagediff.Unresolved, GitError, OSError, ValueError, RecursionError) as error:
+        return {"status": "unresolved", "reason": str(error)}
+    return {"status": "narrowed", "kind": member["kind"], "level": level,
+            "changed": [{"assembly": name, "files": list(changed[name])} for name in sorted(changed)], "tests": tests}
+
+
 def _package_record(
-        root: Path, lock_path: str, key: str, merge_base: str, include_worktree: bool, config: Config) -> dict[str, Any]:
+        root: Path, lock_path: str, key: str, merge_base: str, include_worktree: bool, config: Config,
+        assemblies: Mapping[str, Any] | None = None) -> dict[str, Any]:
     """Judge one changed dependency of a git source by the files that changed in it: `{"verdict": "managed" | "platform" | "unresolved", ...}`."""
     try:
         old_lock = parse_json_object(_git(root, "show", f"{merge_base}:{lock_path}"))
@@ -802,11 +921,14 @@ def _package_record(
     try:
         files = repo.changed()
         reasons = packagediff.judge(repo, files, path_reason)
+        record = {**record, "verdict": "platform" if reasons else "managed", "files": len(files), "reasons": reasons}
+        if assemblies is not None and not reasons:  # a `platform` verdict always wins: only content judged managed is narrowed
+            record["assemblies"] = _narrow_record(root, lock_path, key, new_lock, repo, files, include_worktree, assemblies)
+        return record
     except (packagediff.Unresolved, OSError, ValueError, RecursionError) as error:
         return {**record, "verdict": "unresolved", "reason": str(error)}
     finally:
         repo.close()
-    return {**record, "verdict": "platform" if reasons else "managed", "files": len(files), "reasons": reasons}
 
 
 def package_diff_paths(
@@ -814,7 +936,8 @@ def package_diff_paths(
         offline: bool = False) -> tuple[dict[str, dict[str, list[str]]], dict[str, dict[str, dict[str, Any]]]]:
     """For the changed keys of a `jsonRules` entry that carries `byContent`, replace the key's kinds by the kind its content gives: the
     entry's `managed` kind when only managed code, Editor code, tests or documents changed in the package, its `platform` kind when anything
-    else did. Returns the new `json_keys` and the verdicts (`packageDiffs`: lock file -> dependency -> verdict, so two projects in one
+    else did. With `byContent.assemblies`, a `managed` change whose test assemblies can be named gets the member's `kind` instead, and the
+    test assemblies come with the verdict (`assemblies`; see `_narrow_record`). Returns the new `json_keys` and the verdicts (`packageDiffs`: lock file -> dependency -> verdict, so two projects in one
     repository that pin the same dependency are judged apart). A key whose content cannot be read, or any key when `offline`, keeps its own
     kinds (fail closed) and the verdict says `unresolved` and why."""
     if not json_keys or merge_base is None:
@@ -834,9 +957,14 @@ def package_diff_paths(
             lock_path = lock_path_of(path)
             if key not in records.get(lock_path, {}):
                 records.setdefault(lock_path, {})[key] = ({"verdict": "unresolved", "reason": "offline"} if offline
-                                                          else _package_record(root, lock_path, key, merge_base, include_worktree, config))
-            verdict = records[lock_path][key]["verdict"]
-            updated[key] = [by_content["managed" if verdict == "managed" else "platform"]] if verdict in ("managed", "platform") else list(kinds)
+                                                          else _package_record(root, lock_path, key, merge_base, include_worktree, config,
+                                                                               by_content.get("assemblies")))
+            record = records[lock_path][key]
+            verdict = record["verdict"]
+            if verdict == "managed" and record.get("assemblies", {}).get("status") == "narrowed":
+                updated[key] = [record["assemblies"]["kind"]]
+            else:
+                updated[key] = [by_content["managed" if verdict == "managed" else "platform"]] if verdict in ("managed", "platform") else list(kinds)
         result[path] = updated
     return result, records
 
@@ -1013,6 +1141,15 @@ class Selection:
                     if path is not None and path not in entry["paths"]:
                         entry["paths"].append(path)
                 because.extend(grouped.values())
+            for lock, records in sorted(self.package_diffs.items()):
+                for dependency, record in sorted(records.items()):
+                    narrowed = record.get("assemblies", {})
+                    if narrowed.get("status") != "narrowed" or narrowed["kind"] not in check.kinds:
+                        continue
+                    for test in narrowed["tests"]:
+                        if f"{test['mode']}:{test['assembly']}" == check.key:
+                            because.append({"kind": narrowed["kind"], "rule": "byContent.assemblies", "lockFile": lock, "dependency": dependency,
+                                            "changedAssembly": test["via"][-1], "via": test["via"], "paths": list(test["files"])})
             result.append({"check": check.key, "type": check.type, "level": check.level, "because": because})
         return result
 
@@ -1109,6 +1246,12 @@ def _expand(spec: Spec, config: Config, level: str, kind: str, found: dict[str, 
         check.kinds.add(kind)
 
 
+def _narrowed(package_diffs: Mapping[str, Mapping[str, Mapping[str, Any]]] | None) -> list[Mapping[str, Any]]:
+    """The `assemblies` members of the package verdicts that name test assemblies (see `_narrow_record`), in lock file and dependency order."""
+    return [record["assemblies"] for _, records in sorted((package_diffs or {}).items()) for _, record in sorted(records.items())
+            if record.get("assemblies", {}).get("status") == "narrowed"]
+
+
 def select(
     config: Config,
     paths: Sequence[str],
@@ -1152,6 +1295,11 @@ def select(
             for current in LEVELS[: LEVELS.index(level) + 1]:
                 for raw in levels.get(current, ()):
                     _expand(parse_spec(raw), config, current, kind, found, validator)
+        for narrowed in _narrowed(package_diffs):
+            if LEVELS.index(narrowed["level"]) <= LEVELS.index(level):
+                for test in narrowed["tests"]:
+                    spec = Spec(test["mode"], test["assembly"], test["runner"], f"{test['mode']}:{test['assembly']}@{test['runner']}")
+                    _expand(spec, config, narrowed["level"], narrowed["kind"], found, validator)
     checks = sorted(found.values(), key=lambda check: (TYPES.index(check.type), check.key))
     return Selection(
         level, base_ref, merge_base, include_worktree, list(paths), classified, unclassified, policy, widest, sorted(kinds), checks, config, failed,
@@ -1232,6 +1380,8 @@ def _rule_text(entry: Mapping[str, Any]) -> str:
         return "--kind"
     if rule == "unclassified":
         return "unclassified path(s): widest set"
+    if rule == "byContent.assemblies":
+        return f"byContent.assemblies of {entry['dependency']} ({entry['lockFile']}): {' -> '.join(entry['via'])}"
     text = f"{rule} glob {entry['glob']}" + (f" of {entry['from']}" if entry.get("from") else "")
     if "key" in entry:
         text += f" key {entry['key']}" + (f" (match {entry['match']}" + (", fallback)" if entry.get("fallback") else ")") if "match" in entry else "")
@@ -1282,6 +1432,12 @@ def format_selection(selection: Selection, explain: bool = False) -> str:
                 span = f" ({record['from']}..{record['to']}, {record['files']} file(s))" if "from" in record and "files" in record else ""
                 detail = "; ".join(record.get("reasons", [])) or record.get("reason", "")
                 lines.append(f"  {lock}: {key}: {record['verdict']}{span}" + (f": {detail}" if detail else ""))
+                narrowed = record.get("assemblies")
+                if narrowed and narrowed["status"] == "narrowed":
+                    tests = [f"{test['mode']}:{test['assembly']}" for test in narrowed["tests"]]
+                    lines.append(f"    test assemblies by reference ({narrowed['level']}): " + (", ".join(tests) or "none"))
+                elif narrowed:
+                    lines.append(f"    test assemblies not narrowed: {narrowed['reason']}")
     if selection.unclassified:
         action = "no checks selected, fix the area map" if selection.failed else "widest set selected"
         lines.append(f"UNCLASSIFIED ({len(selection.unclassified)}), policy {selection.policy}: {action}")

@@ -101,21 +101,69 @@ namespace Valtrion.Unity.Contracts
         }
     }
 
-    /// <summary>The two kinds of a <c>byContent</c> key.</summary>
+    /// <summary>The two kinds of a <c>byContent</c> key, and optionally how a managed change is narrowed to the test assemblies that reference what changed.</summary>
     public sealed class ChecksByContent
     {
         public string Managed { get; set; }
 
         public string Platform { get; set; }
 
+        /// <summary>When set, a managed change whose changed assemblies and test assemblies can be read gets <see cref="ChecksAssemblies.Kind"/> and only the test assemblies that reference them; otherwise <see cref="Managed"/> applies.</summary>
+        public ChecksAssemblies Assemblies { get; set; }
+
         internal static ChecksByContent Read(ContractReader reader)
         {
-            var byContent = new ChecksByContent { Managed = reader.Identifier("managed"), Platform = reader.Identifier("platform") };
+            var assemblies = reader.OptObject("assemblies");
+            var byContent = new ChecksByContent
+            {
+                Managed = reader.Identifier("managed"), Platform = reader.Identifier("platform"),
+                Assemblies = assemblies == null ? null : ChecksAssemblies.Read(assemblies),
+            };
             reader.Done();
             return byContent;
         }
 
-        internal JsonValue Write() => JsonValue.NewObject().Set("managed", JsonValue.From(Managed)).Set("platform", JsonValue.From(Platform));
+        internal JsonValue Write()
+        {
+            var node = JsonValue.NewObject().Set("managed", JsonValue.From(Managed)).Set("platform", JsonValue.From(Platform));
+            if (Assemblies != null) node.Set("assemblies", Assemblies.Write());
+            return node;
+        }
+    }
+
+    /// <summary>The narrowing of a managed <c>byContent</c> change to test assemblies (<c>byContent.assemblies</c>).</summary>
+    public sealed class ChecksAssemblies
+    {
+        /// <summary>The kind the key gets when the test assemblies are named; it holds the checks that stay at the other levels.</summary>
+        public string Kind { get; set; }
+
+        /// <summary>The runner (a key of <c>runners</c>, or a command) of Edit Mode test assemblies; it filters by <c>{assemblies}</c>.</summary>
+        public string Runner { get; set; }
+
+        /// <summary>The runner of Play Mode test assemblies; without it a change that reaches one is not narrowed.</summary>
+        public string PlaymodeRunner { get; set; }
+
+        /// <summary>The level (<c>L1</c> to <c>L4</c>) of the narrowed suites; <c>L2</c> when null.</summary>
+        public string Level { get; set; }
+
+        internal static ChecksAssemblies Read(ContractReader reader)
+        {
+            var assemblies = new ChecksAssemblies
+            {
+                Kind = reader.Identifier("kind"), Runner = reader.Str("runner"), PlaymodeRunner = reader.OptStr("playmodeRunner", 1),
+                Level = reader.OptChoice("level", new[] { "L1", "L2", "L3", "L4" }),
+            };
+            reader.Done();
+            return assemblies;
+        }
+
+        internal JsonValue Write()
+        {
+            var node = JsonValue.NewObject().Set("kind", JsonValue.From(Kind)).Set("runner", JsonValue.From(Runner));
+            if (PlaymodeRunner != null) node.Set("playmodeRunner", JsonValue.From(PlaymodeRunner));
+            if (Level != null) node.Set("level", JsonValue.From(Level));
+            return node;
+        }
     }
 
     /// <summary>For a changed JSON file matching <see cref="Glob"/>, the kinds of the child keys of <see cref="Root"/> that changed.</summary>

@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **`checks.json`: `byContent.assemblies` (#131).** The map reader accepts the new optional member of `byContent` (`kind`, `runner`, `playmodeRunner`, `level`) that Core 0.20.0 uses to narrow a package pin change to the test assemblies that depend on what changed, and writes it back. Contracts and steps are otherwise unchanged. A map without the member reads as before.
+
 ## 0.16.2 (2026-11-09)
 
 - Compatible Core versions are listed in `compat.json`: package 0.16.2 works with Core 0.8.0 up to, not including, 0.20 (the pairing of 0.16.x is unchanged). Contracts and every step other than `storage.fill` are unchanged. The Editor tests (compilation and EditMode) pass with the change below; update the package tag in `Packages/manifest.json` to `unity-v0.16.2`.

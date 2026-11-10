@@ -149,14 +149,18 @@ class PackageRepo:
     def read(self, commit: str, relative: str) -> bytes:
         return _run(["show", f"{commit}:{self.prefix}{relative}"], self._folder.name, GIT_TIMEOUT_SEC)
 
-    def assemblies(self) -> dict[str, str]:
-        """Folder (relative to the package folder, '' for the root) -> its assembly definition, for the new commit."""
+    def files(self) -> list[str]:
+        """Every file of the package folder in the new commit, relative to the package folder, sorted."""
         arguments = ["ls-tree", "-r", "--name-only", "-z", self.new]
         if self.prefix:
             arguments += ["--", self.source.subpath]
+        paths = (item.decode("utf-8", "surrogateescape") for item in _run(arguments, self._folder.name, GIT_TIMEOUT_SEC).split(b"\0") if item)
+        return sorted(path[len(self.prefix):] if path.startswith(self.prefix) else path for path in paths)
+
+    def assemblies(self) -> dict[str, str]:
+        """Folder (relative to the package folder, '' for the root) -> its assembly definition, for the new commit."""
         found: dict[str, str] = {}
-        for path in sorted(item.decode("utf-8", "surrogateescape") for item in _run(arguments, self._folder.name, GIT_TIMEOUT_SEC).split(b"\0") if item):
-            relative = path[len(self.prefix):] if path.startswith(self.prefix) else path
+        for relative in self.files():
             if relative.endswith(".asmdef"):
                 found.setdefault(relative.rpartition("/")[0], relative)
         return found

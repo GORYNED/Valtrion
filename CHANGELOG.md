@@ -2,6 +2,10 @@
 
 Core (the `valtrion` Python package) and the Unity package `com.goryned.valtrion.unity` are versioned independently. The Unity changelog is in `integrations/unity/com.goryned.valtrion.unity/CHANGELOG.md`; `compat.json` lists compatible pairs.
 
+## Unreleased
+
+- **`select` narrows a package pin change to the test assemblies that depend on what changed (`byContent.assemblies`, #131).** A `byContent` may carry `"assemblies": {"kind": ..., "runner": ..., "playmodeRunner": ..., "level": ...}`. When the content of a git dependency is judged `managed`, `select` finds the package assemblies that changed (the nearest `.asmdef` above each file, or the assembly an `.asmref` names), builds the graph of the `.asmdef` files of the project and the package (references by name and by `GUID:`) and selects only the test assemblies that reference a changed assembly, directly or through others (`editmode:<assembly>@<runner>` or `playmode:...` at the member's level, default `L2`), with the member's `kind` for the checks that stay at the other levels, so the whole set can stay at the merge level. An unreadable graph, a changed file outside any assembly, a change in a test assembly of the package, another unreadable package that depends on it, a Play Mode test assembly without `playmodeRunner` and any other doubt keep the `managed` kind; a `platform` verdict and an unresolved diff keep what they kept. `select --json` has `assemblies` in `packageDiffs` with the chain of references for each test assembly, `--explain` and the text output show it, and `check-config` validates the member. Additive to `gdv.checks/1`; a project that uses the member needs a Unity package that reads it (the next package release) to open the map there. A map without the member selects as before.
+
 ## 0.19.1 (2026-11-09)
 
 - **Upgrade note.** `compat.json` is unchanged: Core 0.19.1 pairs with Unity packages 0.15.x and 0.16.x like 0.19.0. Update with `pipx upgrade valtrion` (and `valtrion hosts sync` on SSH hosts). On a Mac, give the account that runs the host Full Disk Access for the cleanup below to read its folder.
