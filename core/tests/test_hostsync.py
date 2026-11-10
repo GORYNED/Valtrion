@@ -184,6 +184,41 @@ class SyncCommandTests(unittest.TestCase):
         self.assertEqual(2, code)
         self.assertEqual("unreachable", json.loads(out)[0]["status"])
 
+    def test_a_host_that_does_not_answer_is_left_out_after_one_short_probe(self):
+        host = FakeHost(down=True)
+        with mock.patch.object(remote, "make_transport", return_value=host):
+            code, out, err = run("hosts", "--json", "sync")
+        self.assertEqual(2, code)
+        self.assertEqual([["echo", "valtrion"]], host.calls, "nothing but the probe is tried on a host that does not answer")
+        row = json.loads(out)[0]
+        self.assertEqual("unreachable", row["status"])
+        self.assertIn(f"within {hostsync.REACH_TIMEOUT_SEC} s", row["reason"])
+        self.assertIn("mac: checking that the host answers", err)
+        self.assertIn("mac: unreachable", err)
+
+    def test_a_timed_out_probe_counts_as_not_answering(self):
+        class Silent(FakeHost):
+            def run(self, command, timeout_sec, cwd=None):
+                self.calls.append(list(command))
+                return CommandResult(-1, "", "", timed_out=True)
+
+        host = Silent()
+        with mock.patch.object(remote, "make_transport", return_value=host):
+            code, out, _ = run("hosts", "--json", "sync")
+        self.assertEqual(2, code)
+        self.assertEqual("unreachable", json.loads(out)[0]["status"])
+        self.assertEqual(1, len(host.calls))
+
+    def test_progress_goes_to_stderr_and_the_table_stays_on_stdout(self):
+        with mock.patch.object(remote, "make_transport", return_value=FakeHost()):
+            code, out, err = run("hosts", "sync")
+        self.assertEqual(0, code, out)
+        self.assertIn("building the wheel", err)
+        self.assertIn("mac: syncing...", err)
+        self.assertIn("mac: updated", err)
+        self.assertNotIn("syncing", out)
+        self.assertIn("local core", out)
+
     def test_unknown_host_name_is_blocked(self):
         code, _, err = run("hosts", "sync", "--only", "nope")
         self.assertEqual(2, code)

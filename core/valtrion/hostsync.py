@@ -28,6 +28,8 @@ from .config import HostEntry
 from .transport import SSH_FAILURE, CommandResult, Transport, final_verdict, is_tool_missing
 
 STEP_TIMEOUT_SEC = 120
+#: How long `hosts sync` waits for a host to answer one trivial command before it leaves the host out.
+REACH_TIMEOUT_SEC = 20
 INSTALL_TIMEOUT_SEC = 600
 _VERSION = re.compile(r"^valtrion (\d+\.\d+\.\d+\S*) \(contract \d+\)\s*$", re.MULTILINE)
 
@@ -551,6 +553,15 @@ def prune_versions(entry: HostEntry, transport: Transport, python: str, home: st
 
 def _joined(*parts: str) -> str:
     return "; ".join(part for part in parts if part)
+
+
+def unreachable_row(entry: HostEntry, transport: Transport) -> SyncRow | None:
+    """A row for a host that does not answer one trivial command within `REACH_TIMEOUT_SEC`, else None. It lets a sync leave a dead host out
+    after one short wait instead of walking through every step with the long timeouts."""
+    result = transport.run(["echo", "valtrion"], REACH_TIMEOUT_SEC)
+    if result.timed_out or result.returncode == SSH_FAILURE:
+        return SyncRow(entry.id, UNREACHABLE, reason=f"the host did not answer within {REACH_TIMEOUT_SEC} s ({final_verdict(result).detail})")
+    return None
 
 
 def sync_host(entry: HostEntry, transport: Transport, wheel: Path, record: Callable[[str, str, str], None], version: str = __version__,
