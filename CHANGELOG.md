@@ -2,6 +2,12 @@
 
 Core (the `valtrion` Python package) and the Unity package `com.goryned.valtrion.unity` are versioned independently. The Unity changelog is in `integrations/unity/com.goryned.valtrion.unity/CHANGELOG.md`; `compat.json` lists compatible pairs.
 
+## 0.21.2 (2026-11-11)
+
+- **Upgrade note.** `compat.json` is unchanged: Core 0.21.2 pairs with Unity packages 0.17.x and 0.18.x like 0.21.1. Update with `pipx upgrade valtrion` (and `valtrion hosts sync` on SSH hosts).
+
+- **A job started in the macOS GUI session runs at normal priority.** The launchd agent of a job had no `ProcessType`, so macOS ran it, and the Unity, `xcodebuild` and `clang` processes it starts, at utility priority (`ps` priority 20 instead of 31). On an Apple Silicon Mac that made a build slower than the same commands in a terminal: a cold iOS build of one Unity project took 18 min 0 s (the C++ compile 14 min 9 s) and now 11 min 39 s (9 min 16 s); a CPU-bound benchmark took 59.6 s as a default agent and 33.7 s with `ProcessType` `Interactive`. The agent plist now sets `"ProcessType": "Interactive"`.
+
 ## 0.21.1 (2026-11-10)
 
 - **Upgrade note.** `compat.json` is unchanged: Core 0.21.1 pairs with Unity packages 0.17.x and 0.18.x like 0.21.0. Update with `pipx upgrade valtrion` (and `valtrion hosts sync` on SSH hosts).

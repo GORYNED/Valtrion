@@ -1074,6 +1074,9 @@ def launchd_plist(argv: Sequence[str], directory: Path, log: Path, label: str, e
             environment[name] = environ[name]
     return plistlib.dumps({
         "Label": label, "ProgramArguments": list(argv), "WorkingDirectory": str(directory), "RunAtLoad": True,
+        # Without it launchd runs the agent, and every Unity, xcodebuild and clang it starts, at utility priority, which is
+        # slower than the same command in a terminal (about 1.8x on a CPU-bound compile). The owner is waiting for these jobs.
+        "ProcessType": "Interactive",
         "StandardOutPath": str(log), "StandardErrorPath": str(log), "EnvironmentVariables": environment})
 
 
