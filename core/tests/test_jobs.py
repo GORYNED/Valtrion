@@ -297,6 +297,7 @@ class LaunchdTests(JobTestCase):
         loaded = plistlib.loads(data)
         self.assertEqual("a<b&c>'\"", loaded["ProgramArguments"][2])
         self.assertTrue(loaded["RunAtLoad"])
+        self.assertEqual("Interactive", loaded["ProcessType"], "the default utility priority slows the whole build")
         self.assertNotIn("KeepAlive", loaded, "a one-shot agent must not be restarted")
 
     def test_windows_runner_gets_a_hidden_console_not_none(self):
