@@ -160,6 +160,7 @@ function jobCard(j) {
   c.append(el('div', 'title', `${j.project || j.kind || 'job'} · ${j.kind || ''}`));
   const chip = sessionChip(j.worktree); if (chip) c.append(chip);
   c.append(el('div', 'sub', j.id));
+  if (j.offloaded) c.append(el('div', 'sub', `runs on ${j.offloaded.to}${j.offloaded.note ? ' · ' + j.offloaded.note : ''}`));
   const steps = el('div', 'steps'); (j.steps || []).forEach((s) => steps.append(el('span', 'pill ' + s.status, `${s.step}  ${s.status === 'running' ? '…' : s.status}`))); c.append(steps);
   const d = j.device;
   c.append(el('div', 'sub', j.phase ? `phase: ${j.phase}` : (j.message || '')));

@@ -654,6 +654,8 @@ class _Runner:
             return
         if payload["type"] == "pipeline":
             from . import pipeline
+            if self.spec.get("offload") and self.run_elsewhere():
+                return
             context = JobContext(
                 self.store, self.events, self.spec, self.job_id, self.flush, lambda: self.store.cancel.exists(),
                 RunLayout(Path(self.spec["artifactsRoot"]), self.spec["project"], self.spec["sha8"], self.job_id), self.acquire_one,
@@ -670,6 +672,31 @@ class _Runner:
                 self.status, self.reason = outcome.status, outcome.reason
             return
         raise JobError(f"unknown payload type {payload['type']!r}")
+
+    def run_elsewhere(self) -> bool:
+        """Offloading (`offload.py`): when every local Editor slot is busy and another host can take the run, it runs there and this job
+        follows it: the remote events are copied into this job and the remote result becomes its result. False: run it here (the usual
+        case, and the answer after any failure before the remote run started)."""
+        from . import commands, offload
+
+        spec = self.spec["offload"]
+        try:
+            runner = offload.Offloader(
+                offload.Placement.from_spec(spec), emit=self.events.emit, cancelled=lambda: self.store.cancel.exists(), directory=self.store.directory,
+                forward=lambda entry, target, prepared, reason: commands.offload_forward(spec, entry, target, prepared, reason), home=self.home)
+            outcome = runner.run()
+        except Exception as error:  # noqa: BLE001 - a failure of the offer itself must leave the run where it was: in the local queue
+            self.events.emit("log", f"offloading is off for this run: {type(error).__name__}: {error}")
+            return False
+        if outcome is None:
+            return False
+        if outcome.rerun:
+            return False
+        if outcome.cancelled or self.store.cancel.exists():
+            self.state, self.status, self.reason = "cancelled", None, outcome.reason or "cancelled by request"
+        else:
+            self.status, self.reason = outcome.status, outcome.reason
+        return True
 
     def work_roots(self) -> workroot.WorkRoots | None:
         return workroot.WorkRoots(Path(self.spec["workRoot"])) if self.spec.get("workRoot") else None

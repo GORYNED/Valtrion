@@ -18,7 +18,7 @@ import tempfile
 from pathlib import Path
 from typing import Any, Callable, Sequence
 
-from . import artifacts, buildcache, compare as comparing, config, constants, core, devicecache, diskspace, doctor, hostsync, jobs, lease, outputs, project, providers, remote, repeatguard, scratch, submit, supervise, wheel, workroot
+from . import artifacts, buildcache, compare as comparing, config, constants, core, devicecache, diskspace, doctor, hostsync, jobs, lease, offload as offloading, outputs, project, providers, remote, repeatguard, scratch, submit, supervise, wheel, workroot
 from . import __version__
 from .adapter import DeviceInfo
 from .cli import Command, register
@@ -143,6 +143,8 @@ def _configure_hosts(parser: argparse.ArgumentParser) -> None:
     add.add_argument("--projects-root")
     add.add_argument("--connect-timeout", type=int)
     add.add_argument("--python", help="absolute path of a Python 3.10+ on the host (hosts sync finds one when this is not given)")
+    add.add_argument("--offload", action="store_true",
+                     help="this machine may send Unity Editor runs to the host while its own Editor slots are busy (the host must accept them: host.json offload.accept)")
     sync = sub.add_parser("sync", help="install this core version on every SSH host and record the remote valtrion command")
     sync.add_argument("--only", action="append", default=[], metavar="HOST", help="sync only this host (repeatable)")
     sync.add_argument("--prune", action="store_true", help="on a host with pipx also remove old core/<version> folders (older than this "
@@ -156,7 +158,8 @@ def _hosts(arguments: argparse.Namespace) -> int:
     try:
         if arguments.action == "add":
             path = config.add_ssh_host(arguments.id, arguments.ssh, arguments.os, arguments.artifacts_root,
-                                       projects_root=arguments.projects_root, connect_timeout_sec=arguments.connect_timeout, python=arguments.python)
+                                       projects_root=arguments.projects_root, connect_timeout_sec=arguments.connect_timeout, python=arguments.python,
+                                       offload=arguments.offload)
             print(f"added {arguments.id} to {path}")
             return constants.EXIT_PASS
         entries = config.load_hosts()
@@ -165,7 +168,7 @@ def _hosts(arguments: argparse.Namespace) -> int:
     except config.ConfigError as error:
         return _blocked("hosts", str(error))
     rows = [{"id": e.id, "transport": e.kind, "os": e.os, "target": e.ssh_target, "artifactsRoot": e.artifacts_root_text or str(e.artifacts_root),
-             "projectsRoot": e.projects_root, "auto": e.auto, "valtrionCommand": e.valtrion_command, "python": e.python} for e in entries]
+             "projectsRoot": e.projects_root, "auto": e.auto, "valtrionCommand": e.valtrion_command, "python": e.python, "offload": e.offload} for e in entries]
     if arguments.json:
         _out(rows)
     else:
@@ -426,6 +429,9 @@ def _configure_lease(parser: argparse.ArgumentParser) -> None:
         if name == "status":
             child.add_argument("resource")
         _add_host_options(child)
+    slots_parser = sub.add_parser("slots", help="the Unity Editor slots of the host: capacity, free, waiting, holders, and what the host accepts "
+                                                "for offloading (read-only)")
+    _add_host_options(slots_parser)
     name_parser = sub.add_parser("name", help="print the lease name of a resource (read-only)")
     name_parser.add_argument("kind", choices=("unity-project",), help="unity-project: the lease that guards one Unity project folder")
     name_parser.add_argument("path", type=Path, help="the project folder")
@@ -439,6 +445,12 @@ def _lease(arguments: argparse.Namespace) -> int:
         return _forward(arguments, entry, timeout=int(wait) + REMOTE_TIMEOUT_SEC)
     if arguments.action == "name":
         _out({"resource": lease.unity_project_resource(arguments.path)})
+        return constants.EXIT_PASS
+    if arguments.action == "slots":
+        try:
+            _out(offloading.host_report())
+        except (ValueError, config.ConfigError) as error:
+            return _blocked("lease", str(error))
         return constants.EXIT_PASS
     manager = lease.LeaseManager()
     action = arguments.action
@@ -760,7 +772,7 @@ def _preflight(pipeline: dict, base: Path, payload: dict, project_dir: Path | No
     if any(stage["stage"] == "build" for stage in pipeline["stages"]) and project_dir is None:
         return "a build stage needs --project-dir (or --checkout for a managed project)"
     if payload.get("checkoutRoot"):
-        return checkouts.preflight(Path(payload["checkoutRoot"]), pipeline["candidate"]["sha"], payload.get("checkoutRemote"),
+        return checkouts.preflight(Path(payload["checkoutRoot"]), payload.get("checkoutSha") or pipeline["candidate"]["sha"], payload.get("checkoutRemote"),
                                    comparing.run_git, lambda folder, arguments: comparing.run_git(folder, arguments, timeout=600))
     return None
 
@@ -793,8 +805,87 @@ def _cache_status(pipeline: dict, base: Path, sha: str | None, project_dir: Path
     return constants.EXIT_PASS
 
 
+def _offload_payload(arguments: argparse.Namespace, payload: dict) -> str | None:
+    """On the host that receives an offloaded run: put what the sender said into the job's payload (the snapshot commit that is really
+    checked out, whether the sender's tree was dirty, and what the result records about the transfer). A reason when this host does not
+    accept such work."""
+    sender = getattr(arguments, "offload_from", None)
+    if not sender:
+        return None
+    try:
+        settings = config.load_offload_settings()
+    except config.ConfigError as error:
+        return str(error)
+    if not settings.accept or "editor" not in settings.kinds:
+        return "this host does not accept offloaded work (host.json offload.accept and offload.kinds)"
+    if arguments.checkout_sha:
+        payload["checkoutSha"] = arguments.checkout_sha
+    if arguments.snapshot_dirty:
+        payload["snapshotDirty"] = True
+    payload["offload"] = {"offloadFrom": sender, "offloadReason": arguments.offload_reason or "", "offloadSnapshot": arguments.offload_note or "",
+                          "offloadBaseSha": getattr(arguments, "sha", None) or ""}
+    return None
+
+
+def _offload_spec(arguments: argparse.Namespace, pipeline: dict, project_dir: Path | None) -> dict | None:
+    """What the job needs to offload this run (`spec.offload`), or None when it cannot or must not be offloaded: no host is marked
+    for offloading, `--no-offload`, no local project to send, or a generated pipeline."""
+    if (getattr(arguments, "no_offload", False) or getattr(arguments, "generated", False) or project_dir is None
+            or not any(e.kind == "ssh" and e.offload for e in config.load_hosts())):
+        return None
+    from . import pipeline as pipelines
+    named = getattr(arguments, "sha", None) or pipeline["candidate"].get("sha")
+    if named and set(named) != {"0"}:
+        code, head = comparing.run_git(project_dir, ["rev-parse", "HEAD"])
+        if code != 0 or head.strip() != named:
+            return None  # the run names another commit than the working copy holds: it is refused here as before, not tested on another one
+    source = Path(arguments.pipeline if arguments.command == "pipeline" else arguments.plan)
+    try:  # the job runs in another working directory than the command: the file is named by its absolute path
+        raw = submit.replace_positional(list(arguments.raw_argv), source, str(source.resolve()))
+    except submit.SubmitError:
+        return None
+    return {"kind": "editor", "projectDir": str(project_dir), "names": [pipeline["candidate"]["repo"]],
+            "unityVersion": pipelines.unity_version(project_dir), "force": bool(getattr(arguments, "offload", False)),
+            "forward": {"command": arguments.command, "rawArgv": raw, "file": str(source.resolve()), "pipeline": pipeline}}
+
+
+def offload_forward(spec: dict, entry: config.HostEntry, target: "offloading.Target", prepared: "offloading.Prepared", reason: str) -> dict:
+    """Send the run to `entry` and start it there with no wait for a slot; returns what the host printed (`jobId`, `dir`, `relDir`).
+    `OffloadError` says why it did not start. The command line is the caller's own with the host's checkout, the commit and the
+    offload notes in place of the project folder."""
+    forward = spec["forward"]
+    raw = [item for item in _strip_host_options(forward["rawArgv"]) if item not in ("--watch", "--local", "--offload", "--no-offload")]
+    for name in ("--project-dir", "--checkout", "--sha", "--lease-wait", "--checkout-sha", "--offload-from", "--offload-reason", "--offload-note"):
+        raw = submit.drop_option(raw, name)
+    raw = [item for item in raw if item != "--snapshot-dirty"]
+    raw += ["--checkout", prepared.checkout_id, "--sha", prepared.base_sha, "--lease-wait", "0", "--offload-from", core.local_host_id(),
+            "--offload-reason", reason, "--offload-note", prepared.note]
+    if prepared.sha != prepared.base_sha:
+        raw += ["--checkout-sha", prepared.sha]
+    if prepared.dirty:
+        raw.append("--snapshot-dirty")
+    source = Path(forward["file"])
+    arguments = argparse.Namespace(command=forward["command"], raw_argv=raw, remote_project=None, checkout=prepared.checkout_id,
+                                   pipeline=source, plan=source)
+    try:
+        command = _remote_command_line(arguments, entry, forward["pipeline"], Path(spec["projectDir"]))
+        result = _remote(entry, arguments, retry=False).call([*command, "--local", "--transport", "ssh", "--selected-by", "capability"],
+                                                              REMOTE_TIMEOUT_SEC)
+    except (submit.SubmitError, ValueError) as error:
+        raise offloading.OffloadError(str(error)) from error
+    started = remote.extract_json_object(result.stdout) if result.ok else None
+    if not started and (result.timed_out or (result.returncode == remote.SSH_FAILURE and not offloading.NOT_STARTED.search(result.stderr or ""))):
+        raise offloading.StartUncertain(f"host {entry.id} did not answer the start of the run")  # a job may be running there
+    if not started or "jobId" not in started:
+        raise offloading.OffloadError((result.stderr or result.stdout).strip()[:300] or f"host {entry.id} did not start the run (exit {result.returncode})")
+    return started
+
+
 def _start_pipeline(arguments: argparse.Namespace, pipeline: dict, payload: dict, base: Path, project_dir: Path | None, label: str) -> int:
     if arguments.local:
+        refused = _offload_payload(arguments, payload)
+        if refused:
+            return _blocked(arguments.command, refused)
         entry, selected = config.local_host(), arguments.selected_by
         transport = arguments.transport
     else:
@@ -859,6 +950,10 @@ def _start_pipeline(arguments: argparse.Namespace, pipeline: dict, payload: dict
         stall_sec=arguments.stall_sec, timeout_sec=arguments.timeout_sec, owner=_owner(), purpose=f"valtrion {arguments.command} {label}",
         lease_wait_sec=_lease_wait(arguments.lease_wait), protected_paths=tuple(arguments.protect), disk_wait_sec=getattr(arguments, "disk_wait", None),
         cleanup_paths=tuple(cleanup_paths), cleanup_base=str(project_dir.resolve()) if cleanup_paths and project_dir is not None else None)
+    if not arguments.local and not arguments.host and _request_for(pipeline, base, project_dir).platform == "editor":
+        placed = _offload_spec(arguments, pipeline, project_dir)
+        if placed is not None:
+            request.extra["offload"] = placed
     domain = arguments.domain
     if domain == "auto" and _request_for(pipeline, base, project_dir).platform in SIGNING_PLATFORMS:
         domain = "gui"  # signing needs the login keychain, which only the GUI session has
@@ -951,6 +1046,15 @@ def _common_run_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--remote-project")
     parser.add_argument("--checkout", metavar="ID", help="build in a managed checkout of the project (host.json projects.<candidate.repo>): "
                         "its id, or `auto` for the project's default; needs --sha, replaces --project-dir and --remote-project")
+    parser.add_argument("--offload", action="store_true",
+                        help="an Editor run goes to another host (hosts.json offload) when the local Editor slots are busy; with this option it "
+                             "must: it ends BLOCKED when no host can take it (without it the run then waits in the local queue)")
+    parser.add_argument("--no-offload", action="store_true", help="never send this run to another host")
+    parser.add_argument("--checkout-sha", help=argparse.SUPPRESS)  # set by the sender of an offloaded run
+    parser.add_argument("--snapshot-dirty", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--offload-from", help=argparse.SUPPRESS)
+    parser.add_argument("--offload-reason", help=argparse.SUPPRESS)
+    parser.add_argument("--offload-note", help=argparse.SUPPRESS)
     parser.add_argument("--local", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--inbox", help=argparse.SUPPRESS)  # set by the caller of an SSH host: the folder name its files were sent to
     parser.add_argument("--selected-by", default=SELECTED_LOCAL, help=argparse.SUPPRESS)
@@ -1519,6 +1623,13 @@ def _configure_unity(parser: argparse.ArgumentParser) -> None:
     run.add_argument("--progress-window", action=argparse.BooleanOptionalAction, default=None,
                      help="Windows only: show one small window with the progress of the run; the dashboard shows it too (default: progressWindow of host.json, off)")
     run.add_argument(STOP_ON_STDIN_EOF, action="store_true", help=argparse.SUPPRESS)  # added by a caller that keeps this command's input open
+    placement = run.add_mutually_exclusive_group()
+    placement.add_argument("--offload", action="store_true",
+                           help="when the Editor slots of this host are busy the run must go to a host marked `offload` in hosts.json (see `valtrion hosts add --offload`); "
+                                "BLOCKED when no host takes it (default: such a host is tried first, and the run waits here when none takes it)")
+    placement.add_argument("--no-offload", action="store_true", help="run on this host even when another host could take the run")
+    for name in ("--offload-project", "--offload-checkout", "--offload-sha", "--offload-from", "--offload-out"):  # what a sending host adds
+        run.add_argument(name, default=None, help=argparse.SUPPRESS)
     _add_host_options(run)
     run.add_argument("unity_args", nargs=argparse.REMAINDER, help="after `--`: the arguments passed to Unity")
 
@@ -1532,7 +1643,7 @@ def _unity_arguments(arguments: argparse.Namespace) -> list[str]:
 
 
 def _unity(arguments: argparse.Namespace) -> int:
-    from . import progresswindow, unityrun
+    from . import progresswindow, unityoffload, unityrun
 
     if arguments.action == "_progress":
         return progresswindow.run_window(arguments.log, arguments.done, arguments.parent_pid, arguments.title, arguments.detail, arguments.progress)
@@ -1542,6 +1653,8 @@ def _unity(arguments: argparse.Namespace) -> int:
     except config.ConfigError as error:
         return _blocked("unity", str(error))
     if entry is not None:
+        if arguments.offload:
+            return _blocked("unity", "--offload sends the run to another host when this one is busy; it cannot be combined with --host")
         # Starting Unity is not idempotent, so the transport does not retry; the output arrives when the run has ended.
         limit = arguments.timeout_sec if arguments.timeout_sec > 0 else REMOTE_UNITY_NO_TIMEOUT_SEC
         return _forward(arguments, entry, timeout=int(wait + limit + REMOTE_UNITY_MARGIN_SEC), retry=False,
@@ -1553,15 +1666,52 @@ def _unity(arguments: argparse.Namespace) -> int:
     except config.ConfigError as error:
         return _blocked("unity", str(error))
     unity_args = _unity_arguments(arguments)
-    found = None
-    if unityrun.option_value(unity_args, "-projectPath") is None:  # -projectPath wins; a broken valtrion.json must not block such a run
-        try:
-            found = project.resolve_unity_project(arguments.project_dir)
-        except project.ProjectError as error:
-            return _blocked("unity", str(error))
+    found, prepare = None, None
+    if arguments.offload_from:  # a run sent by another host (see unityoffload.py)
+        received = unityoffload.receive(unity_args, arguments.offload_project, arguments.offload_checkout, arguments.offload_sha,
+                                        arguments.offload_out)
+        if isinstance(received, str):
+            return unityoffload.blocked_result(received)
+        unity_args, found, prepare = received.unity_args, received.project_dir, received.prepare
+    else:
+        if unityrun.option_value(unity_args, "-projectPath") is None:  # -projectPath wins; a broken valtrion.json must not block such a run
+            try:
+                found = project.resolve_unity_project(arguments.project_dir)
+            except project.ProjectError as error:
+                return _blocked("unity", str(error))
+        placed = _unity_offload(arguments, unity_args, found)
+        if placed is not None:
+            return placed
     return unityrun.run(unity_args, found or arguments.project_dir, arguments.unity, wait, arguments.timeout_sec,
                         arguments.stall_sec, arguments.purpose, lifeline=sys.stdin.fileno() if arguments.stop_on_stdin_eof else None,
-                        lfs_materialize=arguments.lfs_materialize, hidden_desktop=hidden, progress_window=progress)
+                        lfs_materialize=arguments.lfs_materialize, hidden_desktop=hidden, progress_window=progress, prepare=prepare)
+
+
+def _offload_remote(entry: config.HostEntry, retry: bool = True, lifeline: bool = False) -> remote.Remote:
+    """The valtrion entry on an offload host (no working directory: the receiving host picks its own checkout)."""
+    return remote.remote_for(entry, None, remote.make_transport(entry, retry=retry, lifeline=lifeline))
+
+
+def _unity_offload(arguments: argparse.Namespace, unity_args: list[str], found: Path | None) -> int | None:
+    """Try to run this `unity run` on another host while the Editor slots here are busy. None: run it here."""
+    from . import unityoffload
+
+    if arguments.no_offload or arguments.stop_on_stdin_eof:  # the second: a run that a caller keeps watching (--host, an offloaded run)
+        return None
+    try:
+        entries = [item for item in config.load_hosts() if item.kind == "ssh" and item.offload]
+        settings = config.load_offload_settings()
+    except config.ConfigError as error:
+        return _blocked("unity", str(error)) if arguments.offload else None
+    if not entries:
+        return _blocked("unity", "--offload: no host in hosts.json is marked for offloading (valtrion hosts add --offload)") if arguments.offload else None
+    folder = unityoffload.local_project(unity_args, found or arguments.project_dir)
+    if folder is None:
+        return None  # the local run says that there is no project
+    limit = arguments.timeout_sec if arguments.timeout_sec > 0 else REMOTE_UNITY_NO_TIMEOUT_SEC
+    return unityoffload.UnityOffload(unity_args, arguments.raw_argv, folder, entries=entries, settings=settings, remote_for=_offload_remote,
+                                     local_room=unityoffload.default_local_room, timeout_sec=limit + REMOTE_UNITY_MARGIN_SEC,
+                                     force=arguments.offload, local_host=core.local_host_id(), unity=arguments.unity).run()
 
 
 def _configure_dashboard(parser: argparse.ArgumentParser) -> None:
@@ -1579,6 +1729,26 @@ def _dashboard(arguments: argparse.Namespace) -> int:
     from . import dashboardcmd
 
     return dashboardcmd.run(arguments)
+
+
+def _configure_offload(parser: argparse.ArgumentParser) -> None:
+    sub = parser.add_subparsers(dest="action", required=True)
+    receive = sub.add_parser("import", help="(used by a sending host) take the code of an offloaded run into a free managed checkout")
+    receive.add_argument("--project", required=True)
+    receive.add_argument("--sha", required=True)
+    receive.add_argument("--kind", default="editor", choices=config.OFFLOAD_KINDS)
+    receive.add_argument("--bundle", type=Path)
+
+
+def _offload(arguments: argparse.Namespace) -> int:
+    if not re.fullmatch(r"[0-9a-f]{40}", arguments.sha):
+        return _blocked("offload", "--sha must be the full 40-character commit")
+    try:
+        _out(offloading.accept_import(arguments.project, arguments.sha, arguments.bundle, arguments.kind,
+                                      slow_git=lambda folder, args: comparing.run_git(folder, args, timeout=1800)))
+    except (offloading.OffloadError, config.ConfigError, ValueError) as error:
+        return _blocked("offload", str(error))
+    return constants.EXIT_PASS
 
 
 def register_all() -> None:
@@ -1601,6 +1771,7 @@ def register_all() -> None:
         ("gc", "remove old run folders", _gc, _configure_gc),
         ("workroot", "the work root for builds and checkouts outside protected folders", _workroot, _configure_workroot),
         ("retain", "keep a run from `valtrion gc`", _retain, _configure_retain),
+        ("offload", "take the code of an Editor run that another host sends", _offload, _configure_offload),
     ]
     for name, help_text, handler, configure in table:
         register(Command(name, help_text, "host core", handler, configure))

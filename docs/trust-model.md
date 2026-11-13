@@ -32,6 +32,14 @@ Consequence: run Valtrion only on projects you trust, and treat a profile, a pla
 
 Remote work uses OpenSSH in batch mode: no prompts, a connect timeout, no agent forwarding. Valtrion runs only short bounded commands over SSH and never holds a session open for a job; a job runs on the host in its own detached process. The command run on a host is the absolute `valtrion` path recorded by `valtrion hosts sync` (not looked up through PATH). An SSH target never starts with `-` (it would read as an ssh option); the contract rejects it. You decide which hosts are in `hosts.json`; Valtrion does not discover or add hosts by itself. `hosts sync` installs this checkout's core into the user's home on each SSH host.
 
+## Offloaded runs
+
+Offloading an Editor run sends the code of a working copy to another machine, where project code (editor scripts, tests, the test runner) runs as the user of that host. It extends the machines you trust with the project, so it is opt-in on both sides: the sending machine marks the host in its own `hosts.json`, the receiving host accepts the kind of work in its own `host.json` (`offload.accept`) and refuses everything else, including a request that names a project it has no managed checkout of. Valtrion does not discover or enable it by itself. Use a host whose user may run this project's code; on a Mac that holds signing identities, run it as a user that has none (the account that receives offloaded work can be a different macOS user than the one that signs).
+
+What is sent: the commit or a git bundle of a snapshot of tracked and untracked files that git does not ignore, the plan and the pipeline file. What is not sent: ignored files (`.env`, local settings, caches), the `host.json` and `hosts.json` of the sender, Unity licenses, keychains, signing identities and `Library/`. Uncommitted Git LFS files are refused. The snapshot commit is made without touching the sender's index, branches or working tree and is deleted from the sender after the bundle is written; on the host it stays as a ref `refs/valtrion/offload/*` of the managed checkout (the newest five are kept). Nothing is pushed to any remote.
+
+The SSH key that lets one machine run `valtrion` on the other is what protects this: use a key of its own per direction, keep `BatchMode` and no agent forwarding (already the default), and see [SSH hosts](#ssh-hosts).
+
 ## Leases
 
 Leases are advisory locks between sessions of one host. They keep two runs from using the same device or Editor slot; they do not protect against a process that ignores them. A live lease is never taken over, and a stale one (holder dead and TTL expired) is reclaimed.

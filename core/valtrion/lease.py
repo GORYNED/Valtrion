@@ -259,6 +259,27 @@ class LeaseManager:
             result.append(self.status(resource))
         return result
 
+    def waiting(self, name: str) -> int:
+        """How many live waiters stand in the line of a resource (tickets of dead waiters are not counted and are not removed)."""
+        try:
+            tickets = sorted(self._queue_directory(name).glob("*.ticket"))
+        except OSError:
+            return 0
+        return sum(1 for ticket in tickets if ticket.exists() and not self._ticket_is_stale(ticket))
+
+    def slot_report(self, name: str, slots: int) -> dict:
+        """The slots of a counted resource as `lease slots` prints them: `capacity`, `free` (a stale lease is free: the next claimant
+        reclaims it), `waiting` (live tickets in the line) and the `held` slots with their holders. Only read, nothing is taken."""
+        held = []
+        for slot in range(1, slots + 1):
+            status = self.status(slot_resource(name, slot))
+            if status.state != "held":
+                continue
+            record = status.record
+            held.append({"slot": slot, "owner": record.owner if record else None, "purpose": record.purpose if record else None,
+                         "acquiredUtc": record.acquired_utc if record else None})
+        return {"resource": name, "capacity": slots, "free": slots - len(held), "waiting": self.waiting(name), "held": held}
+
     # -- acquiring -----------------------------------------------------------------------------------------------------
 
     def _new_record(self, resource: str, owner: str, session: str, pid: int, ttl_sec: int, purpose: str, worktree: str) -> LeaseRecord:
