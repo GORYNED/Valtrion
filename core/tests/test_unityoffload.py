@@ -86,6 +86,23 @@ class PlanTests(unittest.TestCase):
         self.assertEqual([("/work/inbox-1/1-Editor.log", Path("logs/Editor.log").absolute()), ("/work/inbox-1/2-results.xml", Path("out/results.xml").absolute()),
                           ("/work/inbox-1/3-r2.xml", Path("out/r2.xml").absolute())], copies)
 
+    def test_a_build_target_of_this_machines_own_platform_becomes_the_hosts_own(self):
+        from valtrion import core
+        names = {"macos": ["osxuniversal", "OSXUniversal", "StandaloneOSX"], "windows": ["win", "Win64", "StandaloneWindows64"],
+                 "linux": ["linux64", "StandaloneLinux64"]}
+        for system, spellings in names.items():
+            with mock.patch.object(core, "local_os", return_value=system):
+                for spelling in spellings:
+                    arguments, _ = self.render("-batchmode", "-buildTarget", spelling)
+                    self.assertEqual(["-batchmode", "-buildTarget", unityoffload.BUILD_TARGET_TOKEN, "-projectPath", PROJECT_TOKEN], arguments, spelling)
+
+    def test_a_build_target_of_another_platform_is_still_refused(self):
+        from valtrion import core
+        with mock.patch.object(core, "local_os", return_value="macos"):
+            for target in ("win64", "Android", "iOS", "Linux64"):
+                with self.assertRaises(NotOffloadable, msg=target):
+                    plan(["-batchmode", "-buildTarget", target])
+
     def test_a_windows_host_gets_a_windows_path(self):
         arguments, _ = self.render("-logFile", "Editor.log", out="C:\\work\\inbox-1", os_name="windows")
         self.assertEqual("C:\\work\\inbox-1\\1-Editor.log", arguments[1])
@@ -260,7 +277,7 @@ class PlacementTests(HostTestCase):
     def test_an_argument_that_is_not_understood_runs_here_with_one_line_and_blocks_with_offload(self):
         code, _ = self.run_offload(["-batchmode", "-buildTarget", "Android"])
         self.assertIsNone(code)
-        self.assertEqual(["offload: not used: -buildTarget Android would switch the platform of the host's checkout (only -buildTarget Standalone is sent)"],
+        self.assertEqual(["offload: not used: -buildTarget Android would switch the platform of the host's checkout (only the standalone target of this machine's platform is sent)"],
                          self.err.getvalue().splitlines())
         self.assertEqual([], self.host.calls)
         code, _ = self.run_offload(["-batchmode", "-buildTarget", "Android"], force=True)
@@ -369,6 +386,13 @@ class ReceiverTests(HostTestCase):
         received = self.receive("-batchmode", "-projectPath", PROJECT_TOKEN, "-logFile", str(self.out / "1-Editor.log"))
         self.assertEqual(self.checkout / "Game", received.project_dir)
         self.assertEqual(["-batchmode", "-projectPath", str(self.checkout / "Game"), "-logFile", str(self.out / "1-Editor.log")], received.unity_args)
+
+    def test_the_build_target_token_becomes_the_target_of_this_hosts_platform(self):
+        from valtrion import core
+        for system, target in (("macos", "OSXUniversal"), ("windows", "Win64"), ("linux", "Linux64")):
+            with mock.patch.object(core, "local_os", return_value=system):
+                received = self.receive("-batchmode", "-buildTarget", unityoffload.BUILD_TARGET_TOKEN, "-projectPath", PROJECT_TOKEN)
+            self.assertEqual(["-batchmode", "-buildTarget", target, "-projectPath", str(self.checkout / "Game")], received.unity_args, system)
 
     def test_an_output_file_outside_the_output_folder_is_refused(self):
         reason = self.receive("-projectPath", PROJECT_TOKEN, "-logFile", str(self.base / "elsewhere.log"))

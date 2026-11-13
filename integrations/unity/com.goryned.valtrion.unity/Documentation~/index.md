@@ -33,7 +33,7 @@ same reviewed checkout as Core. Add a local path to `Packages/manifest.json` for
 
 For a shared project, use `https://github.com/GORYNED/Valtrion.git?path=integrations/unity/com.goryned.valtrion.unity#<full-reviewed-commit-sha>`
 with the full SHA substituted; do not commit an absolute local path. Public HTTPS Git installation needs no GitHub account or token; private forks require existing access. This package is
-MIT licensed; the notice is included in `LICENSE.md`. Core 0.22.0 and this package 0.18.0 are paired by `compat.json`; identical
+MIT licensed; the notice is included in `LICENSE.md`. Core 0.22.1 and this package 0.18.0 are paired by `compat.json`; identical
 version numbers are not required. The repository tests use Unity Test Framework 1.8.0; the repository's test Editor is specified in
 `integrations/unity/UnityProject/ProjectSettings/ProjectVersion.txt`.
 

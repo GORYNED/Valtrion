@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Any, Callable, Sequence, TextIO
 
 from . import checkout as checkouts
-from . import codesync, compare, config, constants, lease, offload, remote, submit, unityrun
+from . import codesync, compare, config, constants, core, lease, offload, remote, submit, unityrun
 from .config import HostEntry
 from .providers.unity import support
 from .transport import SSH_FAILURE, evidence, is_tool_missing
@@ -28,6 +28,13 @@ from .transport import SSH_FAILURE, evidence, is_tool_missing
 KIND = "unity-run"
 #: Replaces the value of `-projectPath` on the wire; the receiver puts its checkout's Unity project folder in its place.
 PROJECT_TOKEN = "valtrion-offload-project"
+#: Replaces a `-buildTarget` that names the sender's own platform; the receiver puts the standalone target of its own platform in its place
+#: (a test run in the Editor of the host's own platform: asking for another target would reimport the whole project).
+BUILD_TARGET_TOKEN = "valtrion-offload-build-target"
+#: The names of the standalone target of each operating system (lower case) and what the Editor of that system is started with.
+_NATIVE_TARGETS = {"macos": ("osxuniversal", "standaloneosx"), "windows": ("win", "win64", "standalonewindows", "standalonewindows64"),
+                   "linux": ("linux64", "standalonelinux64")}
+_TARGET_OF = {"macos": "OSXUniversal", "windows": "Win64", "linux": "Linux64"}
 #: Starts the reason of a host that refused the run before Unity started (it is not a result of the run).
 REFUSED = "offload refused: "
 POLL_SEC = offload.POLL_SEC
@@ -106,9 +113,13 @@ def plan(unity_args: Sequence[str]) -> Plan:
                 outputs.append(Path(value).expanduser().absolute())
                 items += [item, _Output(len(outputs) - 1)]
         elif low == "-buildtarget":
-            if value.lower() != "standalone":
-                raise NotOffloadable(f"-buildTarget {value} would switch the platform of the host's checkout (only -buildTarget Standalone is sent)")
-            items += [item, value]
+            if value.lower() == "standalone":
+                items += [item, value]
+            elif value.lower() in _NATIVE_TARGETS.get(core.local_os(), ()):
+                items += [item, BUILD_TARGET_TOKEN]  # this machine's own platform: the host uses its own
+            else:
+                raise NotOffloadable(f"-buildTarget {value} would switch the platform of the host's checkout "
+                                     "(only the standalone target of this machine's platform is sent)")
         elif low == "-activebuildprofile":
             raise NotOffloadable("-activeBuildProfile names a build profile of this project, not of the host's checkout")
         elif low in _NAME_OPTIONS:
@@ -369,7 +380,8 @@ def receive(unity_args: Sequence[str], project: str, checkout_id: str, sha: str,
     if chosen is None:
         return REFUSED + f"project {project} has no checkout {checkout_id!r}"
     folder = managed.project_dir(chosen)
-    arguments = [str(folder) if item == PROJECT_TOKEN else item for item in unity_args]
+    target = _TARGET_OF.get(core.local_os(), "Standalone")
+    arguments = [str(folder) if item == PROJECT_TOKEN else target if item == BUILD_TARGET_TOKEN else item for item in unity_args]
     if out_dir:
         base = _normal(out_dir)
         for name in _OUTPUT_OPTIONS:
