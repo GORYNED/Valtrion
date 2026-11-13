@@ -2,6 +2,12 @@
 
 Core (the `valtrion` Python package) and the Unity package `com.goryned.valtrion.unity` are versioned independently. The Unity changelog is in `integrations/unity/com.goryned.valtrion.unity/CHANGELOG.md`; `compat.json` lists compatible pairs.
 
+## 0.22.1 (2026-11-13)
+
+- **Upgrade note.** `compat.json` is unchanged: Core 0.22.1 pairs with Unity packages 0.17.x and 0.18.x like 0.22.0. Update with `pipx upgrade valtrion` (and `valtrion hosts sync` on SSH hosts): the hosts of an offload must run the same Core version.
+
+- **`unity run` offloads a run that names its own platform as `-buildTarget`.** A project runner that starts Unity with `-buildTarget osxuniversal` on a Mac or `-buildTarget win64` on Windows was never offloaded, because a different target would make the host import the project again. A `-buildTarget` that names the standalone target of the sending machine's own platform (`OSXUniversal`, `StandaloneOSX`, `Win`, `Win64`, `StandaloneWindows(64)`, `Linux64`, `StandaloneLinux64`) is now sent as "the host's own standalone target" and the host puts its own in its place (`OSXUniversal`, `Win64` or `Linux64`). Any other target and `-activeBuildProfile` still keep the run local.
+
 ## 0.22.0 (2026-11-12)
 
 - **Upgrade note.** `compat.json` pairs Core 0.22.0 with Unity packages 0.17.x and 0.18.x (their Core range is raised to below 0.23; the Unity package is not changed). Update with `pipx upgrade valtrion` and run `valtrion hosts sync` on SSH hosts: the hosts of an offload must run the same Core version. Nothing changes until a host is marked for offloading.
