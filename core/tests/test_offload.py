@@ -670,6 +670,16 @@ class SendingJobTests(HostTestCase):
         patcher = mock.patch.object(jobs, "start_job", side_effect=fake_start)
         patcher.start()
         self.addCleanup(patcher.stop)
+        # Which host a run would be given to depends on what the machine has installed; these tests are about what the job is given.
+        patcher = mock.patch.object(commands, "resolve_host", side_effect=self.resolve)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def resolve(self, request, pinned, remote_project=None):
+        entries = {entry.id: entry for entry in config.load_hosts()}
+        chosen = entries[pinned] if pinned else next(e for e in entries.values() if e.kind == "local")
+        kind = "local" if chosen.kind == "local" else "ssh"
+        return SimpleNamespace(host=chosen.info(), selected_by="pinned" if pinned else "local", transport=kind, reasons=()), entries
 
     def run_plan(self, *extra):
         return run("run", str(self.plan), "--repo", "Game", "--sha", self.head, "--app", "editor", "--platform", "editor",
