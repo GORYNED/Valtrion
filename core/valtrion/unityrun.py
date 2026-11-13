@@ -241,14 +241,17 @@ def run(
         ttl_sec: int = LEASE_TTL_SEC, poll_sec: float = 1.0, cancel_poll_sec: float = 1.0,
         probe: unityguard.Probe | None = None, guard_poll_sec: float | None = None, lifeline: int | None = None,
         lfs_materialize: bool | None = None, lfs_call: lfs.LfsCall | None = None, lfs_free: Callable[[Path], int] | None = None,
-        hidden_desktop: bool | None = None, progress_window: bool | None = None) -> int:
+        hidden_desktop: bool | None = None, progress_window: bool | None = None,
+        prepare: Callable[[], str | None] | None = None) -> int:
     """Run Unity with `unity_args`; returns the exit code of the final status (already printed as the last stdout line).
     `lifeline`: a file descriptor whose end of input means the caller is gone (the standard input of a command run over SSH); the run is then
     interrupted like by Ctrl+C. `lfs_materialize`: run the Git LFS preflight (None: `lfs.materialize` of host.json, default on);
     `lfs_call` and `lfs_free` replace `git lfs` and the free-space probe in tests. `hidden_desktop`: start Unity on a desktop of its own
     (None: `hiddenDesktop` of host.json, default off here; the command line turns it on by default): on Windows a desktop of its own, on
     macOS the Editor hides its own windows (`windowisolation`; needs the Unity package), so test windows do not appear on the screen.
-    `progress_window`: show one window with the progress of the run (same rules, `progressWindow`)."""
+    `progress_window`: show one window with the progress of the run (same rules, `progressWindow`). `prepare`: called with the project
+    lease held, before the LFS preflight and the Editor slot (an offloaded run resets its checkout to the commit here); it returns None or
+    the reason the run is `BLOCKED`. Its time does not count against the lease wait."""
     out = out or sys.stdout
     err = err or sys.stderr
     args = normalize_assembly_names(unity_args)
@@ -262,15 +265,17 @@ def run(
         args += ["-projectPath", str(project)]
     else:
         return _result(out, constants.BLOCKED, "no Unity project: pass -projectPath, --project-dir, set GDV_UNITY_PROJECT or add a valtrion.json")
-    if not project.is_dir():
+    # An offloaded run (`prepare`) finds the folder and its Unity version only after the checkout has been reset to the commit.
+    if prepare is None and not project.is_dir():
         return _result(out, constants.BLOCKED, f"the Unity project folder {project} does not exist")
 
+    editor, problem = None, None
     if unity:
         editor, problem = _explicit_editor(unity)
-    else:
+    elif prepare is None:
         found, problem = support.find_editor(support.project_unity_version(project), core.local_os(), os.environ)
         editor = found["path"] if found else None
-    if editor is None:
+    if editor is None and (unity or prepare is None):
         return _result(out, constants.BLOCKED, problem)
 
     try:
@@ -329,6 +334,19 @@ def run(
                     return _result(out, constants.BLOCKED, taken.reason)
                 keeper.add(project_resource)
                 keeper.start()  # the project lease is renewed while this run waits for a slot
+                if prepare is not None:
+                    prepare_started = time.monotonic()
+                    problem = prepare()
+                    deadline += time.monotonic() - prepare_started
+                    if problem:
+                        return _result(out, constants.BLOCKED, problem)
+                    if not project.is_dir():
+                        return _result(out, constants.BLOCKED, f"the Unity project folder {project} does not exist")
+                    if editor is None:
+                        found, problem = support.find_editor(support.project_unity_version(project), core.local_os(), os.environ)
+                        if found is None:
+                            return _result(out, constants.BLOCKED, problem)
+                        editor = found["path"]
                 if lfs_cache is not None:
                     # Under the project lease (no other run writes this tree) and before the slot (a download holds no Editor slot).
                     # Its time does not count against the lease wait: a long download must not leave the slot wait no budget.

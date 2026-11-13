@@ -64,6 +64,11 @@ class PipelineOptions:
     checkout_root: Path | None = None  # the root of that git checkout (the project folder may be a subfolder of it)
     checkout_remote: str | None = None  # what a missing managed checkout is cloned from
     unity_path: str = "."  # the Unity project below the checkout root
+    #: An offloaded run (`offload.py`): the commit that is really checked out (a snapshot commit that holds the sender's uncommitted
+    #: changes; the result still names the sender's commit), whether it is dirty, and what the result says about the transfer.
+    checkout_sha: str | None = None
+    snapshot_dirty: bool = False
+    offload: Mapping[str, str] | None = None
     #: `--stages` / `--from-stage` / `--only-failed`: {"stages": [...]}, {"fromStage": ID} or {"onlyFailed": True}; None runs every stage.
     selection: Mapping[str, Any] | None = None
     resume_from: str | None = None  # `--resume-from JOB`: the earlier run the stages that are not selected are carried from
@@ -652,6 +657,8 @@ def execute(pipeline: Mapping[str, Any], pipeline_path: Path | None, ctx: JobCon
         # A run sent by a caller: the caller did not choose this path, so the result says which folder was tested
         # (host.tools is a free string map in gdv.result/1 and in its readers).
         host = {**host, "tools": {**host.get("tools", {}), PROJECT_TOOL_KEY: str(project_dir)}}
+    if options.offload:
+        host = {**host, "tools": {**host.get("tools", {}), **{key: str(value) for key, value in options.offload.items()}}}
     requested = pipeline["candidate"].get("sha")
     unspecified = not requested or set(requested) == {"0"}  # a committed pipeline file cannot name its own commit
     candidate_sha = requested
@@ -692,6 +699,7 @@ def execute(pipeline: Mapping[str, Any], pipeline_path: Path | None, ctx: JobCon
     elif options.sha_pinned:
         head_note.append("--sha was given but there is no checkout (--project-dir) to verify it against")
     pipeline = {**pipeline, "candidate": {**pipeline["candidate"], "sha": candidate_sha}}  # everything below records the real commit
+    checkout_target = options.checkout_sha or candidate_sha  # the commit the folder is reset to (a snapshot commit when offloaded)
     problem = validate_prelaunch(pipeline["stages"], base)
     if problem is not None:
         return PipelineOutcome(constants.BLOCKED, problem)  # before any stage: a typo must not cost a build
@@ -722,7 +730,9 @@ def execute(pipeline: Mapping[str, Any], pipeline_path: Path | None, ctx: JobCon
     if raw_adapter is not None and project_dir is not None and hasattr(raw_adapter, "use_project"):
         raw_adapter.use_project(project_dir)  # an adapter that reads the project's profiles (Editor, Windows) learns where it is
     adapter = GuardedAdapter(raw_adapter, options.op_timeout_sec) if raw_adapter is not None else None
-    if managed and raw_adapter is not None and not getattr(raw_adapter, "build_uses_editor", True):
+    if managed and raw_adapter is not None and not getattr(raw_adapter, "build_uses_editor", True) and not options.offload:
+        # An offloaded run (offload.py) is the exception: the host's checkout is verified again before each run stage, so a checkout
+        # that another run moved meanwhile ends the stage BLOCKED (and the sender runs it again elsewhere) and never tests a wrong commit.
         return PipelineOutcome(constants.BLOCKED, f"a managed checkout is for platforms that build in the Editor and run the built app; "
                                f"{platform} runs from the project folder itself, which another job could switch before it starts")
     if adapter is None:
@@ -1002,9 +1012,9 @@ def execute(pipeline: Mapping[str, Any], pipeline_path: Path | None, ctx: JobCon
         if managed:
             assert options.checkout_root is not None
             slow = None if options.git is not compare.run_git else (lambda folder, arguments: compare.run_git(folder, arguments, timeout=1800))
-            done = checkout.ensure(options.checkout_root, candidate_sha, options.git, remote=options.checkout_remote,
+            done = checkout.ensure(options.checkout_root, checkout_target, options.git, remote=options.checkout_remote,
                                    keep=[*own, directory], slow_git=slow, cancelled=ctx.cancelled, unity_path=options.unity_path)
-            problem = None if done.ok else f"the commit {candidate_sha[:12]} cannot be checked out in {options.checkout_root}: {done.reason}"
+            problem = None if done.ok else f"the commit {checkout_target[:12]} cannot be checked out in {options.checkout_root}: {done.reason}"
             record = {**done.describe(options.checkout_id), "folder": str(project_dir)}
             if done.created:
                 events.emit("log", f"created the managed checkout {options.checkout_id} in {options.checkout_root}", step=name)
@@ -1020,20 +1030,20 @@ def execute(pipeline: Mapping[str, Any], pipeline_path: Path | None, ctx: JobCon
                 events.emit("log", f"removed stray build output from the checkout: {', '.join(done.removed)}", step=name,
                             data={"removed": list(done.removed)})
             if done.ok and done.switched:
-                note = (f"checkout {options.checkout_id}: reset to {candidate_sha[:12]} in {project_dir} (it was at "
+                note = (f"checkout {options.checkout_id}: reset to {checkout_target[:12]} in {project_dir} (it was at "
                         f"{(done.previous or 'no commit')[:12]})" + ("; the commit was fetched from the remote first" if done.fetched else ""))
                 head_note.append(note)
                 events.emit("log", note, step=name, data={"checkout": record})
         else:
-            problem = checkout.verify_head(project_dir, candidate_sha, options.git)
-            record = {"folder": str(project_dir), "sha": candidate_sha, "switched": False, "fetched": False}
+            problem = checkout.verify_head(project_dir, checkout_target, options.git)
+            record = {"folder": str(project_dir), "sha": checkout_target, "switched": False, "fetched": False}
         if problem:
             events.emit("step.finished", problem, step=name, status=constants.BLOCKED)
             stage_results.append(early(constants.BLOCKED, problem))
             return fail(constants.BLOCKED, problem)
         checkout_info = record
         state = gitstate.read_state(project_dir, options.git, [*own, directory])
-        dirty = state.dirty
+        dirty = state.dirty or options.snapshot_dirty  # a snapshot commit is clean in the folder, but the sender's tree was not
         head_note.extend(state.notes)
         unity = unity_version(project_dir)
         if raw_adapter is not None and hasattr(raw_adapter, "use_project"):
@@ -1440,7 +1450,7 @@ def execute(pipeline: Mapping[str, Any], pipeline_path: Path | None, ctx: JobCon
             assert device is not None
             if enforce_checkout and not adapter.build_uses_editor and project_dir is not None:
                 # The player runs from the folder itself (the Editor platform): another job may have moved it since this job's build stage.
-                moved = checkout.verify_head(project_dir, candidate_sha, options.git)
+                moved = checkout.verify_head(project_dir, checkout_target, options.git)
                 if moved:
                     events.emit("step.finished", moved, step=name, status=constants.BLOCKED)
                     stage_results.append(early(constants.BLOCKED, moved))
@@ -1780,7 +1790,9 @@ def run_pipeline_job(ctx: JobContext) -> PipelineOutcome:
         checkout_id=payload.get("checkoutId"), checkout_root=Path(payload["checkoutRoot"]) if payload.get("checkoutRoot") else None,
         checkout_remote=payload.get("checkoutRemote"), unity_path=payload.get("unityPath") or ".",
         selection=payload.get("selection") or None, resume_from=payload.get("resumeFrom") or None,
-        keep_going=bool(payload.get("keepGoing", False)), result_cache=payload.get("resultCache"))
+        keep_going=bool(payload.get("keepGoing", False)), result_cache=payload.get("resultCache"),
+        checkout_sha=payload.get("checkoutSha") or None, snapshot_dirty=bool(payload.get("snapshotDirty", False)),
+        offload=payload.get("offload") or None)
     return execute(pipeline, path, ctx, options)
 
 

@@ -144,6 +144,9 @@ def _result_row(check: Check, platform: str | None, result: dict) -> Row:
         if status == constants.PASS:
             status = NOT_VERIFIED
         detail = (detail + "; " if detail else "") + "produced from a dirty tree"
+    sent_from = (result["host"].get("tools") or {}).get("offloadFrom")
+    if sent_from:
+        detail = (detail + "; " if detail else "") + f"ran on {result['host']['id']}, sent from {sent_from} (offloaded)"
     reused = result.get("reusedFrom")
     if isinstance(reused, dict) and reused.get("runId"):
         # A result answered from the result cache: the run that produced the evidence is named, not this job.

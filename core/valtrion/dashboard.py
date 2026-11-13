@@ -156,6 +156,9 @@ def job_list(home: Path, now: datetime, limit: int = RECENT_JOBS) -> list[dict]:
         item["worktree"] = core.worktree_label((spec.get("payload") or {}).get("projectDir") if isinstance(spec.get("payload"), dict) else None)
         if item["active"]:
             item["device"] = device_progress(directory, item["currentStep"], now)
+        moved = _read(directory / "offload.json")  # this job follows a run on another host (`offload.py`)
+        if moved is not None:
+            item["offloaded"] = {"to": moved.get("host"), "job": moved.get("job"), "note": moved.get("note"), "reason": moved.get("reason")}
         result.append(item)
     return result
 

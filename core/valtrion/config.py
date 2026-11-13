@@ -46,6 +46,7 @@ class HostEntry:
     valtrion_command: str | None = None  # absolute path of the valtrion command on an SSH host
     python: str | None = None  # absolute path of the Python (3.10+) hosts sync uses on an SSH host
     artifacts_root_text: str | None = None  # artifactsRoot exactly as written; a remote POSIX path must not be shown through this machine's Path
+    offload: bool = False  # this machine may send Unity Editor runs to this host while its own slots are busy
 
     def info(self) -> HostInfo:
         return HostInfo(self.id, self.kind, self.os, self.ssh_target, self.connect_timeout_sec)
@@ -318,6 +319,58 @@ def _load_build_cache(value: Any) -> buildcache.Retention:
     return buildcache.Retention(entries, days["keepDays"], days["dirtyKeepDays"], per_source)
 
 
+#: The kinds of work that can be offloaded: a pipeline on the Editor platform (EditMode and PlayMode tests) and `unity run`.
+OFFLOAD_KINDS = ("editor", "unity-run")
+
+
+@dataclass(frozen=True)
+class OffloadSettings:
+    """`host.json` `offload`. As the host that receives work: `accept` and `kinds`, `maxBundleMiB`. As the host that sends it: `settleSec` (how
+    long a job that finds every Editor slot busy looks for a free host before it joins the local queue), `lostSec` (how long a host
+    that does not answer is waited for after the remote run started) and `rerunLocal` (run again here once when it is lost)."""
+    accept: bool = False
+    kinds: tuple[str, ...] = OFFLOAD_KINDS
+    max_bundle_mib: int = 512
+    settle_sec: float = 30.0
+    lost_sec: float = 120.0
+    rerun_local: bool = True
+
+
+def load_offload_settings(home: Path | None = None) -> OffloadSettings:
+    base = home or core.valtrion_home()
+    try:
+        document = core.read_json(host_json_path(base))
+    except FileNotFoundError:
+        return OffloadSettings()
+    except (OSError, ValueError) as error:
+        raise ConfigError(f"cannot read {host_json_path(base)}: {error}") from error
+    value = document.get("offload") if isinstance(document, dict) else None
+    if value is None:
+        return OffloadSettings()
+    if not isinstance(value, dict):
+        raise ConfigError("host.json: offload must be an object")
+    unknown = sorted(set(value) - {"accept", "kinds", "maxBundleMiB", "settleSec", "lostSec", "rerunLocal"})
+    if unknown:
+        raise ConfigError(f"host.json: offload has unknown keys: {', '.join(unknown)}")
+    for key in ("accept", "rerunLocal"):
+        if not isinstance(value.get(key, True), bool):
+            raise ConfigError(f"host.json: offload.{key} must be true or false")
+    kinds = value.get("kinds", list(OFFLOAD_KINDS))
+    if not isinstance(kinds, list) or not kinds or any(kind not in OFFLOAD_KINDS for kind in kinds):
+        raise ConfigError(f"host.json: offload.kinds must be a non-empty list of: {', '.join(OFFLOAD_KINDS)}")
+    size = value.get("maxBundleMiB", 512)
+    if isinstance(size, bool) or not isinstance(size, int) or size < 1:
+        raise ConfigError("host.json: offload.maxBundleMiB must be a positive integer")
+    seconds = {}
+    for key, default in (("settleSec", 30.0), ("lostSec", 120.0)):
+        number = value.get(key, default)
+        if isinstance(number, bool) or not isinstance(number, (int, float)) or not math.isfinite(number) or number < 0:
+            raise ConfigError(f"host.json: offload.{key} must be a non-negative number")
+        seconds[key] = float(number)
+    return OffloadSettings(bool(value.get("accept", False)), tuple(dict.fromkeys(kinds)), size, seconds["settleSec"], seconds["lostSec"],
+                           bool(value.get("rerunLocal", True)))
+
+
 def default_lease_wait(home: Path | None = None) -> float | None:
     """`leaseWaitSec` of host.json: how long a run, build or job waits for a leased device or Editor slot when its caller names no wait
     (`--lease-wait`, a profile's `leaseWaitSec`). None when host.json does not set it (builds then do not wait, `unity run` waits 1800 s)."""
@@ -484,7 +537,8 @@ def load_hosts(home: Path | None = None, validator: Validator | None = None) -> 
             id=item["id"], kind=transport["kind"], os=item["os"], artifacts_root=Path(item["artifactsRoot"]), artifacts_root_text=item["artifactsRoot"],
             ssh_target=transport.get("sshTarget"), connect_timeout_sec=int(transport.get("connectTimeoutSec", 10)),
             roles=tuple(item.get("roles", ())), projects_root=item.get("projectsRoot"), worktree_policy=item.get("worktreePolicy"),
-            declared=item.get("capabilities", {}), valtrion_command=item.get("valtrionCommand"), python=item.get("python")))
+            declared=item.get("capabilities", {}), valtrion_command=item.get("valtrionCommand"), python=item.get("python"),
+            offload=bool(item.get("offload", False))))
     if not any(entry.kind == "local" for entry in entries):
         entries.insert(0, local_entry(home))
     return entries
@@ -517,7 +571,7 @@ def projects_root_problem(root: str, os_name: str) -> str | None:
 
 def add_ssh_host(
         host_id: str, ssh_target: str, os_name: str, artifacts_root: str, home: Path | None = None, projects_root: str | None = None,
-        connect_timeout_sec: int | None = None, python: str | None = None) -> Path:
+        connect_timeout_sec: int | None = None, python: str | None = None, offload: bool = False) -> Path:
     """Add or replace an SSH host in hosts.json, keeping the other entries; the file is validated before it is written."""
     if projects_root:
         problem = projects_root_problem(projects_root, os_name)
@@ -534,6 +588,8 @@ def add_ssh_host(
         item["projectsRoot"] = projects_root
     if python:
         item["python"] = python
+    if offload:
+        item["offload"] = True
     hosts.append(item)
     updated = {"schema": "gdv.hosts/1", "hosts": hosts}
     _, errors = validate_document(updated)
