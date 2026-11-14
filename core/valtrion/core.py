@@ -18,6 +18,9 @@ HOME_ENV = "VALTRION_HOME"
 #: Set by the job runner for the work it does in-process: the launchd domain of the job (`gui/501`), `launchd` when the job is a launchd
 #: agent whose domain is not recorded yet, empty when it has none (a foreground job). Absent outside a job.
 JOB_DOMAIN_ENV = "GDV_JOB_LAUNCHD_DOMAIN"
+#: When set to anything but empty, `0`, `false` or `no`, no run of this machine is sent to another host (same as `--no-offload`, for a test
+#: runner whose command line cannot be changed). `--offload` on the command line still wins.
+NO_OFFLOAD_ENV = "VALTRION_NO_OFFLOAD"
 
 _UTC = re.compile(r"^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d+))?Z$")
 _UNSAFE_IDENTIFIER = re.compile(r"[^A-Za-z0-9._:-]+")
@@ -32,6 +35,10 @@ def valtrion_home() -> Path:
     """Machine-local state root (hosts, registry, leases, job index); `VALTRION_HOME` overrides it for tests and isolated runs."""
     override = os.environ.get(HOME_ENV)
     return Path(override) if override else Path.home() / ".valtrion"
+
+
+def offload_disabled() -> bool:
+    return os.environ.get(NO_OFFLOAD_ENV, "").strip().lower() not in ("", "0", "false", "no")
 
 
 def now() -> datetime:

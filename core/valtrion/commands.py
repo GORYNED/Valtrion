@@ -15,6 +15,7 @@ import os
 import re
 import sys
 import tempfile
+import threading
 from pathlib import Path
 from typing import Any, Callable, Sequence
 
@@ -831,6 +832,7 @@ def _offload_spec(arguments: argparse.Namespace, pipeline: dict, project_dir: Pa
     """What the job needs to offload this run (`spec.offload`), or None when it cannot or must not be offloaded: no host is marked
     for offloading, `--no-offload`, no local project to send, or a generated pipeline."""
     if (getattr(arguments, "no_offload", False) or getattr(arguments, "generated", False) or project_dir is None
+            or (core.offload_disabled() and not getattr(arguments, "offload", False))
             or not any(e.kind == "ssh" and e.offload for e in config.load_hosts())):
         return None
     from . import pipeline as pipelines
@@ -1049,7 +1051,7 @@ def _common_run_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--offload", action="store_true",
                         help="an Editor run goes to another host (hosts.json offload) when the local Editor slots are busy; with this option it "
                              "must: it ends BLOCKED when no host can take it (without it the run then waits in the local queue)")
-    parser.add_argument("--no-offload", action="store_true", help="never send this run to another host")
+    parser.add_argument("--no-offload", action="store_true", help="never send this run to another host (also: VALTRION_NO_OFFLOAD=1 in the environment)")
     parser.add_argument("--checkout-sha", help=argparse.SUPPRESS)  # set by the sender of an offloaded run
     parser.add_argument("--snapshot-dirty", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--offload-from", help=argparse.SUPPRESS)
@@ -1627,7 +1629,7 @@ def _configure_unity(parser: argparse.ArgumentParser) -> None:
     placement.add_argument("--offload", action="store_true",
                            help="when the Editor slots of this host are busy the run must go to a host marked `offload` in hosts.json (see `valtrion hosts add --offload`); "
                                 "BLOCKED when no host takes it (default: such a host is tried first, and the run waits here when none takes it)")
-    placement.add_argument("--no-offload", action="store_true", help="run on this host even when another host could take the run")
+    placement.add_argument("--no-offload", action="store_true", help="run on this host even when another host could take the run (also: VALTRION_NO_OFFLOAD=1 in the environment)")
     for name in ("--offload-project", "--offload-checkout", "--offload-sha", "--offload-from", "--offload-out"):  # what a sending host adds
         run.add_argument(name, default=None, help=argparse.SUPPRESS)
     _add_host_options(run)
@@ -1660,6 +1662,9 @@ def _unity(arguments: argparse.Namespace) -> int:
         return _forward(arguments, entry, timeout=int(wait + limit + REMOTE_UNITY_MARGIN_SEC), retry=False,
                         lost_hint=REMOTE_UNITY_LOST_HINT, lifeline=True, extra=(STOP_ON_STDIN_EOF,))
 
+    handed = _in_user_session(arguments)
+    if handed is not None:
+        return handed
     try:  # the hidden desktop is on, the progress window off, unless the command line or host.json says otherwise (Windows only)
         hidden = config.hidden_desktop(None, True) if arguments.hidden_desktop is None else arguments.hidden_desktop
         progress = config.progress_window(None, False) if arguments.progress_window is None else arguments.progress_window
@@ -1687,6 +1692,34 @@ def _unity(arguments: argparse.Namespace) -> int:
                         lfs_materialize=arguments.lfs_materialize, hidden_desktop=hidden, progress_window=progress, prepare=prepare)
 
 
+def _in_user_session(arguments: argparse.Namespace) -> int | None:
+    """On Windows, a `unity run` that starts without a desktop (over SSH, an offloaded run) is run again in the session of the logged-in
+    user: an Editor that cannot draw windows dies with a D3D12 error as soon as a test opens one. None: run here."""
+    from . import usersession
+
+    if arguments.action == "_progress" or not usersession.needed():
+        return None
+    try:
+        if not config.interactive_session():
+            return None
+    except config.ConfigError:
+        return None
+    raw = [item for item in arguments.raw_argv if item != STOP_ON_STDIN_EOF]
+    stopped = threading.Event()
+    if arguments.stop_on_stdin_eof:  # the caller keeps this command's input open for as long as it waits for it
+        threading.Thread(target=_stdin_ended, args=(stopped,), name="valtrion-session-input", daemon=True).start()
+    return usersession.run(usersession.command(raw), sys.stdout, sys.stderr, cancelled=stopped.is_set)
+
+
+def _stdin_ended(stopped: threading.Event) -> None:
+    try:
+        while sys.stdin.buffer.read(4096):
+            pass
+    except (OSError, ValueError):
+        pass
+    stopped.set()
+
+
 def _offload_remote(entry: config.HostEntry, retry: bool = True, lifeline: bool = False) -> remote.Remote:
     """The valtrion entry on an offload host (no working directory: the receiving host picks its own checkout)."""
     return remote.remote_for(entry, None, remote.make_transport(entry, retry=retry, lifeline=lifeline))
@@ -1696,7 +1729,7 @@ def _unity_offload(arguments: argparse.Namespace, unity_args: list[str], found: 
     """Try to run this `unity run` on another host while the Editor slots here are busy. None: run it here."""
     from . import unityoffload
 
-    if arguments.no_offload or arguments.stop_on_stdin_eof:  # the second: a run that a caller keeps watching (--host, an offloaded run)
+    if arguments.no_offload or arguments.stop_on_stdin_eof or (core.offload_disabled() and not arguments.offload):  # the second: a run that a caller keeps watching (--host, an offloaded run)
         return None
     try:
         entries = [item for item in config.load_hosts() if item.kind == "ssh" and item.offload]

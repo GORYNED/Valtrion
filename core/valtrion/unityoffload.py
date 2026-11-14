@@ -323,6 +323,9 @@ class UnityOffload:
                 return _Attempt(busy=True)
             if reason.startswith(REFUSED):
                 return _Attempt(refused=reason[len(REFUSED):])
+        if status != constants.PASS and GRAPHICS_FAILURE.search((result.stdout or "") + "\n" + (result.stderr or "")) and not _ran_tests(result.stdout):
+            # Unity could not start its graphics device on that host: the host is unfit for Editor runs and the run is not a result.
+            return _Attempt(refused=f"host {entry.id} could not start the Editor (graphics device): {_first_match(result)}")
         sys.stdout.write(result.stdout)
         sys.stderr.write(result.stderr)
         self._copy_back(entry, copies)
@@ -340,6 +343,16 @@ class UnityOffload:
                 continue
             if not copied.ok:
                 self._say(f"offload: {local} was not copied back from host {entry.id}: {evidence(copied) or 'it is missing there'}")
+
+
+def _first_match(result: Any) -> str:
+    found = GRAPHICS_FAILURE.search((result.stdout or "") + "\n" + (result.stderr or ""))
+    return found.group(0).strip()[:160] if found else "unknown"
+
+
+def _ran_tests(stdout: str) -> bool:
+    """Whether the output says that tests ran (a result line), so that a graphics message in it is a message of a test, not of the start."""
+    return bool(re.search(r"\b(?:Passed|Failed|Skipped|Total)\s*[:=]?\s*\d+\b|\btests? (?:passed|failed|ran)\b", stdout or "", re.IGNORECASE))
 
 
 def default_local_room(home: Path | None = None) -> bool:
@@ -398,6 +411,11 @@ def receive(unity_args: Sequence[str], project: str, checkout_id: str, sha: str,
         return None if done.ok else REFUSED + f"the commit {sha[:12]} cannot be checked out in {chosen.path}: {done.reason}"
 
     return Receiver(arguments, folder, prepare)
+
+
+#: What a log or console says when the Editor could not create its graphics device; the run never reached its tests.
+GRAPHICS_FAILURE = re.compile(r"Unrecoverable GPU device error|Fatal Error! d3d1[12]|d3d1[12]: (?:CreateSwapChain\w* failed|Device failed error)"
+                              r"|Failed to create (?:a )?graphics device|No graphics device", re.IGNORECASE)
 
 
 def _normal(path: str) -> str:
