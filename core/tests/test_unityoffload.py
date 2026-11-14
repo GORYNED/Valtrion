@@ -238,6 +238,28 @@ class PlacementTests(HostTestCase):
         self.assertEqual(constants.EXIT_BLOCKED, code)
         self.assertIn("--offload: mac: host.json declares no project", self.err.getvalue())
 
+    def test_a_host_that_could_not_start_its_graphics_device_is_given_up_and_the_run_goes_back_to_the_local_queue(self):
+        self.host.answer = CommandResult(1, "d3d12: Unrecoverable GPU device error! Run with -force-d3d12-debug\nSTATUS FAIL\n", "")
+        code, out = self.run_offload(["-batchmode", "-runTests"])
+        self.assertIsNone(code)
+        self.assertEqual("", out)  # the failure of the start is not the result of the run
+        self.assertEqual(1, len(self.host.runs))  # and the host is not asked again for this run
+        self.assertIn("could not start the Editor (graphics device)", self.err.getvalue())
+        self.err.truncate(0)
+        code, _ = self.run_offload(["-batchmode"], force=True)
+        self.assertEqual(constants.EXIT_BLOCKED, code)
+
+    def test_the_harmless_graphics_line_of_every_run_is_not_a_failure_of_the_start(self):
+        self.host.answer = CommandResult(1, "d3d12: failed to query info queue interface (0x80004002).\nSTATUS FAIL\n", "")
+        code, _ = self.run_offload(["-batchmode"])
+        self.assertEqual(1, code)
+
+    def test_a_graphics_message_of_a_run_that_ran_its_tests_is_its_result(self):
+        self.host.answer = CommandResult(1, "Failed: 2 Unrecoverable GPU device error in a test\nSTATUS FAIL\n", "")
+        code, out = self.run_offload(["-batchmode"])
+        self.assertEqual(1, code)
+        self.assertIn("STATUS FAIL", out)
+
     def test_a_host_that_cannot_be_reached_when_the_run_starts_is_a_refusal_not_a_lost_run(self):
         self.host.answer = CommandResult(remote.SSH_FAILURE, "", "ssh: connect to host mac port 22: Connection refused")
         code, _ = self.run_offload(["-batchmode"])
@@ -311,6 +333,17 @@ class CommandTests(HostTestCase):
         sender.assert_not_called()
         local.assert_called_once()
         self.assertIsNone(local.call_args.kwargs["prepare"])
+
+    def test_the_environment_can_keep_the_run_here_but_not_against_offload(self):
+        with mock.patch.dict("os.environ", {"VALTRION_NO_OFFLOAD": "1"}):
+            _, local, sender, _ = self.unity()
+            sender.assert_not_called()
+            local.assert_called_once()
+            _, _, sender, _ = self.unity("--offload")
+            sender.assert_called_once()
+        with mock.patch.dict("os.environ", {"VALTRION_NO_OFFLOAD": "0"}):
+            _, _, sender, _ = self.unity()
+            sender.assert_called_once()
 
     def test_no_offload_keeps_the_run_here(self):
         _, local, sender, _ = self.unity("--no-offload")

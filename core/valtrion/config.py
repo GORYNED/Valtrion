@@ -436,6 +436,12 @@ def hidden_desktop(home: Path | None = None, default: bool = False) -> bool:
     return _host_flag("hiddenDesktop", default, home)
 
 
+def interactive_session(home: Path | None = None) -> bool:
+    """`interactiveSession` of host.json (default true): whether a `unity run` that starts in a session without a desktop (SSH, a service;
+    Windows) is handed to the interactive session of the logged-in user, where the windows that tests open can be drawn (`usersession.py`)."""
+    return _host_flag("interactiveSession", True, home)
+
+
 def progress_window(home: Path | None = None, default: bool = False) -> bool:
     """`progressWindow` of host.json: whether `unity run` shows one small window with the progress of the run (Windows only). `default`
     when host.json does not set it (the command line of `unity run` passes True)."""

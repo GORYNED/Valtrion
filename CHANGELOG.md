@@ -2,6 +2,14 @@
 
 Core (the `valtrion` Python package) and the Unity package `com.goryned.valtrion.unity` are versioned independently. The Unity changelog is in `integrations/unity/com.goryned.valtrion.unity/CHANGELOG.md`; `compat.json` lists compatible pairs.
 
+## 0.22.2 (2026-11-14)
+
+- **Upgrade note.** `compat.json` is unchanged: Core 0.22.2 pairs with Unity packages 0.17.x and 0.18.x like 0.22.1. Update with `pipx upgrade valtrion` (and `valtrion hosts sync` on SSH hosts): the hosts of an offload must run the same Core version. On a Windows host, `unity run` over SSH now starts itself in the session of the logged-in user (`host.json` `interactiveSession: false` turns it off).
+
+- **`unity run` over SSH on Windows runs in the session of the logged-in user (#147).** An Editor started by SSH or a service has no display; the first test that opened an `EditorWindow` made it fail with `d3d12: CreateSwapChainForHwnd failed (887a0022)` and `Unrecoverable GPU device error`, so every run that was offloaded to a Windows host (or sent with `--host`) with such a test failed, while the same run at the desktop passed. `unity run` now starts itself through the Task Scheduler in the console session of the user (interactive, elevated, still on the hidden desktop), relays the output and the exit code, and deletes the task. Without a logged-in user, or when the task does not start in 45 s, the run goes on where it is. `host.json` `interactiveSession` (default `true`) turns it off.
+- **A host whose Editor cannot start its graphics device is given up.** An offloaded run that ends with a fatal graphics error (`Unrecoverable GPU device error`, a failed swap chain, no graphics device) and no test result is not reported as the result of the run: the host is not asked again for it and the run goes to the local queue (`BLOCKED` with `--offload`).
+- **`VALTRION_NO_OFFLOAD=1`** keeps every `unity run` and pipeline on this machine, like `--no-offload`, for a test runner whose command line cannot be changed; `--offload` still wins.
+
 ## 0.22.1 (2026-11-13)
 
 - **Upgrade note.** `compat.json` is unchanged: Core 0.22.1 pairs with Unity packages 0.17.x and 0.18.x like 0.22.0. Update with `pipx upgrade valtrion` (and `valtrion hosts sync` on SSH hosts): the hosts of an offload must run the same Core version.
