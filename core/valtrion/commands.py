@@ -1705,6 +1705,10 @@ def _in_user_session(arguments: argparse.Namespace) -> int | None:
     except config.ConfigError:
         return None
     raw = [item for item in arguments.raw_argv if item != STOP_ON_STDIN_EOF]
+    if arguments.stop_on_stdin_eof and "--no-offload" not in raw:
+        # A run that a caller keeps watching (`--host`, an offloaded run) is not sent on to another host; without the option dropped above,
+        # the command in the session must be told so.
+        raw.insert(raw.index("--") if "--" in raw else len(raw), "--no-offload")
     stopped = threading.Event()
     finished = threading.Event()
     watcher: threading.Thread | None = None

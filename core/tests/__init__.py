@@ -7,6 +7,9 @@ from valtrion import unityguard
 
 # Tests never touch the real copies of installed apps that Apple's device service keeps on the machine they run on.
 os.environ.setdefault("VALTRION_DEVICE_INSTALL_CACHE", "")
+# A `unity run` of a test never hands itself to the session of the logged-in user: on a Windows host reached over SSH it would create a
+# real Task Scheduler task (and a console on that user's screen). The tests of that hand-over pass their own scheduler.
+os.environ.setdefault("GDV_USER_SESSION", "1")
 
 
 class QuietProbe(unityguard.Probe):

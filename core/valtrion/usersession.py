@@ -59,8 +59,16 @@ def script(argv: Sequence[str], folder: Path) -> str:
         *([f'set "{core.HOME_ENV}={home}"'] if home else []),
         f'echo started> "{folder / "started.txt"}"',
         f'{quoted} > "{folder / "out.txt"}" 2>&1',
-        f'echo %errorlevel%> "{folder / "exit.txt"}"',
+        # The redirection comes first: `echo 5> file` would redirect handle 5 and leave the file empty (every exit code was lost).
+        f'>"{folder / "exit.txt"}" echo %errorlevel%',
         ""])
+
+
+def action(batch: Path) -> str:
+    """What the task runs: the batch file in a console without a window. A task started in the user's session gives `cmd.exe` a visible
+    console window on that user's screen; `conhost.exe --headless` (Windows 10 1809 and later) hosts the console without one."""
+    system = Path(os.environ.get("SystemRoot") or r"C:\Windows") / "System32"
+    return f'"{system / "conhost.exe"}" --headless "{system / "cmd.exe"}" /c "{batch}"'
 
 
 def _schtasks(arguments: Sequence[str]) -> tuple[int, str]:
@@ -99,7 +107,7 @@ def run(argv: Sequence[str], out: TextIO, err: TextIO, cancelled: Callable[[], b
         # The task is only a way to start the command in the session; it is run at once with /Run, so its own time never comes. A time in the
         # past is refused, hence one a little ahead.
         later = time.strftime("%H:%M", time.localtime(time.time() + 600))
-        code, text = schtasks(["/Create", "/TN", name, "/TR", f'"{batch}"', "/SC", "ONCE", "/ST", later, "/IT", "/RL", "HIGHEST", "/RU", who, "/F"])
+        code, text = schtasks(["/Create", "/TN", name, "/TR", action(batch), "/SC", "ONCE", "/ST", later, "/IT", "/RL", "HIGHEST", "/RU", who, "/F"])
         if code != 0 and schtasks(["/Query", "/TN", name])[0] == 0:
             code = 0  # created, with a warning (a time that has passed when midnight comes between)
         if code != 0:
