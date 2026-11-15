@@ -151,3 +151,69 @@ class CommandTests(HostTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CallerWatchTest(unittest.TestCase):
+    """The watch on the caller's input of a command handed to the user session (`--stop-on-stdin-eof`)."""
+
+    def test_the_end_of_a_live_input_stops_the_command(self):
+        import os
+        import threading
+
+        reader, writer = os.pipe()
+        finished, stopped = threading.Event(), threading.Event()
+        try:
+            thread = commands._watch_caller(reader, finished, stopped)
+            os.write(writer, b"x")
+            os.close(writer)
+            writer = None
+            self.assertTrue(stopped.wait(5))
+            thread.join(5)
+        finally:
+            finished.set()
+            os.close(reader)
+            if writer is not None:
+                os.close(writer)
+
+    def test_an_input_that_never_was_live_does_not_stop_the_command(self):
+        import os
+        import threading
+
+        reader, writer = os.pipe()
+        os.close(writer)
+        finished, stopped = threading.Event(), threading.Event()
+        with mock.patch("sys.stderr", io.StringIO()) as err:
+            thread = commands._watch_caller(reader, finished, stopped)
+            thread.join(5)
+        os.close(reader)
+        self.assertFalse(stopped.is_set())
+        self.assertIn("not a live pipe", err.getvalue())
+
+    def test_the_process_exits_cleanly_while_the_caller_keeps_the_input_open(self):
+        """The command ends while the watch still waits for input: the interpreter must not abort at exit (it did with a daemon thread
+        blocked in `sys.stdin.buffer`, after the status line had been printed)."""
+        import subprocess
+        import sys
+
+        child = ("import threading, time\n"
+                 "from valtrion import cli, commands\n"
+                 "finished, stopped = threading.Event(), threading.Event()\n"
+                 "commands._watch_caller(0, finished, stopped)\n"
+                 "time.sleep(0.5)\n"
+                 "print('STATUS PASS', flush=True)\n")
+        root = Path(__file__).resolve().parents[1]
+        process = subprocess.Popen([sys.executable, "-c", child], cwd=root, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                   stderr=subprocess.PIPE)
+        try:
+            process.stdin.write(b"x")
+            process.stdin.flush()
+            out, err = process.communicate(timeout=30) if False else (None, None)
+            code = process.wait(timeout=30)
+            out, err = process.stdout.read(), process.stderr.read()
+        finally:
+            process.stdin.close()
+            process.stdout.close()
+            process.stderr.close()
+        self.assertNotIn(b"Fatal Python error", err)
+        self.assertEqual(0, code, err.decode(errors="replace"))
+        self.assertIn(b"STATUS PASS", out)

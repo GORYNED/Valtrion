@@ -1695,7 +1695,7 @@ def _unity(arguments: argparse.Namespace) -> int:
 def _in_user_session(arguments: argparse.Namespace) -> int | None:
     """On Windows, a `unity run` that starts without a desktop (over SSH, an offloaded run) is run again in the session of the logged-in
     user: an Editor that cannot draw windows dies with a D3D12 error as soon as a test opens one. None: run here."""
-    from . import usersession
+    from . import unityrun, usersession
 
     if arguments.action == "_progress" or not usersession.needed():
         return None
@@ -1706,18 +1706,28 @@ def _in_user_session(arguments: argparse.Namespace) -> int | None:
         return None
     raw = [item for item in arguments.raw_argv if item != STOP_ON_STDIN_EOF]
     stopped = threading.Event()
+    finished = threading.Event()
+    watcher: threading.Thread | None = None
     if arguments.stop_on_stdin_eof:  # the caller keeps this command's input open for as long as it waits for it
-        threading.Thread(target=_stdin_ended, args=(stopped,), name="valtrion-session-input", daemon=True).start()
-    return usersession.run(usersession.command(raw), sys.stdout, sys.stderr, cancelled=stopped.is_set)
-
-
-def _stdin_ended(stopped: threading.Event) -> None:
+        watcher = _watch_caller(sys.stdin.fileno(), finished, stopped)
     try:
-        while sys.stdin.buffer.read(4096):
-            pass
-    except (OSError, ValueError):
-        pass
-    stopped.set()
+        return usersession.run(usersession.command(raw), sys.stdout, sys.stderr, cancelled=stopped.is_set)
+    finally:
+        finished.set()
+        if watcher is not None and os.name != "nt":
+            watcher.join(timeout=2 * unityrun.INPUT_POLL_SEC + 1)
+
+
+def _watch_caller(fd: int, finished: threading.Event, stopped: threading.Event) -> threading.Thread:
+    """Start a thread that sets `stopped` when the caller's input ends (the caller is gone). It reads the raw descriptor like the
+    lifeline of `unity run`, never `sys.stdin`: a daemon thread blocked in the buffered reader holds its lock, and the interpreter then
+    aborts at exit (`Fatal Python error: _enter_buffered_busy`) after the run has printed its status, which the sender takes for a lost run."""
+    from . import unityrun
+
+    thread = threading.Thread(target=unityrun._watch_input, args=(fd, finished, lambda text: unityrun._say(sys.stderr, text), stopped.set),
+                              name="valtrion-session-input", daemon=True)
+    thread.start()
+    return thread
 
 
 def _offload_remote(entry: config.HostEntry, retry: bool = True, lifeline: bool = False) -> remote.Remote:
