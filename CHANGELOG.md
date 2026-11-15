@@ -2,6 +2,15 @@
 
 Core (the `valtrion` Python package) and the Unity package `com.goryned.valtrion.unity` are versioned independently. The Unity changelog is in `integrations/unity/com.goryned.valtrion.unity/CHANGELOG.md`; `compat.json` lists compatible pairs.
 
+## 0.22.3 (2026-11-15)
+
+- **Upgrade note.** `compat.json` is unchanged: Core 0.22.3 pairs with Unity packages 0.17.x and 0.18.x like 0.22.2. Update with `pipx upgrade valtrion` (and `valtrion hosts sync` on SSH hosts): every Windows host that takes offloaded runs needs it, 0.22.2 reports those runs `BLOCKED`.
+
+- **An offloaded `unity run` on a Windows host is no longer reported `BLOCKED` after it passed (#149).** The run handed to the user's session watched the caller's input with a thread blocked in the buffered `stdin` reader; at exit Python aborted with `Fatal Python error: _enter_buffered_busy ... <stdin>` after `STATUS PASS`, so the sending host took the run for lost. The watch now reads the raw descriptor like the lifeline of `unity run`.
+- **The exit code of a run in the user's session comes back.** The batch file wrote `echo %errorlevel%> exit.txt`, which `cmd` reads as a redirection of handle N for a one-digit code; every run came back as exit 1.
+- **No console window on the user's screen.** The task now runs the batch file under `conhost.exe --headless`.
+- **A watched run (`--host`) is not offloaded again from the user's session**, and the tests no longer create real Task Scheduler tasks on a Windows machine reached over SSH.
+
 ## 0.22.2 (2026-11-14)
 
 - **Upgrade note.** `compat.json` is unchanged: Core 0.22.2 pairs with Unity packages 0.17.x and 0.18.x like 0.22.1. Update with `pipx upgrade valtrion` (and `valtrion hosts sync` on SSH hosts): the hosts of an offload must run the same Core version. On a Windows host, `unity run` over SSH now starts itself in the session of the logged-in user (`host.json` `interactiveSession: false` turns it off).
