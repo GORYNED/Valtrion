@@ -2,6 +2,7 @@
 come back, the fallbacks. A fake Task Scheduler plays the session; nothing is started."""
 
 import io
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -25,7 +26,7 @@ class FakeScheduler:
     def __call__(self, arguments):
         self.calls.append(list(arguments))
         if arguments[0] == "/Create":
-            self.batch = Path(arguments[arguments.index("/TR") + 1].strip('"'))
+            self.batch = Path(arguments[arguments.index("/TR") + 1].rsplit(" /c ", 1)[1].strip('"'))
             self.script = self.batch.read_text(encoding="utf-8")
             return self.create
         if arguments[0] == "/Query":
@@ -34,7 +35,7 @@ class FakeScheduler:
             if self.run[0] == 0 and self.starts:
                 folder = self.batch.parent
                 (folder / "started.txt").write_text("started", encoding="ascii")
-                (folder / "out.txt").write_text(self.output, encoding="utf-8")
+                (folder / "out.txt").write_text(self.output, encoding="utf-8", newline="")  # the bytes the command wrote
                 if self.exit_code is not None:
                     (folder / "exit.txt").write_text(self.exit_code + "\r\n", encoding="ascii")
             return self.run
@@ -88,6 +89,31 @@ class RunTests(unittest.TestCase):
         self.assertIn("started.txt", scheduler.script)
         self.assertIn("%errorlevel%", scheduler.script)
 
+    def test_the_task_runs_the_batch_file_in_a_console_without_a_window(self):
+        scheduler = FakeScheduler()
+        self.run_it(scheduler)
+        create = next(call for call in scheduler.calls if call[0] == "/Create")
+        task = create[create.index("/TR") + 1]
+        self.assertIn("conhost.exe\" --headless ", task)
+        self.assertTrue(task.endswith(f' /c "{scheduler.batch}"'), task)
+        self.assertLessEqual(len(task), 261)  # the longest command line a task takes
+
+    def test_the_exit_code_is_written_with_the_redirection_first(self):
+        """`echo 5> file` is `echo` with handle 5 redirected: the file stays empty and every run came back as exit 1."""
+        line = next(item for item in usersession.script(["valtrion.exe"], Path("C:/state/session/x")).splitlines() if "%errorlevel%" in item)
+        self.assertTrue(line.startswith('>"'), line)
+        self.assertTrue(line.endswith("echo %errorlevel%"), line)
+
+    @unittest.skipUnless(os.name == "nt", "cmd.exe")
+    def test_the_batch_file_records_the_exit_code_of_the_command(self):
+        import subprocess
+
+        with tempfile.TemporaryDirectory() as folder:
+            batch = Path(folder) / "run.cmd"
+            batch.write_text(usersession.script(["cmd", "/c", "exit 5"], Path(folder)), encoding="utf-8", newline="")
+            subprocess.run(["cmd", "/c", str(batch)], check=False, capture_output=True, timeout=60)
+            self.assertEqual("5", (Path(folder) / "exit.txt").read_text(encoding="ascii").strip())
+
     def test_a_task_that_cannot_be_created_or_run_falls_back_to_this_session(self):
         for scheduler in (FakeScheduler(create=(1, "ERROR: no logged on user")), FakeScheduler(run=(1, "ERROR: cannot run"))):
             self.err.truncate(0)
@@ -116,11 +142,25 @@ class RunTests(unittest.TestCase):
 class CommandTests(HostTestCase):
     """What `unity run` does with the session: handed over, not handed over, switched off."""
 
-    def unity(self, handed, *options, needed=True):
+    def unity(self, handed, *options, needed=True, placement=("--no-offload",)):
         with mock.patch.object(usersession, "needed", return_value=needed), mock.patch.object(usersession, "run", return_value=handed) as run, \
-                mock.patch("valtrion.unityrun.run", return_value=0) as local:
-            code, out, err = run_cli("unity", "run", "--lease-wait", "0", "--no-offload", *options, "--", "-batchmode", "-projectPath", str(self.base))
+                mock.patch("valtrion.unityrun.run", return_value=0) as local, mock.patch.object(commands, "_watch_caller") as watch:
+            code, out, err = run_cli("unity", "run", "--lease-wait", "0", *placement, *options, "--", "-batchmode", "-projectPath", str(self.base))
+        self.watch = watch
         return code, run, local
+
+    def test_a_watched_run_is_not_sent_on_to_another_host_from_the_session(self):
+        code, run, local = self.unity(0, "--stop-on-stdin-eof", placement=())
+        self.assertEqual(0, code)
+        argv = run.call_args.args[0]
+        self.assertNotIn("--stop-on-stdin-eof", argv)
+        self.assertLess(argv.index("--no-offload"), argv.index("--"))
+        self.assertEqual(1, argv.count("--no-offload"))
+        self.watch.assert_called_once()
+
+    def test_a_run_that_is_not_watched_keeps_its_placement(self):
+        _, run, _ = self.unity(0, placement=())
+        self.assertNotIn("--no-offload", run.call_args.args[0])
 
     def test_the_result_of_the_session_is_the_result_of_the_command(self):
         code, run, local = self.unity(3)
@@ -151,3 +191,69 @@ class CommandTests(HostTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CallerWatchTest(unittest.TestCase):
+    """The watch on the caller's input of a command handed to the user session (`--stop-on-stdin-eof`)."""
+
+    def test_the_end_of_a_live_input_stops_the_command(self):
+        import os
+        import threading
+
+        reader, writer = os.pipe()
+        finished, stopped = threading.Event(), threading.Event()
+        try:
+            thread = commands._watch_caller(reader, finished, stopped)
+            os.write(writer, b"x")
+            os.close(writer)
+            writer = None
+            self.assertTrue(stopped.wait(5))
+            thread.join(5)
+        finally:
+            finished.set()
+            os.close(reader)
+            if writer is not None:
+                os.close(writer)
+
+    def test_an_input_that_never_was_live_does_not_stop_the_command(self):
+        import os
+        import threading
+
+        reader, writer = os.pipe()
+        os.close(writer)
+        finished, stopped = threading.Event(), threading.Event()
+        with mock.patch("sys.stderr", io.StringIO()) as err:
+            thread = commands._watch_caller(reader, finished, stopped)
+            thread.join(5)
+        os.close(reader)
+        self.assertFalse(stopped.is_set())
+        self.assertIn("not a live pipe", err.getvalue())
+
+    def test_the_process_exits_cleanly_while_the_caller_keeps_the_input_open(self):
+        """The command ends while the watch still waits for input: the interpreter must not abort at exit (it did with a daemon thread
+        blocked in `sys.stdin.buffer`, after the status line had been printed)."""
+        import subprocess
+        import sys
+
+        child = ("import threading, time\n"
+                 "from valtrion import cli, commands\n"
+                 "finished, stopped = threading.Event(), threading.Event()\n"
+                 "commands._watch_caller(0, finished, stopped)\n"
+                 "time.sleep(0.5)\n"
+                 "print('STATUS PASS', flush=True)\n")
+        root = Path(__file__).resolve().parents[1]
+        process = subprocess.Popen([sys.executable, "-c", child], cwd=root, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                   stderr=subprocess.PIPE)
+        try:
+            process.stdin.write(b"x")
+            process.stdin.flush()
+            out, err = process.communicate(timeout=30) if False else (None, None)
+            code = process.wait(timeout=30)
+            out, err = process.stdout.read(), process.stderr.read()
+        finally:
+            process.stdin.close()
+            process.stdout.close()
+            process.stderr.close()
+        self.assertNotIn(b"Fatal Python error", err)
+        self.assertEqual(0, code, err.decode(errors="replace"))
+        self.assertIn(b"STATUS PASS", out)

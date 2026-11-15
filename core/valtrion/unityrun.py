@@ -457,7 +457,8 @@ def _say(stream: TextIO, text: str) -> None:
 INPUT_POLL_SEC = 0.2
 
 
-def _watch_input(fd: int, stop: threading.Event, note: Callable[[str], None] | None = None) -> None:
+def _watch_input(fd: int, stop: threading.Event, note: Callable[[str], None] | None = None,
+                 ended: Callable[[], None] | None = None) -> None:
     """Wait for the end of the caller's input, then interrupt the main thread like Ctrl+C: the caller (an SSH client) is gone, so the
     run stops Unity and gives its leases back. Used only when the caller said so (`--stop-on-stdin-eof`).
 
@@ -467,7 +468,9 @@ def _watch_input(fd: int, stop: threading.Event, note: Callable[[str], None] | N
 
     It reads the raw descriptor, never `sys.stdin`: a thread blocked inside the buffered reader holds its lock, and finalizing the
     interpreter then aborts the process. On POSIX it polls with a timeout and ends when `stop` is set; Windows cannot poll a pipe, so
-    there the thread blocks in `os.read` (a raw call, harmless at exit)."""
+    there the thread blocks in `os.read` (a raw call, harmless at exit).
+
+    `ended` is called when the caller is gone (default: interrupt the main thread)."""
     armed = False
     try:
         while not stop.is_set():
@@ -490,7 +493,10 @@ def _watch_input(fd: int, stop: threading.Event, note: Callable[[str], None] | N
             note("note: the input of this command is not a live pipe, so the end of the caller's connection cannot be noticed; "
                  "the run goes on (it stops at the end of Unity or --timeout-sec)")
         return
-    _thread.interrupt_main()
+    if ended is not None:
+        ended()
+    else:
+        _thread.interrupt_main()
 
 
 def _log_state(path: Path | None) -> tuple[int, int] | None:
