@@ -2,6 +2,10 @@
 
 Core (the `valtrion` Python package) and the Unity package `com.goryned.valtrion.unity` are versioned independently. The Unity changelog is in `integrations/unity/com.goryned.valtrion.unity/CHANGELOG.md`; `compat.json` lists compatible pairs.
 
+## Unreleased
+
+- **Docs: several agent sessions on one Unity project (#152).** `docs/ai-agent-setup.md` says it as a rule: one working copy per session, one Editor per working copy (the folder lease), the host's `unity-editor` slots decide how many Editors run at once (`unityEditorSlots` in `checks.json` limits nothing), each copy has its own `Library` (a Unity Accelerator in `host.json` shares imports), and test reports stay out of the tracked tree. No behavior changes.
+
 ## 0.22.3 (2026-11-15)
 
 - **Upgrade note.** `compat.json` is unchanged: Core 0.22.3 pairs with Unity packages 0.17.x and 0.18.x like 0.22.2. Update with `pipx upgrade valtrion` (and `valtrion hosts sync` on SSH hosts): every Windows host that takes offloaded runs needs it, 0.22.2 reports those runs `BLOCKED`.
