@@ -14,7 +14,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from valtrion import cli, constants, core, lease, unitycache, unityrun  # noqa: F401  (cli first: it registers the commands)
+from valtrion import cli, commands, config, constants, core, lease, unitycache, unityrun  # noqa: F401  (cli first: it registers the commands)
 
 from .test_host import HostTestCase, run as run_cli
 from .test_unity_run import FAKE, OTHER, FakeProbe
@@ -182,6 +182,34 @@ class KeyTests(CacheTestCase):
         with mock.patch.object(unitycache, "__version__", "0.0.0"):
             self.assertNotEqual(current, self.key())
 
+    def test_user_settings_are_in_the_key_but_window_layouts_are_not(self):
+        before = self.key()
+        write(self.project / "UserSettings" / "Layouts" / "default.dwlt", "layout")
+        self.assertEqual(before, self.key())
+        write(self.project / "UserSettings" / "EditorUserSettings.asset", "settings")
+        self.assertNotEqual(before, self.key())
+
+    def test_an_output_option_without_a_value_keeps_the_next_argument(self):
+        command = unitycache._command(["-logFile", "-runTests", "-testResults"], self.project)
+        self.assertEqual(["-runTests"], command)
+        self.assertEqual(["-quit"], unitycache._command(["-logFile", "-", "-quit"], self.project))
+
+    def test_the_editor_version_is_read_from_the_app_bundle(self):
+        import plistlib
+        app = self.base / "Unity.app"
+        executable = write(app / "Contents" / "MacOS" / "Unity", "binary")
+        with open(write(app / "Contents" / "Info.plist", ""), "wb") as handle:
+            plistlib.dump({"CFBundleVersion": "6000.6.7f1"}, handle)
+        self.assertEqual("6000.6.7f1", unitycache.editor_version(executable))
+        self.assertEqual("6000.6.7f1", self.plan(editor=executable).components["editor"]["fileVersion"])
+        (app / "Contents" / "Info.plist").write_text("broken", encoding="utf-8")
+        self.assertIsNone(unitycache.editor_version(executable))
+
+    @unittest.skipUnless(os.name == "nt", "the file version resource is a Windows feature")
+    def test_the_editor_version_is_read_from_the_file_version_resource(self):
+        self.assertRegex(unitycache.editor_version(sys.executable) or "", r"^\d+\.\d+\.\d+\.\d+$")
+        self.assertIsNone(unitycache.editor_version(self.editor))
+
     def test_a_file_argument_is_hashed_by_content(self):
         settings = write(self.base / "run.json", "{}")
         before = self.key(str(settings))
@@ -324,6 +352,23 @@ class StoreTests(CacheTestCase):
             unitycache.store(self.root(), second, PASSING)
         self.assertEqual([f"{second.key}.json"], [path.name for path in self.root().glob("*.json")])
 
+    def test_the_store_is_bounded_in_entries(self):
+        first = self.plan()
+        unitycache.store(self.root(), first, PASSING)
+        os.utime(self.root() / f"{first.key}.json", (1, 1))
+        second = self.plan("-testFilter", "X")
+        with mock.patch.object(unitycache, "MAX_ENTRIES", 1):
+            unitycache.store(self.root(), second, PASSING)
+        self.assertEqual([f"{second.key}.json"], [path.name for path in self.root().glob("*.json")])
+
+    def test_the_lease_keeper_starts_one_thread(self):
+        keeper = lease.LeaseKeeper(self.manager, "s", os.getpid(), 60)
+        keeper.start()
+        first = keeper._thread
+        keeper.start()
+        self.assertIs(first, keeper._thread)
+        keeper.stop()
+
     def test_an_entry_above_the_size_limit_is_ignored(self):
         found = self.plan()
         path, _ = unitycache.store(self.root(), found, PASSING)
@@ -427,6 +472,42 @@ class RunTests(CacheTestCase):
         self.assertTrue(lines[-2].startswith("cached: PASS"))
         self.assertTrue(self.results.is_file())
 
+    def test_a_change_while_the_run_waits_is_a_miss(self):
+        cache = unityrun.cache_plan(self.args("--results", "pass"), None, sys.executable)
+        self.assertTrue(self.manager.try_acquire(cache.marker, OTHER, "other", 300, "computing", os.getpid()).acquired)
+
+        def finish():
+            time.sleep(2)
+            write(self.project / "Assets" / "Game" / "Player.cs", "class Player { int changed; }\n")
+            unitycache.store(unitycache.cache_root(self.home), cache, PASSING)  # the result of the content before the change
+            self.manager.release(cache.marker, "other", os.getpid())
+
+        helper = threading.Thread(target=finish)
+        helper.start()
+        with mock.patch.object(unityrun.supervise, "supervise", wraps=unityrun.supervise.supervise) as started:
+            code, lines, err = self.run_unity("--results", "pass", lease_wait_sec=20, plan=cache)
+        helper.join()
+        self.assertEqual((constants.EXIT_PASS, "STATUS PASS", 1), (code, lines[-1], started.call_count), err)
+        self.assertIn("the inputs changed while the run waited", err)
+        self.assertNotIn("cached:", "\n".join(lines))
+        self.assertEqual(2, len(self.entries()))
+
+    def test_a_hit_is_answered_only_under_the_project_lease(self):
+        cache = unityrun.cache_plan(self.args("--results", "pass"), None, sys.executable)
+        unitycache.store(unitycache.cache_root(self.home), cache, PASSING)
+        project = lease.unity_project_resource(self.project)
+        self.assertTrue(self.manager.try_acquire(project, OTHER, "other", 300, "a run in progress", os.getpid()).acquired)
+        out = io.StringIO()
+        self.assertIsNone(unityrun.answer_from_cache(cache, self.home, out))
+        with self.no_unity():
+            code, lines, _ = self.run_unity("--results", "pass", plan=cache)
+        self.assertEqual(constants.EXIT_BLOCKED, code)  # it waited for the project lease (no time here), and wrote nothing
+        self.assertFalse(self.results.exists())
+        self.manager.release(project, "other", os.getpid())
+        self.assertEqual(constants.EXIT_PASS, unityrun.answer_from_cache(cache, self.home, out))
+        self.assertIn("cached: PASS", out.getvalue())
+        self.assertEqual([], list(self.manager.directory.glob("*.lock")))
+
     def test_a_live_holder_that_does_not_finish_in_time_lets_unity_run_here(self):
         cache = unityrun.cache_plan(self.args("--results", "pass"), None, sys.executable)
         self.assertTrue(self.manager.try_acquire(cache.marker, OTHER, "other", 300, "computing", os.getpid()).acquired)
@@ -480,8 +561,12 @@ class RunTests(CacheTestCase):
             path = self.manager.path_for(cache.marker)
             for _ in range(100):
                 if path.exists():
+                    try:
+                        path.unlink()
+                    except PermissionError:  # Windows: the lock file is being read or written this instant
+                        time.sleep(0.05)
+                        continue
                     seen.append(True)
-                    path.unlink()
                     return
                 time.sleep(0.05)
 
@@ -549,6 +634,13 @@ class CommandLineTests(HostTestCase):
             code, out, err = self.cli("--cache-status", "--offload-from", "build-pc", "--offload-project", "Game", "--offload-sha", "0" * 40)
         self.assertEqual(0, code, err)
         self.assertIn("offloaded", json.loads(out)["reason"])
+
+    def test_cache_status_with_host_is_refused(self):
+        config.add_ssh_host("win", "me@win", "windows", "C:/art")
+        with mock.patch.object(commands, "_remote", side_effect=AssertionError("forwarded")):
+            code, out, err = run_cli("unity", "run", "--host", "win", "--remote-project", "C:/Proj", "--cache-status", "--", "-runTests")
+        self.assertEqual(constants.EXIT_BLOCKED, code)
+        self.assertIn("without --host", out + err)
 
     def test_a_hit_and_no_cache(self):
         self.cli()

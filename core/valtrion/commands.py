@@ -1700,9 +1700,9 @@ def _unity(arguments: argparse.Namespace) -> int:
         if arguments.cache_status:
             return _unity_cache_status(plan)
         if plan.key and not arguments.no_cache:  # a hit needs neither this host's Editor slots nor another host
-            hit, _ = unitycache.lookup(unitycache.cache_root(), plan)
-            if hit is not None:
-                return unityrun.answer_hit(hit, plan, sys.stdout)
+            answered = unityrun.answer_from_cache(plan, None, sys.stdout)
+            if answered is not None:
+                return answered
         placed = _unity_offload(arguments, unity_args, found)
         if placed is not None:
             return placed

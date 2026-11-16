@@ -287,10 +287,6 @@ def run(
     if prepare is not None or cache is None or not cache.key:
         cache = None
     cache_root = unitycache.cache_root(home)
-    if cache is not None and read_cache:
-        hit, _ = unitycache.lookup(cache_root, cache)
-        if hit is not None:
-            return answer_hit(hit, cache, out)
 
     try:
         if not has_option(args, "-EnableCacheServer", "-cacheServer"):
@@ -334,11 +330,16 @@ def run(
     def waiting(reason: str, waited_sec: float) -> None:
         _say(err, lease.waiting_message(reason, waited_sec))
 
-    marker = cache.marker if cache is not None else None
+    #: The result cache markers this run may hold: they only tell other sessions that a key is being computed, so losing one must
+    #: not stop Unity.
+    markers: set[str] = set()
 
     def lost_leases() -> list[str]:
-        # The result cache marker only tells other sessions that the key is being computed: losing it must not stop Unity.
-        return [resource for resource in keeper.lost if resource != marker]
+        return [resource for resource in keeper.lost if resource not in markers]
+
+    def hold_marker(resource: str) -> None:
+        may_hold.append(resource)
+        markers.add(resource)
 
     input_watcher: threading.Thread | None = None
     with handlers:
@@ -382,11 +383,10 @@ def run(
                         _say(out, "LFS-PREFLIGHT " + json.dumps(preflight.describe(), sort_keys=True))
                     if not preflight.ok:
                         return _result(out, constants.BLOCKED, preflight.reason)
-                if cache is not None and marker is not None:  # project, then the marker of the key, then the slot
-                    may_hold.append(marker)
+                if cache is not None:  # under the project lease: the project, then the marker of the key, then the slot
                     marker_started = time.monotonic()
-                    answered = _take_marker(cache, marker, manager, keeper, owner, session, pid, ttl_sec, what, project, read_cache,
-                                            max(0.0, deadline - time.monotonic()), poll_sec, waiting, cache_root, out, err)
+                    answered, cache = _cache_step(cache, hold_marker, manager, keeper, owner, session, pid, ttl_sec, what, project,
+                                                  read_cache, max(0.0, deadline - time.monotonic()), poll_sec, waiting, cache_root, out, err)
                     if answered is not None:
                         return answered
                     deadline += time.monotonic() - marker_started  # waiting for another session leaves the slot its own wait
@@ -525,9 +525,9 @@ def keep_result(plan: unitycache.Plan, root: Path, result_is_new: bool) -> str:
     short = (plan.key or "")[:12]
     if not result_is_new:
         return f"cache: not stored (key {short}): the -testResults file was not written by this run"
-    again = unitycache.plan(plan.args, plan.project, plan.editor) if plan.project is not None and plan.editor else None
-    if again is None or again.key != plan.key:
-        why = again.reason if again is not None and again.reason else "the inputs changed while Unity ran"
+    again = _replan(plan)
+    if again.key != plan.key:
+        why = again.reason or "the inputs changed while Unity ran"
         return f"cache: not stored (key {short}): {why}"
     text, why = unitycache.read_result(plan.result_path) if plan.result_path is not None else (None, "no -testResults file")
     if text is None:
@@ -541,32 +541,98 @@ def keep_result(plan: unitycache.Plan, root: Path, result_is_new: bool) -> str:
     return f"cache: stored PASS under key {plan.key}"
 
 
-def _take_marker(cache: unitycache.Plan, marker: str, manager: lease.LeaseManager, keeper: lease.LeaseKeeper, owner: str, session: str,
-                 pid: int, ttl_sec: int, what: str, project: Path, read_cache: bool, wait_sec: float, poll_sec: float,
-                 waiting: Callable[[str, float], None], cache_root: Path, out: TextIO, err: TextIO) -> int | None:
-    """Take the lease that says this key is being computed. Another live session that holds it is waited for (within the lease wait)
-    and its result looked up; when the wait runs out, and with `--no-cache` at once, the run goes on without the lease. Returns the
-    exit code when the run is answered from the cache, else None."""
-    purpose = f"{what} · result cache {(cache.key or '')[:12]}"
-    taken = manager.try_acquire(marker, owner, session, ttl_sec, purpose, pid, worktree=str(project))
+def _replan(plan: unitycache.Plan) -> unitycache.Plan:
+    """The key of the same command computed again from the working copy as it is now."""
+    if plan.project is None or not plan.editor:
+        return unitycache.no_key(plan.reason or "no project or Editor", plan.args)
+    return unitycache.plan(plan.args, plan.project, plan.editor)
+
+
+def answer_from_cache(plan: unitycache.Plan, home: Path | None = None, out: TextIO | None = None) -> int | None:
+    """Answer a command from the cache before it is placed (offloaded or queued here): only with the project lease free and taken
+    for the moment it takes (a run in progress in the same folder may be writing the same result and log files), with the key
+    computed again under it. Returns the exit code, or None when the command must run (or wait) as usual."""
+    out = out or sys.stdout
+    root = unitycache.cache_root(home)
+    if not plan.key or plan.project is None or unitycache.lookup(root, plan, touch=False)[0] is None:
+        return None
+    pid = os.getpid()
+    session = f"unity-run-{pid}"
+    try:
+        manager = lease.LeaseManager(home)
+        resource = lease.unity_project_resource(plan.project)
+        taken = manager.acquire(resource, os.environ.get("GDV_OWNER") or f"{_user()}@{core.local_host_id()}", session, LEASE_TTL_SEC,
+                                "result cache lookup", pid, worktree=str(plan.project), wait_sec=0)
+    except (config.ConfigError, ValueError, OSError):
+        return None
     if not taken.acquired:
-        holder = taken.holder.describe() if taken.holder is not None else "another session"
-        if not read_cache:
-            _say(err, f"cache: key {cache.key} is being computed by another session ({holder}); --no-cache: Unity runs anyway")
-            return None
-        _say(err, f"cache: key {cache.key} is being computed by another session: {holder}; waiting up to {wait_sec:.0f} s for its result")
-        taken = manager.acquire(marker, owner, session, ttl_sec, purpose, pid, worktree=str(project), wait_sec=wait_sec,
-                                poll_sec=poll_sec, on_wait=waiting)
-        if not taken.acquired:
-            _say(err, f"cache: the other session has not finished key {cache.key} within the wait ({taken.reason}); Unity runs here")
-            return None
-    keeper.add(marker)
-    keeper.start()
-    if read_cache:  # another session may have stored the result since the first look (also the one waited for)
+        return None
+    try:
+        current = _replan(plan)
+        hit = unitycache.lookup(root, current)[0] if current.key else None
+        return answer_hit(hit, current, out) if hit is not None else None
+    finally:
+        manager.release(resource, session, pid)
+
+
+def _cache_step(cache: unitycache.Plan, hold: Callable[[str], None], manager: lease.LeaseManager, keeper: lease.LeaseKeeper, owner: str,
+                session: str, pid: int, ttl_sec: int, what: str, project: Path, read_cache: bool, wait_sec: float, poll_sec: float,
+                waiting: Callable[[str, float], None], cache_root: Path, out: TextIO, err: TextIO) -> tuple[int | None, unitycache.Plan | None]:
+    """With the project lease held: compute the key again (the working copy may have changed while the run waited), answer a hit, and
+    take the lease that says this key is being computed. Another live session that holds it is waited for (within the lease wait), and
+    then the key is computed again and looked up; when the wait runs out, and with `--no-cache` at once, the run goes on without the
+    lease. Returns (the exit code when the run is answered from the cache, else None; the plan that is current, None without a key)."""
+    current = _replan(cache)
+    if not current.key:
+        _say(err, f"cache: not cached: {current.reason}")
+        return None, None
+    if current.key != cache.key:
+        _say(err, f"cache: the inputs changed since the command started; the key is now {current.key}")
+    cache = current
+    if read_cache:
         hit, _ = unitycache.lookup(cache_root, cache)
         if hit is not None:
-            return answer_hit(hit, cache, out)
-    return None
+            return answer_hit(hit, cache, out), cache
+
+    def purpose(plan: unitycache.Plan) -> str:
+        return f"{what} · result cache {(plan.key or '')[:12]}"
+
+    marker = cache.marker or ""
+    hold(marker)
+    taken = manager.try_acquire(marker, owner, session, ttl_sec, purpose(cache), pid, worktree=str(project))
+    if taken.acquired:
+        keeper.add(marker)
+        if read_cache:  # another session may have stored the result a moment ago
+            hit, _ = unitycache.lookup(cache_root, cache)
+            if hit is not None:
+                return answer_hit(hit, cache, out), cache
+        return None, cache
+    holder = taken.holder.describe() if taken.holder is not None else "another session"
+    if not read_cache:
+        _say(err, f"cache: key {cache.key} is being computed by another session ({holder}); --no-cache: Unity runs anyway")
+        return None, cache
+    _say(err, f"cache: key {cache.key} is being computed by another session: {holder}; waiting up to {wait_sec:.0f} s for its result")
+    taken = manager.acquire(marker, owner, session, ttl_sec, purpose(cache), pid, worktree=str(project), wait_sec=wait_sec,
+                            poll_sec=poll_sec, on_wait=waiting)
+    if not taken.acquired:
+        _say(err, f"cache: the other session has not finished key {cache.key} within the wait ({taken.reason}); Unity runs here")
+        return None, cache
+    keeper.add(marker)
+    again = _replan(cache)  # the working copy may have changed during the wait
+    if again.key != cache.key:
+        keeper.release_one(marker)
+        if not again.key:
+            _say(err, f"cache: not cached: {again.reason}")
+            return None, None
+        _say(err, f"cache: the inputs changed while the run waited; the key is now {again.key}")
+        cache = again
+        hold(cache.marker or "")
+        if manager.try_acquire(cache.marker or "", owner, session, ttl_sec, purpose(cache), pid, worktree=str(project)).acquired:
+            keeper.add(cache.marker or "")
+    hit, _ = unitycache.lookup(cache_root, cache)
+    if hit is not None:
+        return answer_hit(hit, cache, out), cache
+    return None, cache
 
 
 def _say(stream: TextIO, text: str) -> None:

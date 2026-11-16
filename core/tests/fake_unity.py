@@ -54,7 +54,7 @@ def main():
         Path(results).write_text(
             f'<?xml version="1.0" encoding="utf-8"?>\n<test-run id="2" testcasecount="3" result="{"Passed" if passed else "Failed(Child)"}" '
             f'total="3" passed="{3 if passed else 2}" failed="{0 if passed else 1}" skipped="0">\n</test-run>\n', encoding="utf-8")
-    end =time.monotonic() + float(value("--sleep", "0"))
+    end = time.monotonic() + float(value("--sleep", "0"))
     while time.monotonic() < end:
         if handle and "--grow" in sys.argv:
             handle.write("tick\n")

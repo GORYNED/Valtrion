@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import os
+import plistlib
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -146,9 +147,9 @@ def _components(args: Sequence[str], project: Path, editor: str) -> dict[str, An
     project = Path(project)
     if not project.is_dir():
         raise NoKey(f"the Unity project folder {project} does not exist")
-    info = os.stat(editor)
+    info = os.stat(editor)  # the executable itself (inside the .app on macOS), not the bundle folder
     editor_part = {"version": support.project_unity_version(project), "path": str(editor), "size": info.st_size,
-                   "mtimeNs": info.st_mtime_ns}
+                   "mtimeNs": info.st_mtime_ns, "fileVersion": editor_version(editor)}
     scan = _Scan(project)
     graph = Graph(scan.assemblies)
     for name in selected:
@@ -167,6 +168,50 @@ def _components(args: Sequence[str], project: Path, editor: str) -> dict[str, An
     return {"format": FORMAT, "coreVersion": __version__, "os": core.local_os(), "editor": editor_part,
             "testPlatform": PLATFORMS[platform.lower()], "assemblies": selected, "closure": sorted(closure),
             "command": _command(args, project), "files": files}
+
+
+def editor_version(executable: str | Path) -> str | None:
+    """The version the Editor executable says it is: `CFBundleVersion` of the `.app` it lies in (macOS) or the file version resource
+    (Windows); None when it cannot be read (the path, size and modification time still identify the file)."""
+    path = Path(executable)
+    for parent in path.parents:
+        if parent.suffix == ".app":
+            try:
+                with open(parent / "Contents" / "Info.plist", "rb") as handle:
+                    info = plistlib.load(handle)
+            except (OSError, ValueError, plistlib.InvalidFileException):
+                return None
+            value = info.get("CFBundleVersion") or info.get("CFBundleShortVersionString") if isinstance(info, dict) else None
+            return str(value) if value else None
+    if os.name == "nt":
+        return _windows_file_version(path)
+    return None
+
+
+def _windows_file_version(path: Path) -> str | None:  # pragma: no cover - needs Windows
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        version = ctypes.WinDLL("version")
+        version.GetFileVersionInfoSizeW.argtypes = [wintypes.LPCWSTR, ctypes.POINTER(wintypes.DWORD)]
+        version.GetFileVersionInfoW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, ctypes.c_void_p]
+        version.VerQueryValueW.argtypes = [ctypes.c_void_p, wintypes.LPCWSTR, ctypes.POINTER(ctypes.c_void_p), ctypes.POINTER(wintypes.UINT)]
+        size = version.GetFileVersionInfoSizeW(str(path), None)
+        if not size:
+            return None
+        buffer = ctypes.create_string_buffer(size)
+        if not version.GetFileVersionInfoW(str(path), 0, size, buffer):
+            return None
+        pointer, length = ctypes.c_void_p(), wintypes.UINT()
+        if not version.VerQueryValueW(buffer, "\\", ctypes.byref(pointer), ctypes.byref(length)) or length.value < 16:
+            return None
+        signature, _structure, high, low = ctypes.cast(pointer, ctypes.POINTER(wintypes.DWORD * 4)).contents
+        if signature != 0xFEEF04BD:
+            return None
+        return f"{high >> 16}.{high & 0xFFFF}.{low >> 16}.{low & 0xFFFF}"
+    except (OSError, AttributeError, ValueError):
+        return None
 
 
 def _closure(graph: Graph, selected: Sequence[str]) -> set[str]:
@@ -273,11 +318,15 @@ class _Scan:
         settings = self.project / "ProjectSettings"
         if not settings.is_dir():
             raise NoKey("the project has no ProjectSettings folder")
-        for dirpath, dirnames, filenames in os.walk(settings, followlinks=True, onerror=_fail):
-            dirnames.sort()
-            for name in sorted(filenames):
-                path = Path(dirpath) / name
-                self.extra.append((f"{PROJECT_LABEL}/{Path(os.path.relpath(path, self.project)).as_posix()}", path))
+        for folder in (settings, self.project / "UserSettings"):  # UserSettings: per-user Editor settings, when the project has them
+            if not folder.is_dir():
+                continue
+            for dirpath, dirnames, filenames in os.walk(folder, onerror=_fail):
+                # Window layouts change no test result and the Editor writes them as it closes.
+                dirnames[:] = sorted(name for name in dirnames if not (folder.name == "UserSettings" and name == "Layouts"))
+                for name in sorted(filenames):
+                    path = Path(dirpath) / name
+                    self.extra.append((f"{PROJECT_LABEL}/{Path(os.path.relpath(path, self.project)).as_posix()}", path))
         visited: set[str] = set()
         for number, (label, root) in enumerate(roots):
             if (root / "package.json").is_file():
@@ -354,12 +403,14 @@ def _command(args: Sequence[str], project: Path) -> list[str]:
     project_real = os.path.realpath(project)
     result: list[str] = []
     skip = False
-    for item in args:
+    for position, item in enumerate(args):
         if skip:
             skip = False
             continue
         if item.lower() in _OUTPUT_OPTIONS:
-            skip = True
+            following = args[position + 1] if position + 1 < len(args) else None
+            # Its value, unless it has none (`-logFile` as the last argument, or followed by the next option): that one stays.
+            skip = following is not None and (following == "-" or not following.startswith("-"))
             continue
         if item.lower() == "-assemblynames":
             result.append(item)
