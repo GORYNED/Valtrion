@@ -613,6 +613,9 @@ class LeaseKeeper:
             return list(self._resources)
 
     def start(self) -> None:
+        """Start renewing; a second call while the thread runs does nothing."""
+        if self._thread is not None and self._thread.is_alive():
+            return
         self._thread = threading.Thread(target=self._run, name="valtrion-lease-keeper", daemon=True)
         self._thread.start()
 

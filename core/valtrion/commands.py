@@ -1629,6 +1629,12 @@ def _configure_unity(parser: argparse.ArgumentParser) -> None:
                           "or take the keyboard and the mouse (default: hiddenDesktop of host.json, on)")
     run.add_argument("--progress-window", action=argparse.BooleanOptionalAction, default=None,
                      help="Windows only: show one small window with the progress of the run; the dashboard shows it too (default: progressWindow of host.json, off)")
+    run.add_argument("--no-cache", action="store_true",
+                     help="run Unity even when the host's result cache holds a PASS of the same inputs, and do not wait for another session "
+                          "that computes them (a PASS is still stored)")
+    run.add_argument("--cache-status", action="store_true",
+                     help="print the result cache key of the command, its inputs, whether it is a hit and whether another session computes it, "
+                          "as JSON; runs nothing (exit 0)")
     run.add_argument("--rerun-failed", metavar="RESULTS.xml", default=None,
                      help="run only the tests that failed in this NUnit 3 result file of an earlier run: -testFilter is set to their exact names "
                           "(not combined with a -testFilter of your own); nothing failed: nothing runs, STATUS NOTHING_TO_RUN, exit 4")
@@ -1653,14 +1659,16 @@ def _unity_arguments(arguments: argparse.Namespace) -> list[str]:
 
 
 def _unity(arguments: argparse.Namespace) -> int:
-    from . import progresswindow, unityoffload, unityrun
+    from . import progresswindow, unitycache, unityoffload, unityrun
 
     if arguments.action == "_progress":
         return progresswindow.run_window(arguments.log, arguments.done, arguments.parent_pid, arguments.title, arguments.detail, arguments.progress)
     if arguments.rerun_failed is not None:
         from . import unityrerun
 
-        line, code = unityrerun.apply(arguments.raw_argv, print, lambda status, reason: unityrun._result(sys.stdout, status, reason))
+        # With --cache-status stdout carries one JSON document: the note about the rerun goes to stderr.
+        say = (lambda text: print(text, file=sys.stderr)) if arguments.cache_status else print
+        line, code = unityrerun.apply(arguments.raw_argv, say, lambda status, reason: unityrun._result(sys.stdout, status, reason))
         if line is None:
             return code
         arguments.raw_argv = line
@@ -1673,12 +1681,14 @@ def _unity(arguments: argparse.Namespace) -> int:
     if entry is not None:
         if arguments.offload:
             return _blocked("unity", "--offload sends the run to another host when this one is busy; it cannot be combined with --host")
+        if arguments.cache_status:
+            return _blocked("unity", "--cache-status reads the result cache of the host it runs on; run it there without --host")
         # Starting Unity is not idempotent, so the transport does not retry; the output arrives when the run has ended.
         limit = arguments.timeout_sec if arguments.timeout_sec > 0 else REMOTE_UNITY_NO_TIMEOUT_SEC
         return _forward(arguments, entry, timeout=int(wait + limit + REMOTE_UNITY_MARGIN_SEC), retry=False,
                         lost_hint=REMOTE_UNITY_LOST_HINT, lifeline=True, extra=(STOP_ON_STDIN_EOF,))
 
-    handed = _in_user_session(arguments)
+    handed = None if arguments.cache_status else _in_user_session(arguments)  # a status query starts no Editor
     if handed is not None:
         return handed
     try:  # the hidden desktop is on, the progress window off, unless the command line or host.json says otherwise (Windows only)
@@ -1687,7 +1697,9 @@ def _unity(arguments: argparse.Namespace) -> int:
     except config.ConfigError as error:
         return _blocked("unity", str(error))
     unity_args = _unity_arguments(arguments)
-    found, prepare = None, None
+    found, prepare, plan = None, None, None
+    if arguments.offload_from and arguments.cache_status:
+        return _unity_cache_status(unitycache.no_key("an offloaded run is not cached", unity_args))
     if arguments.offload_from:  # a run sent by another host (see unityoffload.py)
         received = unityoffload.receive(unity_args, arguments.offload_project, arguments.offload_checkout, arguments.offload_sha,
                                         arguments.offload_out)
@@ -1699,13 +1711,44 @@ def _unity(arguments: argparse.Namespace) -> int:
             try:
                 found = project.resolve_unity_project(arguments.project_dir)
             except project.ProjectError as error:
+                if arguments.cache_status:
+                    return _unity_cache_status(unityrun.cache_plan(unity_args, None, arguments.unity))
                 return _blocked("unity", str(error))
+        plan = unityrun.cache_plan(unity_args, found or arguments.project_dir, arguments.unity)
+        if arguments.cache_status:
+            return _unity_cache_status(plan)
+        if plan.key and not arguments.no_cache:  # a hit needs neither this host's Editor slots nor another host
+            answered = unityrun.answer_from_cache(plan, None, sys.stdout)
+            if answered is not None:
+                return answered
         placed = _unity_offload(arguments, unity_args, found)
         if placed is not None:
             return placed
     return unityrun.run(unity_args, found or arguments.project_dir, arguments.unity, wait, arguments.timeout_sec,
                         arguments.stall_sec, arguments.purpose, lifeline=sys.stdin.fileno() if arguments.stop_on_stdin_eof else None,
-                        lfs_materialize=arguments.lfs_materialize, hidden_desktop=hidden, progress_window=progress, prepare=prepare)
+                        lfs_materialize=arguments.lfs_materialize, hidden_desktop=hidden, progress_window=progress, prepare=prepare,
+                        cache=plan, read_cache=not arguments.no_cache)
+
+
+def _unity_cache_status(plan) -> int:
+    """`unity run --cache-status`: the key, its inputs, hit or miss and who computes it now, as JSON. Runs nothing."""
+    from . import unitycache
+
+    document: dict[str, Any] = {"key": plan.key, "cached": False, "reason": plan.reason, "inProgress": None, "inputs": plan.components}
+    if plan.key:
+        hit, why = unitycache.lookup(unitycache.cache_root(), plan, touch=False)
+        document.update(cached=hit is not None, reason=None if hit is not None else why,
+                        storedUtc=hit.stored_utc if hit is not None else None)
+        try:
+            status = lease.LeaseManager().status(plan.marker)
+        except (OSError, ValueError, config.ConfigError):
+            status = None
+        if status is not None and status.state == "held":
+            record = status.record
+            document["inProgress"] = {"owner": record.owner, "session": record.session, "pid": record.pid, "host": record.host,
+                                      "sinceUtc": record.acquired_utc, "purpose": record.purpose} if record is not None else {}
+    _out(document)
+    return constants.EXIT_PASS
 
 
 def _in_user_session(arguments: argparse.Namespace) -> int | None:
