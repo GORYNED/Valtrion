@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.19.0 (2026-11-16)
+
+- Compatible Core versions are listed in `compat.json`: package 0.19.0 works with Core 0.8.0 up to, not including, 0.24. Packages 0.17.x and 0.18.x are paired with Core below 0.24 too, but cannot read an area's `assemblies`. The Editor tests of the package (294: 293 passed, 1 ignored, the new area fixtures included) pass with the change below; update the package tag in `Packages/manifest.json` to `unity-v0.19.0`.
+
+- **`checks.json`: an area's `assemblies`.** The map reader accepts the optional `assemblies` member of an area (`kind`, `runner`, optional `playmodeRunner` and `level`, the same object as `byContent.assemblies`), with which Core 0.23.0 narrows a change of the project's own C# code to the test assemblies that depend on it, and writes it back. A map without it reads as before.
+
 ## 0.18.0 (2026-11-10)
 
 - Compatible Core versions are listed in `compat.json`: package 0.18.0 works with Core 0.8.0 up to, not including, 0.22. Package 0.17.x is paired with Core below 0.22 too, but cannot read `fullSetReasons`. The Editor tests of the contract fixtures pass with the change below; update the package tag in `Packages/manifest.json` to `unity-v0.18.0`.

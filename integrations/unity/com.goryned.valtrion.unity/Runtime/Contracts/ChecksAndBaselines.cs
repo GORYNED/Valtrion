@@ -40,9 +40,18 @@ namespace Valtrion.Unity.Contracts
         /// <summary>true: for a path this area matches, the built-in preset's areas (<c>extends</c>) are ignored instead of adding their kinds.</summary>
         public bool? OverridesPreset { get; set; }
 
+        /// <summary>When set, a changed C# path of the area whose assembly and dependent test assemblies can be read gets
+        /// <see cref="ChecksAssemblies.Kind"/> and only the project's test assemblies that reference it; otherwise <see cref="Kind"/> applies.</summary>
+        public ChecksAssemblies Assemblies { get; set; }
+
         internal static ChecksArea Read(ContractReader reader)
         {
-            var area = new ChecksArea { Glob = reader.Str("glob"), Exclude = reader.OptStrings("exclude"), Kind = reader.Identifier("kind"), OverridesPreset = reader.OptBool("overridesPreset") };
+            var assemblies = reader.OptObject("assemblies");
+            var area = new ChecksArea
+            {
+                Glob = reader.Str("glob"), Exclude = reader.OptStrings("exclude"), Kind = reader.Identifier("kind"), OverridesPreset = reader.OptBool("overridesPreset"),
+                Assemblies = assemblies == null ? null : ChecksAssemblies.Read(assemblies),
+            };
             reader.Done();
             return area;
         }
@@ -53,6 +62,7 @@ namespace Valtrion.Unity.Contracts
             if (Exclude != null) node.Set("exclude", JsonBuild.Strings(Exclude));
             node.Set("kind", JsonValue.From(Kind));
             node.SetIf("overridesPreset", OverridesPreset);
+            if (Assemblies != null) node.Set("assemblies", Assemblies.Write());
             return node;
         }
     }
