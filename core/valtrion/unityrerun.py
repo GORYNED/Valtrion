@@ -37,6 +37,15 @@ def _failed(element: ET.Element) -> bool:
     return (element.get("result") or "").startswith("Failed")
 
 
+def _case_name(case: ET.Element) -> str:
+    """The full name of a test case, else its name. A case with neither cannot be rerun and must not vanish from the list (an empty
+    list would read as "nothing failed")."""
+    name = case.get("fullname") or case.get("name")
+    if not name:
+        raise ResultError("a test case in the result file has neither a fullname nor a name, so the tests to rerun cannot be named")
+    return name
+
+
 def failed_test_names(path: Path) -> list[str]:
     """Full names of the failed tests of an NUnit 3 result file, in file order, without repeats.
 
@@ -75,7 +84,7 @@ def failed_test_names(path: Path) -> list[str]:
             kind = _local(child.tag)
             if kind == "test-case":
                 if _failed(child):
-                    add(child.get("fullname"))
+                    add(_case_name(child))
             elif kind == "test-suite":
                 if _failed(child):
                     cases = [item for item in child.iter() if _local(item.tag) == "test-case"]
@@ -84,7 +93,7 @@ def failed_test_names(path: Path) -> list[str]:
                                           f"so the tests to rerun cannot be named")
                     if not any(_failed(item) for item in cases):
                         for item in cases:
-                            add(item.get("fullname"))
+                            add(_case_name(item))
                 walk(child)
 
     walk(root)
@@ -148,6 +157,8 @@ def apply(raw_argv: Sequence[str], say, result_line) -> tuple[list[str] | None, 
         if item.lower() == "-testfilter":
             return None, result_line(constants.BLOCKED, f"{OPTION} builds -testFilter itself; the Unity arguments already carry -testFilter, "
                                                         f"remove it (the two are not combined)")
+    if not any(item.lower() == "-runtests" for item in unity_args):
+        return None, result_line(constants.BLOCKED, f"{OPTION}: the Unity arguments have no -runTests, so -testFilter would select nothing")
     try:
         names = failed_test_names(Path(result).expanduser())
     except ResultError as error:
@@ -161,7 +172,5 @@ def apply(raw_argv: Sequence[str], say, result_line) -> tuple[list[str] | None, 
         return None, result_line(constants.BLOCKED, f"{OPTION}: {len(names)} failed tests make a -testFilter of {len(value)} characters, "
                                                     f"more than the {MAX_FILTER_CHARS} that a command line carries safely; fix the first failures "
                                                     f"and rerun, or run the tests by assembly")
-    if not any(item.lower() == "-runtests" for item in unity_args):
-        return None, result_line(constants.BLOCKED, f"{OPTION}: the Unity arguments have no -runTests, so -testFilter would select nothing")
     say(f"{OPTION}: running {len(names)} failed test(s) from {result}")
     return [*kept, "--", *unity_args, "-testFilter", value], None

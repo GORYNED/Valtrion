@@ -1611,7 +1611,8 @@ def _configure_unity(parser: argparse.ArgumentParser) -> None:
     run = sub.add_parser("run", allow_abbrev=False,  # `--rerun` must not pass for `--rerun-failed`: the option is rewritten from the raw command line
                          help="run Unity in batch mode under the host's unity-project and unity-editor leases and the watchdog",
                          description="valtrion unity run [options] -- <Unity arguments>. The last stdout line is STATUS <name>; "
-                                     "exit codes: PASS 0, FAIL 1, BLOCKED 2, STALL and TIMEOUT 3.")
+                                     "exit codes: PASS 0, FAIL 1, BLOCKED 2, STALL and TIMEOUT 3; with --rerun-failed also 4 (STATUS NOTHING_TO_RUN: no failed test, nothing ran), "
+                                     "which a script run with `set -e` must handle.")
     run.add_argument("--project-dir", type=Path, help="Unity project (when the Unity arguments carry no -projectPath); default: GDV_UNITY_PROJECT or valtrion.json")
     run.add_argument("--unity", help="path of the Unity executable (or a macOS .app) instead of the Editor of ProjectSettings/ProjectVersion.txt")
     run.add_argument("--lease-wait", type=_finite_seconds, default=None, metavar="SEC",

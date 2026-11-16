@@ -195,6 +195,26 @@ class CommandTests(RerunTestCase):
         self.assertIn("-runTests", out)
         self.assertFalse(dump.exists())
 
+    def test_missing_run_tests_is_blocked_even_when_nothing_failed_or_the_file_is_bad(self):
+        for text in (PASSED, "not xml"):
+            self.write(text)
+            code, out, err = run_cli("unity", "run", "--unity", sys.executable, "--no-offload", "--rerun-failed", str(self.results),
+                                     "--", FAKE, "-projectPath", str(self.project))
+            self.assertEqual(2, code, text)
+            self.assertIn("-runTests", out)
+            self.assertEqual("STATUS BLOCKED", out.strip().splitlines()[-1])
+
+    def test_a_failed_case_without_fullname_uses_its_name_else_the_file_is_refused(self):
+        self.write('<test-run><test-case name="Lonely" result="Failed"/></test-run>')
+        self.assertEqual(["Lonely"], unityrerun.failed_test_names(self.results))
+        self.write('<test-run><test-case result="Failed"/></test-run>')
+        with self.assertRaises(unityrerun.ResultError):
+            unityrerun.failed_test_names(self.results)
+        code, out, err, argv = self.rerun()
+        self.assertEqual(2, code)
+        self.assertIsNone(argv)
+        self.assertEqual("STATUS BLOCKED", out.strip().splitlines()[-1])
+
     def test_a_file_that_is_not_utf8_is_refused(self):
         self.results.write_bytes('<?xml version="1.0" encoding="utf-16"?><test-run/>'.encode("utf-16"))
         with self.assertRaises(unityrerun.ResultError):
