@@ -1,0 +1,11 @@
+{
+  "schema": "gdv.checks/1",
+  "platforms": { "required": ["ios"], "dev": ["editor"] },
+  "areas": [
+    { "glob": "Assets/**/*.cs", "kind": "managed", "assemblies": { "kind": "managed" } }
+  ],
+  "kinds": {
+    "managed": { "L2": ["editmode:Example.Tests"] }
+  },
+  "unclassified": "widest"
+}
