@@ -2,7 +2,9 @@
 
 Core (the `valtrion` Python package) and the Unity package `com.goryned.valtrion.unity` are versioned independently. The Unity changelog is in `integrations/unity/com.goryned.valtrion.unity/CHANGELOG.md`; `compat.json` lists compatible pairs.
 
-## Unreleased
+## 0.23.1 (2026-11-16)
+
+- **Upgrade note.** `compat.json` is unchanged: Core 0.23.1 pairs with Unity packages 0.17.x, 0.18.x and 0.19.x like 0.23.0. Update with `pipx upgrade valtrion` (and `valtrion hosts sync` on SSH hosts). To cache the runs of a shared check map, set `unityBuildTarget` in each host's `host.json`.
 
 - **The `unity run` result cache serves the runners a check map writes (#165).** A relative `-testResults` is resolved under the project folder, as Unity does, before the key is computed; `host.json` `unityBuildTarget` (new, optional) is passed as `-buildTarget` when a test command names none, so one map serves a Windows and a Mac host and the run is cacheable; a command without `-assemblyNames` (a `-testFilter` run, for example with `{prefixes;}`) is keyed on every file of the project (assets outside any assembly folder included) and its filter. A relative `-testResults` of an offloaded run comes back under the project folder too. A project without `packages-lock.json` that has a git or URL dependency is not cached. Without `unityBuildTarget` a command is passed to Unity as before.
 - **`cache: not stored` names the inputs that changed while Unity ran**, and says when the only change of project settings files is their line endings (a CRLF checkout that Unity re-saves with LF), with the `.gitattributes` fix (`ProjectSettings/**/*.asset text eol=lf`).
