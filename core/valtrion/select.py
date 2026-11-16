@@ -11,6 +11,7 @@ import argparse
 import fnmatch
 import json
 import os
+import posixpath
 import re
 import shutil
 import subprocess
@@ -290,6 +291,28 @@ def validate_config(config: Config, validator: Validator | None = None) -> tuple
         for excluded in area.get("exclude", ()):
             if not excluded or excluded.startswith("/") or ".." in excluded.replace("\\", "/").split("/") or "\\" in excluded:
                 errors.append(f"areas[{index}]: exclude glob {excluded!r} must be repository-relative with '/' separators and no '..'")
+        if "assemblies" in area:
+            _validate_assemblies(config, f"areas[{index}].assemblies", area["assemblies"], errors, warnings, filtered)
+            used.add(area["assemblies"]["kind"])
+            level = area["assemblies"].get("level", ASSEMBLIES_LEVEL)
+            for current in LEVELS[1: LEVELS.index(level)]:
+                editor = [raw for raw in kinds.get(area["kind"], {}).get(current, ()) if raw.strip().lower().startswith(_EDITOR_TYPES)]
+                if editor:
+                    warnings.append(f"areas[{index}].assemblies: the area's kind {area['kind']!r} has {', '.join(editor)} at {current}, below the "
+                                    f"member's level {level}; a narrowed path selects no Editor suite at {current}")
+            member_kind = area["assemblies"]["kind"]
+            if member_kind in kinds and area["kind"] in kinds:
+                held = {raw.strip() for entries in kinds[member_kind].values() for raw in entries}
+                missing = [f"{current} {raw.strip()}" for current in LEVELS for raw in kinds[area["kind"]].get(current, ()) if raw.strip() not in held]
+                if missing:
+                    warnings.append(f"areas[{index}].assemblies: the member's kind {member_kind!r} lacks {', '.join(missing)} of the area's kind "
+                                    f"{area['kind']!r}; a narrowed path selects them at no level (the narrowed test assemblies aside)")
+    narrowing = [index for index, area in enumerate(config.areas) if "assemblies" in area]
+    dropped = sorted(_dropped_kinds(config))
+    if config.preset is not None and narrowing and dropped:
+        warnings.append(f"areas[{narrowing[0]}].assemblies" + (f" and {len(narrowing) - 1} more area(s) with the member" if len(narrowing) > 1 else "")
+                        + f": a narrowed path drops the kinds {', '.join(dropped)} of {config.preset['id']} (the narrowing replaces them); "
+                        "its other kinds, such as native or shader, stay")
     for index, rule in enumerate(config.json_rules):
         where = f"jsonRules[{index}]"
         glob = rule["glob"]
@@ -619,12 +642,14 @@ def glob_to_regex(glob: str) -> re.Pattern[str]:
 def classify(
         config: Config, paths: Sequence[str], cosmetic: Mapping[str, str] | None = None,
         json_keys: Mapping[str, Mapping[str, Sequence[str]]] | None = None,
-        equivalent: Mapping[str, Mapping[str, Any]] | None = None) -> tuple[dict[str, list[str]], list[str]]:
+        equivalent: Mapping[str, Mapping[str, Any]] | None = None,
+        project_assemblies: Mapping[str, Sequence[Mapping[str, Any]]] | None = None) -> tuple[dict[str, list[str]], list[str]]:
     """Map each path to every kind whose area matches it; paths without a match are unclassified.
 
     A path matches an area when it matches `glob` and none of the area's optional `exclude` globs. An excluded path can still match
     another area, so it keeps that area's kind. A path in `cosmetic` (path -> kind, see `cosmetic_paths`) has that one kind instead, and so
-    has a path in `equivalent` (path -> {"kind": ...}, see `equivalent_paths`)."""
+    has a path in `equivalent` (path -> {"kind": ...}, see `equivalent_paths`). An area whose `assemblies` member narrowed the path (see
+    `project_assembly_paths`) gives the member's kind instead of its own; the other matching areas still add theirs."""
     compiled = compile_areas(config)
     classified: dict[str, list[str]] = {}
     unclassified: list[str] = []
@@ -638,12 +663,35 @@ def classify(
         if equivalent and path in equivalent:
             classified[path] = [equivalent[path]["kind"]]
             continue
-        kinds = sorted({area["kind"] for _, area in matching_areas(config, compiled, path)})
+        narrowed = _narrowed_areas(project_assemblies, path)
+        kinds = sorted({narrowed[index]["kind"] if index in narrowed else area["kind"]
+                        for index, area in _without_replaced(config, matching_areas(config, compiled, path), narrowed)})
         if kinds:
             classified[path] = kinds
         else:
             unclassified.append(path)
     return classified, unclassified
+
+
+def _narrowed_areas(project_assemblies: Mapping[str, Sequence[Mapping[str, Any]]] | None, path: str) -> dict[int, Mapping[str, Any]]:
+    """Area index -> the narrowed `assemblies` record of `path` (see `project_assembly_paths`)."""
+    return {record["area"]: record for record in (project_assemblies or {}).get(path, ()) if record["status"] == "narrowed"}
+
+
+def _without_replaced(config: Config, matched: list[tuple[int, dict]], narrowed: Mapping[int, Any]) -> list[tuple[int, dict]]:
+    """The matching areas of a path, without the preset's areas of `presets.NARROWED_KINDS` when an `assemblies` member narrowed the path. A kind
+    of that name that the project wrote itself is the project's and stays."""
+    if not narrowed:
+        return matched
+    dropped = _dropped_kinds(config)
+    return [(index, area) for index, area in matched if not (config.from_preset("areas", index) and area["kind"] in dropped)]
+
+
+def _dropped_kinds(config: Config) -> set[str]:
+    """The preset kinds a narrowed path drops: `presets.NARROWED_KINDS` the project did not replace with its own kind of the same name."""
+    if config.preset is None:
+        return set()
+    return set(presets.NARROWED_KINDS) - set(config.preset["replaced"])
 
 
 def compile_areas(config: Config) -> list[tuple[int, re.Pattern[str], list[re.Pattern[str]], dict]]:
@@ -917,12 +965,36 @@ def _project_assemblies(root: Path, lock_path: str, include_worktree: bool) -> t
     project, _, packages = folder.rpartition("/")
     if packages != "Packages":
         raise asmgraph.GraphError(f"{lock_path} is not the lock file of a Unity project (`Packages/packages-lock.json`)")
-    scopes = [f"{project}/Assets" if project else "Assets", f"{project}/Packages" if project else "Packages"]
+    _, _, found, testables = _project_snapshot(root, project, include_worktree)
+    return found, testables
+
+
+def _project_scopes(project: str) -> list[str]:
+    return [f"{project}/Assets" if project else "Assets", f"{project}/Packages" if project else "Packages"]
+
+
+def _project_tree(root: Path, revision: str, project: str) -> list[str]:
+    return _split_z(_git(root, "ls-tree", "-r", "--name-only", "-z", revision, "--", *(":(literal)" + scope for scope in _project_scopes(project))))
+
+
+def _unity_visible(paths: Sequence[str], project: str) -> set[str]:
+    """The paths Unity imports: none below a folder whose name ends in `~` or starts with `.` (inside the project)."""
+    start = len(project) + 1 if project else 0
+    return {path for path in paths if not any(segment.endswith("~") or segment.startswith(".") for segment in path[start:].split("/")[:-1])}
+
+
+def _project_snapshot(
+        root: Path, project: str, include_worktree: bool) -> tuple[set[str], Any, list[asmgraph.Assembly], list[str]]:
+    """The files of the Unity project in the repository folder `project` (`""` for the root), a reader of them (None for a file deleted in the
+    working tree), its assemblies and its `testables`: every `.asmdef` under its `Assets` and `Packages` folders (embedded packages included),
+    as of `HEAD` or, with `include_worktree`, of the working tree."""
+    folder = f"{project}/Packages" if project else "Packages"
+    scopes = _project_scopes(project)
     if include_worktree:
         listed = _split_z(_git(root, "ls-files", "-z", "--cached", "--others", "--exclude-standard", "--", *(":(literal)" + scope for scope in scopes)))
     else:
-        listed = _split_z(_git(root, "ls-tree", "-r", "--name-only", "-z", "HEAD", "--", *scopes))
-    files = set(listed)
+        listed = _project_tree(root, "HEAD", project)
+    files = _unity_visible(listed, project)
 
     def read(path: str) -> bytes | None:
         if not include_worktree:
@@ -951,7 +1023,7 @@ def _project_assemblies(root: Path, lock_path: str, include_worktree: bool) -> t
         raise asmgraph.GraphError(f"{folder}/manifest.json cannot be read: {error}") from error
     if not isinstance(testables, list) or not all(isinstance(item, str) for item in testables):
         raise asmgraph.GraphError(f"{folder}/manifest.json: testables is not a list of strings")
-    return found, testables
+    return files, read, found, testables
 
 
 def _dependents(lock: Mapping[str, Any], key: str) -> dict[str, Any]:
@@ -1115,6 +1187,236 @@ def package_diff_paths(
     return result, records
 
 
+# --- the project's own C# code: the test assemblies that reference what changed -----------------------------------------------------------
+
+
+def unity_project_of(path: str) -> str | None:
+    """The repository folder of the Unity project a path belongs to: what comes before its first `Assets` or `Packages` segment (`""` for a
+    project at the repository root), or None for a path outside both."""
+    segments = path.split("/")
+    for index, segment in enumerate(segments[:-1]):
+        if segment in ("Assets", "Packages"):
+            return "/".join(segments[:index])
+    return None
+
+
+def _assembly_files(paths: Collection[str]) -> set[str]:
+    return {path for path in paths if path.endswith((".asmdef", ".asmref"))}
+
+
+#: The files that make a folder a Unity project: without them a `Packages` folder may be a local package that another project uses.
+_PROJECT_MARKERS = ("Packages/manifest.json", "ProjectSettings/ProjectVersion.txt")
+
+
+def _exists(root: Path, path: str, include_worktree: bool) -> bool:
+    if include_worktree:
+        target = root / path
+        return target.is_file() and not target.is_symlink()
+    try:
+        _git(root, "cat-file", "-e", f"HEAD:{path}")
+    except GitError:
+        return False
+    return True
+
+
+def _require_unity_project(root: Path, project: str, include_worktree: bool) -> None:
+    """Raises `GraphError` when `project` lacks `Packages/manifest.json` or `ProjectSettings/ProjectVersion.txt`."""
+    for marker in _PROJECT_MARKERS:
+        path = f"{project}/{marker}" if project else marker
+        if not _exists(root, path, include_worktree):
+            raise asmgraph.GraphError(f"{project or '.'} has no {marker}, so it is not a Unity project whose test assemblies can be named "
+                                      "(its code may be a local package of another project)")
+
+
+def _refuse_foreign_users(root: Path, project: str, include_worktree: bool) -> None:
+    """Raises `GraphError` when another project of the repository takes a package of this one through a `file:` dependency: its test
+    assemblies reach this code too and are not in this project's graph."""
+    scopes = [scope.casefold() for scope in _project_scopes(project)]
+    own = f"{project}/Packages/manifest.json" if project else "Packages/manifest.json"
+    if include_worktree:
+        listed = _split_z(_git(root, "ls-files", "-z", "--cached", "--others", "--exclude-standard", "--", ":(glob)**/Packages/manifest.json"))
+    else:
+        listed = _split_z(_git(root, "ls-tree", "-r", "--name-only", "-z", "HEAD"))
+    manifests = sorted({path for path in listed if path == "Packages/manifest.json" or path.endswith("/Packages/manifest.json")} - {own})
+    for manifest in manifests:
+        unknown = f"{manifest} cannot be read, so whether it takes a package of this project is unknown"
+        try:
+            if include_worktree:
+                target = root / manifest
+                if not target.exists() and not target.is_symlink():
+                    continue  # deleted in the working tree
+                data = target.read_bytes()
+            else:
+                data = _git(root, "show", f"HEAD:{manifest}")
+            document = parse_json_object(data)
+        except (GitError, OSError, _NotJson) as error:
+            raise asmgraph.GraphError(f"{unknown}: {error}") from error
+        dependencies = document.get("dependencies")
+        if dependencies is None:
+            continue
+        if not isinstance(dependencies, dict):
+            raise asmgraph.GraphError(f"{unknown}: dependencies is not an object")
+        folder = manifest.rpartition("/")[0]
+        for name, value in sorted(dependencies.items()):
+            if not isinstance(value, str) or not value.startswith("file:"):
+                continue
+            location = value[5:].replace("\\", "/")
+            if location.startswith("/") or re.match(r"^[A-Za-z]:", location):
+                raise asmgraph.GraphError(f"{manifest} takes {name} from the absolute path {value[5:]!r}, which may be this project")
+            target = posixpath.normpath(posixpath.join(folder, location)).casefold()
+            if any(target == scope or target.startswith(scope + "/") for scope in scopes):
+                raise asmgraph.GraphError(f"{manifest} takes {name} from {target} (file:): the tests of that project are not in this project's graph")
+
+
+class _ProjectGraph:
+    """The assembly graph of one Unity project of the repository, read once per run. `error` says why it cannot be used (every path of the
+    project then keeps its area's kind): it cannot be read, a name or a GUID is shared, it has too many assemblies, or an `.asmdef` or `.asmref`
+    was added or removed since the merge base (files move between assemblies, which the graph of one state cannot say)."""
+
+    def __init__(self, root: Path, project: str, merge_base: str, include_worktree: bool) -> None:
+        self.root = root
+        self.merge_base = merge_base
+        self.error: str | None = None
+        self.assemblies: list[asmgraph.Assembly] = []
+        self.folders: asmgraph.ProjectFolders | None = None
+        #: The first `.cs` file of the project's `Assets` folder outside every assembly definition, or None.
+        self.loose: str | None = None
+        self.include_worktree = include_worktree
+        try:
+            _require_unity_project(root, project, include_worktree)
+            _refuse_foreign_users(root, project, include_worktree)
+            files, read, assemblies, _ = _project_snapshot(root, project, include_worktree)
+            if include_worktree:  # an assembly file deleted in the working tree is gone
+                files = files - {path for path in _assembly_files(files) if read(path) is None}
+            graph = asmgraph.Graph(assemblies)
+            self.old_files = _unity_visible(_project_tree(root, merge_base, project), project)
+            old = _assembly_files(self.old_files)
+            new = _assembly_files(files)
+            if old != new:
+                moved = [f"{path} was added" for path in sorted(new - old)] + [f"{path} was removed" for path in sorted(old - new)]
+                raise asmgraph.GraphError(f"{moved[0]}" + (f" (+{len(moved) - 1} more)" if len(moved) > 1 else "")
+                                          + ": files move between assemblies, which the graph of one state cannot judge")
+            self.read = read
+            self.files = files
+            self.assemblies = assemblies
+            self.folders = asmgraph.ProjectFolders(files, graph, read)
+            self.loose = self.folders.loose_code(_project_scopes(project)[0])
+        except (asmgraph.GraphError, GitError, OSError, ValueError, RecursionError) as error:
+            self.error = str(error)
+
+    def old(self, path: str) -> bytes:
+        return _git(self.root, "show", f"{self.merge_base}:{path}")
+
+    def present(self, path: str) -> bool:
+        """Whether the path exists in the new state (`HEAD`, or the working tree)."""
+        if path not in self.files:
+            return False
+        return not self.include_worktree or self.read(path) is not None
+
+    def changed(self, path: str) -> dict[str, list[str]]:
+        """Assembly name -> [path] for one changed path (empty for the `.meta` file of a folder). Raises `GraphError` (or `GitError`) when the
+        path cannot be judged."""
+        folders = self.folders
+        assert folders is not None
+        name = path.rsplit("/", 1)[-1]
+        if name.endswith(".cs"):
+            if not self.present(path):
+                raise asmgraph.GraphError(f"{path}: a script was deleted or moved; scenes, prefabs and assets that use its classes are not in the graph")
+            return {folders.owner(path): [path]}
+        if name.endswith(".cs.meta"):
+            if path in self.old_files:
+                new = self.read(path) if self.present(path) else None
+                if new is None or asmgraph.guid_of_meta(new) != asmgraph.guid_of_meta(self.old(path)):
+                    raise asmgraph.GraphError(f"{path}: the GUID of a script changed or the script is gone; what refers to it by GUID is not in the graph")
+            return {folders.owner(path): [path]}
+        if name.endswith(".asmref.meta"):
+            reference = path[:-5]
+            return {folders.referenced(reference, self.read(reference) if self.present(reference) else self.old(reference)): [path]}
+        if name.endswith(".asmdef"):
+            new = self.read(path)
+            if new is None:
+                raise asmgraph.GraphError(f"{path}: the assembly definition is gone")
+            return {item: [path] for item in asmgraph.changed_definition(path, new, self.old(path))}
+        if name.endswith(".asmdef.meta"):
+            assembly = folders.by_path.get(path[:-5])
+            new = self.read(path)
+            if assembly is None or new is None or asmgraph.guid_of_meta(new) != asmgraph.guid_of_meta(self.old(path)):
+                raise asmgraph.GraphError(f"{path}: the GUID of the assembly changed")
+            return {assembly.name: [path]}
+        if name.endswith(".asmref"):
+            names = [folders.referenced(path, self.read(path)), folders.referenced(path, self.old(path))]
+            return {item: [path] for item in dict.fromkeys(names)}
+        if name.endswith(".meta"):
+            new = self.read(path) if self.present(path) else None
+            old = self.old(path) if path in self.old_files else None
+            if asmgraph.is_folder_meta(new if new is not None else old or b""):
+                if new is None or old is None or asmgraph.guid_of_meta(new) is None or asmgraph.guid_of_meta(new) != asmgraph.guid_of_meta(old):
+                    raise asmgraph.GraphError(f"{path}: a folder was added or removed, or its GUID changed; what refers to it is not in the graph")
+                return {}  # the meta file of a folder belongs to no assembly and changes no code
+        raise asmgraph.GraphError(f"{path}: not C# code or an assembly file, so the assembly graph cannot judge it")
+
+
+def _project_record(graph: _ProjectGraph, changed: Mapping[str, Sequence[str]], index: int, member: Mapping[str, Any]) -> dict[str, Any]:
+    """`{area, status: "narrowed", kind, level, changed, tests}` for the changed assemblies of one path, or `{area, status: "unresolved", reason}`."""
+    try:
+        if graph.loose is not None:
+            implicit = asmgraph.predefined_reach(graph.assemblies, changed)
+            if implicit is not None:
+                raise asmgraph.GraphError(f"{implicit} is referenced by Unity's predefined assemblies (autoReferenced is not false) and the project has "
+                                          f"code outside every assembly definition ({graph.loose}), whose tests the graph cannot name")
+        tests = asmgraph.narrow_project(graph.assemblies, changed)
+        for test in tests:
+            runner = member["runner"] if test["mode"] == "editmode" else member.get("playmodeRunner")
+            if runner is None:
+                raise asmgraph.GraphError(f"the play mode test assembly {test['assembly']} is selected but areas[{index}].assemblies has no playmodeRunner")
+            if not _NAME.match(test["assembly"]):
+                raise asmgraph.GraphError(f"the test assembly name {test['assembly']!r} is not a valid assembly name for a check")
+            test["runner"] = runner
+    except (asmgraph.GraphError, ValueError, RecursionError) as error:
+        return {"area": index, "status": "unresolved", "reason": str(error)}
+    return {"area": index, "status": "narrowed", "kind": member["kind"], "level": member.get("level", ASSEMBLIES_LEVEL),
+            "changed": [{"assembly": name, "files": list(changed[name])} for name in sorted(changed)], "tests": tests}
+
+
+def project_assembly_paths(
+        root: Path, config: Config, paths: Sequence[str], merge_base: str | None, include_worktree: bool,
+        skip: Collection[str] = ()) -> dict[str, list[dict[str, Any]]]:
+    """For each changed path that matches an area with an `assemblies` member, one record per such area: the test assemblies of the project
+    that reach the assembly the path belongs to (`narrowed`, see `_project_record`), or why they cannot be named (`unresolved`: the path keeps
+    the area's own kind). Paths in `skip` (already classified by a JSON, comment or equivalence rule) are left alone. A map without the member
+    gets `{}`."""
+    compiled = compile_areas(config)
+    if merge_base is None or not any("assemblies" in area for _, _, _, area in compiled):
+        return {}
+    graphs: dict[str, _ProjectGraph] = {}
+    found: dict[str, list[dict[str, Any]]] = {}
+    for path in paths:
+        if path in skip:
+            continue
+        areas = [(index, area) for index, area in matching_areas(config, compiled, path) if "assemblies" in area]
+        if not areas:
+            continue
+        project = unity_project_of(path)
+        changed: dict[str, list[str]] | None = None
+        reason = None
+        if project is None:
+            reason = f"{path}: not inside the Assets or Packages folder of a Unity project"
+        else:
+            graph = graphs.get(project)
+            if graph is None:
+                graph = graphs[project] = _ProjectGraph(root, project, merge_base, include_worktree)
+            if graph.error is not None:
+                reason = graph.error
+            else:
+                try:
+                    changed = graph.changed(path)
+                except (asmgraph.GraphError, GitError, OSError, ValueError, RecursionError) as error:
+                    reason = str(error)
+        found[path] = [_project_record(graph, changed, index, area["assemblies"]) if changed is not None
+                       else {"area": index, "status": "unresolved", "reason": reason} for index, area in areas]
+    return found
+
+
 # --- project commands that prove a change keeps every value -------------------------------------------------------------------------
 
 DEFAULT_EQUIVALENCE_TIMEOUT_SEC = 60
@@ -1197,6 +1499,8 @@ class Selection:
     full_set_reason: str | None = None
     #: The mode the caller named (`--mode`), or None when the level was given or defaulted.
     mode: str | None = None
+    #: Changed paths of an area with an `assemblies` member, one record per such area (path -> [{area, status, ...}]; see `project_assembly_paths`).
+    project_assemblies: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
 
     @property
     def mode_name(self) -> str | None:
@@ -1280,12 +1584,17 @@ class Selection:
                 entry = self.equivalent[path]
                 add(entry["kind"], path, {"rule": f"equivalenceRules[{entry['rule']}]", "glob": entry["glob"]})
             else:
-                for index, area in matching_areas(config, areas, path):
+                records = {record["area"]: record for record in self.project_assemblies.get(path, ())}
+                narrowed = _narrowed_areas(self.project_assemblies, path)
+                for index, area in _without_replaced(config, matching_areas(config, areas, path), narrowed):
                     detail = {"rule": f"areas[{index}]", "glob": area["glob"]}
                     origin = config.from_preset("areas", index)
                     if origin:
                         detail["from"] = origin
-                    add(area["kind"], path, detail)
+                    record = records.get(index)
+                    if record is not None:
+                        detail["assemblies"] = record["status"]
+                    add(record["kind"] if record is not None and record["status"] == "narrowed" else area["kind"], path, detail)
         for kind in self.named_kinds:
             add(kind, None, {"rule": "--kind"})
         if self.widest:
@@ -1317,6 +1626,22 @@ class Selection:
                         if f"{test['mode']}:{test['assembly']}" == check.key:
                             because.append({"kind": narrowed["kind"], "rule": "byContent.assemblies", "lockFile": lock, "dependency": dependency,
                                             "changedAssembly": test["via"][-1], "via": test["via"], "paths": list(test["files"])})
+            grouped_tests: dict[str, dict[str, Any]] = {}
+            for path, records in sorted(self.project_assemblies.items()):
+                for record in records:
+                    if record["status"] != "narrowed" or record["kind"] not in check.kinds:
+                        continue
+                    for test in record["tests"]:
+                        if f"{test['mode']}:{test['assembly']}" != check.key:
+                            continue
+                        rule = f"areas[{record['area']}].assemblies"
+                        entry = grouped_tests.setdefault(json.dumps([rule, test["via"]]), {
+                            "kind": record["kind"], "rule": rule, "glob": self.config.areas[record["area"]]["glob"],
+                            "changedAssembly": test["via"][-1], "via": test["via"], "paths": []})
+                        for item in test["files"]:
+                            if item not in entry["paths"]:
+                                entry["paths"].append(item)
+            because.extend(grouped_tests.values())
             result.append({"check": check.key, "type": check.type, "level": check.level, "because": because})
         return result
 
@@ -1349,6 +1674,7 @@ class Selection:
             "equivalentPaths": self.equivalent,
             "equivalenceUnprovenPaths": self.equivalence_unproven,
             "packageDiffs": self.package_diffs,
+            "projectAssemblies": self.project_assemblies,
             "selectedKinds": self.named_kinds,
             "kindsNamedExplicitly": bool(self.named_kinds),
             "l0": [_check_json(check) for check in self.of_type(L0)],
@@ -1438,6 +1764,7 @@ def select(
     equivalent: Mapping[str, Mapping[str, Any]] | None = None,
     equivalence_unproven: Mapping[str, str] | None = None,
     package_diffs: Mapping[str, Mapping[str, Mapping[str, Any]]] | None = None,
+    project_assemblies: Mapping[str, Sequence[Mapping[str, Any]]] | None = None,
 ) -> Selection:
     """Union of the checks of the matched kinds for `level` and every lower level; unclassified paths widen the set.
 
@@ -1449,7 +1776,7 @@ def select(
     unknown = [name for name in named if name not in config.kinds]
     if unknown:
         raise ConfigError([f"unknown kind(s): {', '.join(unknown)} (kinds in the map: {', '.join(sorted(config.kinds)) or 'none'})"])
-    classified, unclassified = classify(config, paths, cosmetic, json_keys, equivalent)
+    classified, unclassified = classify(config, paths, cosmetic, json_keys, equivalent, project_assemblies)
     kinds = {kind for matched in classified.values() for kind in matched} | set(named)
     policy = config.unclassified_policy
     widest = bool(unclassified) and policy == "widest"
@@ -1466,7 +1793,9 @@ def select(
             for current in LEVELS[: LEVELS.index(level) + 1]:
                 for raw in levels.get(current, ()):
                     _expand(parse_spec(raw), config, current, kind, found, validator)
-        for narrowed in _narrowed(package_diffs):
+        project_narrowed = [record for _, records in sorted((project_assemblies or {}).items()) for record in records
+                            if record["status"] == "narrowed" and record["kind"] in kinds]
+        for narrowed in [*_narrowed(package_diffs), *project_narrowed]:
             if LEVELS.index(narrowed["level"]) <= LEVELS.index(level):
                 for test in narrowed["tests"]:
                     spec = Spec(test["mode"], test["assembly"], test["runner"], f"{test['mode']}:{test['assembly']}@{test['runner']}")
@@ -1477,6 +1806,7 @@ def select(
         named, dict(cosmetic or {}), {path: {key: list(kinds) for key, kinds in keys.items()} for path, keys in (json_keys or {}).items()},
         {path: dict(entry) for path, entry in (equivalent or {}).items()}, dict(equivalence_unproven or {}),
         {lock: {key: dict(record) for key, record in records.items()} for lock, records in (package_diffs or {}).items()},
+        project_assemblies={path: [dict(record) for record in records] for path, records in (project_assemblies or {}).items()},
     )
 
 
@@ -1563,9 +1893,12 @@ def resolve_selection(arguments: argparse.Namespace) -> Selection:
     json_keys = json_rule_paths(root, config, paths, merge_base, include_worktree)
     json_keys, package_diffs = package_diff_paths(root, config, json_keys, merge_base, include_worktree, bool(getattr(arguments, "offline", False)))
     equivalent, unproven = equivalent_paths(root, config, paths, merge_base, include_worktree, skip=set(cosmetic) | set(json_keys))
+    project_assemblies = project_assembly_paths(root, config, paths, merge_base, include_worktree,
+                                                skip=set(cosmetic) | set(json_keys) | set(equivalent))
     selection = select(config, paths, arguments.level, base_ref=arguments.base_ref, merge_base=merge_base,
                        include_worktree=include_worktree, named_kinds=named, cosmetic=cosmetic, json_keys=json_keys,
-                       equivalent=equivalent, equivalence_unproven=unproven, package_diffs=package_diffs)
+                       equivalent=equivalent, equivalence_unproven=unproven, package_diffs=package_diffs,
+                       project_assemblies=project_assemblies)
     selection.full_set_reason = reason
     selection.mode = mode
     return selection
@@ -1595,6 +1928,8 @@ def _rule_text(entry: Mapping[str, Any]) -> str:
         return "unclassified path(s): widest set"
     if rule == "byContent.assemblies":
         return f"byContent.assemblies of {entry['dependency']} ({entry['lockFile']}): {' -> '.join(entry['via'])}"
+    if rule.endswith(".assemblies"):
+        return f"{rule} glob {entry['glob']}: {' -> '.join(entry['via'])}"
     text = f"{rule} glob {entry['glob']}" + (f" of {entry['from']}" if entry.get("from") else "")
     if "key" in entry:
         text += f" key {entry['key']}" + (f" (match {entry['match']}" + (", fallback)" if entry.get("fallback") else ")") if "match" in entry else "")
@@ -1665,6 +2000,17 @@ def format_selection(selection: Selection, explain: bool = False) -> str:
                     lines.append(f"    test assemblies by reference ({narrowed['level']}): " + (", ".join(tests) or "none"))
                 elif narrowed:
                     lines.append(f"    test assemblies not narrowed: {narrowed['reason']}")
+    if selection.project_assemblies:
+        lines.append(f"PROJECT ASSEMBLIES ({len(selection.project_assemblies)}): C# code judged by the test assemblies that reference it, "
+                     "mapped by the assemblies member of its area:")
+        for path, records in sorted(selection.project_assemblies.items()):
+            for record in records:
+                if record["status"] == "narrowed":
+                    tests = [f"{test['mode']}:{test['assembly']}" for test in record["tests"]]
+                    lines.append(f"  {path}: areas[{record['area']}] -> {record['kind']}, test assemblies by reference ({record['level']}): "
+                                 + (", ".join(tests) or "none"))
+                else:
+                    lines.append(f"  {path}: areas[{record['area']}] not narrowed, keeps the area's kind: {record['reason']}")
     if selection.unclassified:
         action = "no checks selected, fix the area map" if selection.failed else "widest set selected"
         lines.append(f"UNCLASSIFIED ({len(selection.unclassified)}), policy {selection.policy}: {action}")

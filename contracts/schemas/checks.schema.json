@@ -42,7 +42,8 @@
           "glob": { "type": "string", "minLength": 1 },
           "exclude": { "type": "array", "items": { "type": "string", "minLength": 1 } },
           "kind": { "$ref": "common.schema.json#/$defs/identifier" },
-          "overridesPreset": { "type": "boolean" }
+          "overridesPreset": { "type": "boolean" },
+          "assemblies": { "$ref": "#/$defs/assemblies" }
         }
       }
     },
@@ -75,17 +76,7 @@
                   "properties": {
                     "managed": { "$ref": "common.schema.json#/$defs/identifier" },
                     "platform": { "$ref": "common.schema.json#/$defs/identifier" },
-                    "assemblies": {
-                      "type": "object",
-                      "required": ["kind", "runner"],
-                      "additionalProperties": false,
-                      "properties": {
-                        "kind": { "$ref": "common.schema.json#/$defs/identifier" },
-                        "runner": { "type": "string", "minLength": 1 },
-                        "playmodeRunner": { "type": "string", "minLength": 1 },
-                        "level": { "enum": ["L1", "L2", "L3", "L4"] }
-                      }
-                    }
+                    "assemblies": { "$ref": "#/$defs/assemblies" }
                   }
                 }
               }
@@ -136,6 +127,17 @@
     "unclassified": { "enum": ["widest", "fail"] }
   },
   "$defs": {
+    "assemblies": {
+      "type": "object",
+      "required": ["kind", "runner"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": { "$ref": "common.schema.json#/$defs/identifier" },
+        "runner": { "type": "string", "minLength": 1 },
+        "playmodeRunner": { "type": "string", "minLength": 1 },
+        "level": { "enum": ["L1", "L2", "L3", "L4"] }
+      }
+    },
     "levels": {
       "type": "object",
       "additionalProperties": false,
