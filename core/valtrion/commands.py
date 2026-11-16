@@ -1663,6 +1663,8 @@ def _unity(arguments: argparse.Namespace) -> int:
     if entry is not None:
         if arguments.offload:
             return _blocked("unity", "--offload sends the run to another host when this one is busy; it cannot be combined with --host")
+        if arguments.cache_status:
+            return _blocked("unity", "--cache-status reads the result cache of the host it runs on; run it there without --host")
         # Starting Unity is not idempotent, so the transport does not retry; the output arrives when the run has ended.
         limit = arguments.timeout_sec if arguments.timeout_sec > 0 else REMOTE_UNITY_NO_TIMEOUT_SEC
         return _forward(arguments, entry, timeout=int(wait + limit + REMOTE_UNITY_MARGIN_SEC), retry=False,
@@ -1678,6 +1680,8 @@ def _unity(arguments: argparse.Namespace) -> int:
         return _blocked("unity", str(error))
     unity_args = _unity_arguments(arguments)
     found, prepare, plan = None, None, None
+    if arguments.offload_from and arguments.cache_status:
+        return _unity_cache_status(unitycache.no_key("an offloaded run is not cached", unity_args))
     if arguments.offload_from:  # a run sent by another host (see unityoffload.py)
         received = unityoffload.receive(unity_args, arguments.offload_project, arguments.offload_checkout, arguments.offload_sha,
                                         arguments.offload_out)

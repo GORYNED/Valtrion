@@ -22,7 +22,7 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Sequence
-from xml.etree import ElementTree
+from xml.parsers import expat
 
 from . import __version__, core, resultcache
 from .asmgraph import GUID_PREFIX, Graph, GraphError, guid_of_meta, parse_definition
@@ -41,6 +41,11 @@ PLATFORMS = {"editmode": "EditMode", "playmode": "PlayMode"}
 _OUTPUT_OPTIONS = ("-projectpath", "-logfile", "-testresults")
 #: Files that reach assemblies other than the one whose folder they sit in (precompiled references, compiler options).
 PRECOMPILED_SUFFIXES = (".dll", ".so", ".a", ".bundle", ".dylib", ".jar", ".aar", ".rsp")
+#: Inputs of the compilation of every assembly of the project, kept in the key wherever they are.
+COMPILED_SUFFIXES = (".cs", ".asmdef", ".asmref")
+#: The store keeps at most this many entries and this many bytes (the least recently used go first).
+MAX_ENTRIES = 200
+MAX_STORE_BYTES = 512 << 20
 
 
 class NoKey(Exception):
@@ -123,11 +128,17 @@ def _components(args: Sequence[str], project: Path, editor: str) -> dict[str, An
         raise NoKey("the command runs no tests (-runTests)")
     if "-editortestsresultfile" in lowered:
         raise NoKey("-editorTestsResultFile is not cached; name the result file with -testResults")
-    if option_value(args, "-testResults") is None:
+    results = option_value(args, "-testResults")
+    if results is None:
         raise NoKey("the command names no -testResults file")
+    if not Path(results).expanduser().is_absolute():
+        raise NoKey("a relative -testResults path is not cached; give an absolute path")
     platform = option_value(args, "-testPlatform") or "EditMode"  # Unity's default
     if platform.lower() not in PLATFORMS:
         raise NoKey(f"the test platform {platform} is not cached (only EditMode and PlayMode)")
+    if not option_value(args, "-buildTarget"):
+        # Without it the active platform of the project's Library decides the defines (UNITY_ANDROID, ...) and Application.platform.
+        raise NoKey("the command names no -buildTarget, so the active build platform is unknown; name -buildTarget to cache")
     selected = assembly_names(args)
     if not selected:
         raise NoKey("the command selects no assemblies (-assemblyNames); a run of every assembly is not cached")
@@ -146,7 +157,9 @@ def _components(args: Sequence[str], project: Path, editor: str) -> dict[str, An
     files: dict[str, str] = {}
     for item in scan.files:
         owner = scan.owner(item.folder, graph)
-        if item.precompiled or (owner is not None and owner in closure):
+        # The compiler inputs of the whole project count too: a compile error anywhere fails the run, and initialization code
+        # ([InitializeOnLoad], [RuntimeInitializeOnLoadMethod]) of any assembly runs during the tests.
+        if item.precompiled or item.compiled or (owner is not None and owner in closure):
             files[item.label] = core.sha256_file(item.path)
     for label, path in scan.extra:
         files[label] = core.sha256_file(path) if path.exists() else "missing"
@@ -188,6 +201,13 @@ def _precompiled(relative: str) -> bool:
     return any(part.lower().endswith(PRECOMPILED_SUFFIXES) for part in parts)
 
 
+def _compiled(name: str) -> bool:
+    lowered = name.lower()
+    if lowered.endswith(".meta"):
+        lowered = lowered[:-5]
+    return lowered.endswith(COMPILED_SUFFIXES)
+
+
 def _fail(error: OSError) -> None:
     raise error
 
@@ -213,6 +233,8 @@ class _File:
     #: (root number, folder relative to the root).
     folder: tuple[int, str]
     precompiled: bool
+    #: A source file or an assembly definition (or its `.meta`): an input of the compilation of the whole project.
+    compiled: bool = False
 
 
 @dataclass
@@ -272,7 +294,7 @@ class _Scan:
                 for name in sorted(item for item in filenames if not _ignored(item)):
                     path = Path(dirpath) / name
                     relative = f"{relative_dir}/{name}" if relative_dir else name
-                    self.files.append(_File(f"{label}/{relative}", path, folder, _precompiled(relative)))
+                    self.files.append(_File(f"{label}/{relative}", path, folder, _precompiled(relative), _compiled(name)))
                     if name.endswith(".asmdef"):
                         if folder in self._definitions:
                             raise GraphError(f"{label}/{relative_dir}: holds more than one assembly definition")
@@ -367,21 +389,41 @@ def _argument(item: str, project_real: str) -> str:
 
 
 def failure(text: str) -> str | None:
-    """Why `text` is not the result file of a passing test run, or None."""
-    lowered = text[:4096].lower()
-    if "<!doctype" in lowered or "<!entity" in lowered:
-        return "the result file declares a document type"
+    """Why `text` is not the result file of a passing test run, or None. A document type or an entity declaration anywhere is
+    refused before it is expanded (expat calls the handler when it reads the declaration)."""
+    root: list[tuple[str, dict]] = []
+    parser = expat.ParserCreate()
+
+    def refuse(*_: object) -> None:
+        raise _Declared()
+
+    def element(name: str, attributes: dict) -> None:
+        if not root:
+            root.append((name, attributes))
+
+    parser.StartDoctypeDeclHandler = refuse
+    parser.EntityDeclHandler = refuse
+    parser.StartElementHandler = element
     try:
-        root = ElementTree.fromstring(text)
-    except ElementTree.ParseError as error:
+        parser.Parse(text, True)
+    except _Declared:
+        return "the result file declares a document type or an entity"
+    except expat.ExpatError as error:
         return f"the result file is not readable XML ({error})"
-    if root.tag != "test-run":
-        return f"the result file is a <{root.tag}>, not a <test-run>"
-    if root.get("result") != "Passed":
-        return f"the test run is {root.get('result')!r}, not 'Passed'"
-    if root.get("failed") != "0":
-        return f"the test run has failed={root.get('failed')!r}"
+    if not root:
+        return "the result file has no element"
+    tag, attributes = root[0]
+    if tag != "test-run":
+        return f"the result file is a <{tag}>, not a <test-run>"
+    if attributes.get("result") != "Passed":
+        return f"the test run is {attributes.get('result')!r}, not 'Passed'"
+    if attributes.get("failed") != "0":
+        return f"the test run has failed={attributes.get('failed')!r}"
     return None
+
+
+class _Declared(Exception):
+    pass
 
 
 def read_result(path: Path) -> tuple[str | None, str | None]:
@@ -421,10 +463,36 @@ def store(root: Path, entry_plan: Plan, text: str, clock: Callable[[], str] = co
     path = root / f"{entry_plan.key}.json"
     resultcache._write_private(path, data)
     try:
-        resultcache.gc(root, protect=(entry_plan.key,))
+        resultcache.gc(root, max_entries=MAX_ENTRIES, protect=(entry_plan.key,))
+        _limit_bytes(root, MAX_STORE_BYTES, entry_plan.key)
     except (OSError, ValueError):
         pass
     return path, "stored"
+
+
+def _limit_bytes(root: Path, limit: int, protect: str) -> list[str]:
+    """Remove the least recently used entries until the store holds at most `limit` bytes. Returns the removed file names."""
+    entries = []
+    for path in root.glob("*.json"):
+        try:
+            info = os.lstat(path)
+        except OSError:
+            continue
+        entries.append((info.st_mtime, info.st_size, path))
+    total = sum(size for _, size, _ in entries)
+    removed = []
+    for _, size, path in sorted(entries, key=lambda item: item[0]):
+        if total <= limit:
+            break
+        if path.stem == protect:
+            continue
+        try:
+            path.unlink()
+        except OSError:
+            continue
+        total -= size
+        removed.append(path.name)
+    return removed
 
 
 def lookup(root: Path, entry_plan: Plan, touch: bool = True) -> tuple[Hit | None, str]:

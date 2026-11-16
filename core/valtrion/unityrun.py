@@ -347,12 +347,6 @@ def run(
             input_watcher.start()
         try:
             try:
-                if cache is not None and marker is not None:
-                    may_hold.append(marker)
-                    answered = _take_marker(cache, marker, manager, keeper, owner, session, pid, ttl_sec, what, project, read_cache,
-                                            max(0.0, deadline - time.monotonic()), poll_sec, waiting, cache_root, out, err)
-                    if answered is not None:
-                        return answered
                 may_hold.append(project_resource)
                 taken = manager.acquire(project_resource, owner, session, ttl_sec, what, pid, worktree=str(project),
                                         wait_sec=max(0.0, deadline - time.monotonic()), poll_sec=poll_sec, on_wait=waiting)
@@ -388,6 +382,14 @@ def run(
                         _say(out, "LFS-PREFLIGHT " + json.dumps(preflight.describe(), sort_keys=True))
                     if not preflight.ok:
                         return _result(out, constants.BLOCKED, preflight.reason)
+                if cache is not None and marker is not None:  # project, then the marker of the key, then the slot
+                    may_hold.append(marker)
+                    marker_started = time.monotonic()
+                    answered = _take_marker(cache, marker, manager, keeper, owner, session, pid, ttl_sec, what, project, read_cache,
+                                            max(0.0, deadline - time.monotonic()), poll_sec, waiting, cache_root, out, err)
+                    if answered is not None:
+                        return answered
+                    deadline += time.monotonic() - marker_started  # waiting for another session leaves the slot its own wait
                 may_hold += [lease.slot_resource(lease.UNITY_EDITOR_RESOURCE, number) for number in range(1, capacity + 1)]
                 # The slot is taken only once no Editor runs outside a lease and enough memory is free (the gate), all within the same
                 # wait budget: a run that waits for such an Editor holds the project lease but leaves the slot to others.
@@ -506,8 +508,16 @@ def answer_hit(hit: unitycache.Hit, plan: unitycache.Plan, out: TextIO) -> int:
         plan.result_path.write_bytes(hit.text.encode("utf-8"))  # the text as Unity wrote it (no newline translation)
     except OSError as error:
         return _result(out, constants.BLOCKED, f"the cached result of key {hit.key} cannot be written to -testResults: {error}")
-    return _result(out, constants.PASS, f"cached: PASS of key {hit.key} stored {hit.stored_utc}; Unity was not started "
-                                        f"(--no-cache runs it)")
+    line = f"cached: PASS of key {hit.key} stored {hit.stored_utc}; Unity was not started (--no-cache runs it)"
+    log = option_value(plan.args, "-logFile")
+    if log and log != "-":  # a log left by an earlier run must not be read as the log of this one
+        try:
+            path = _absolute(log)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes((line + "\n").encode("utf-8"))
+        except OSError:
+            pass
+    return _result(out, constants.PASS, line)
 
 
 def keep_result(plan: unitycache.Plan, root: Path, result_is_new: bool) -> str:
@@ -535,7 +545,8 @@ def _take_marker(cache: unitycache.Plan, marker: str, manager: lease.LeaseManage
                  pid: int, ttl_sec: int, what: str, project: Path, read_cache: bool, wait_sec: float, poll_sec: float,
                  waiting: Callable[[str, float], None], cache_root: Path, out: TextIO, err: TextIO) -> int | None:
     """Take the lease that says this key is being computed. Another live session that holds it is waited for (within the lease wait)
-    and its result looked up; with `--no-cache` the run goes on at once. Returns the exit code when the run is answered or blocked."""
+    and its result looked up; when the wait runs out, and with `--no-cache` at once, the run goes on without the lease. Returns the
+    exit code when the run is answered from the cache, else None."""
     purpose = f"{what} · result cache {(cache.key or '')[:12]}"
     taken = manager.try_acquire(marker, owner, session, ttl_sec, purpose, pid, worktree=str(project))
     if not taken.acquired:
@@ -547,8 +558,8 @@ def _take_marker(cache: unitycache.Plan, marker: str, manager: lease.LeaseManage
         taken = manager.acquire(marker, owner, session, ttl_sec, purpose, pid, worktree=str(project), wait_sec=wait_sec,
                                 poll_sec=poll_sec, on_wait=waiting)
         if not taken.acquired:
-            return _result(out, constants.BLOCKED, f"the result of key {cache.key} is still being computed by another session "
-                                                   f"({taken.reason}); --no-cache starts Unity anyway")
+            _say(err, f"cache: the other session has not finished key {cache.key} within the wait ({taken.reason}); Unity runs here")
+            return None
     keeper.add(marker)
     keeper.start()
     if read_cache:  # another session may have stored the result since the first look (also the one waited for)

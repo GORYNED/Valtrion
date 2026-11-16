@@ -95,9 +95,11 @@ class CacheTestCase(unittest.TestCase):
         leases.start()
         self.addCleanup(leases.stop)
 
-    def args(self, *extra, project=None, results=None, assemblies="Game.Tests", platform="EditMode"):
+    def args(self, *extra, project=None, results=None, assemblies="Game.Tests", platform="EditMode", target="Win64"):
         args = [FAKE, "-batchmode", "-projectPath", str(project or self.project), "-runTests", "-testPlatform", platform,
                 "-testResults", str(results or self.results), "-logFile", str(self.base / "Editor.log")]
+        if target:
+            args += ["-buildTarget", target]
         if assemblies:
             args += ["-assemblyNames", assemblies]
         return args + list(extra)
@@ -123,7 +125,9 @@ class KeyTests(CacheTestCase):
         self.assertIn("<package:com.example.local>/Lib/Lib.cs", files)
         self.assertIn("<project>/Assets/Plugins/native.dll", files)
         self.assertIn("<project>/ProjectSettings/ProjectSettings.asset", files)
-        self.assertNotIn("<project>/Assets/Other/Other.cs", files)
+        self.assertIn("<project>/Assets/Other/Other.cs", files)  # code of every assembly: it compiles with the run
+        self.assertIn("<project>/Assets/Other/Other.asmdef", files)
+        self.assertNotIn("<project>/Assets/Other/icon.png", files)
         self.assertNotIn("<project>/Assets/Scenes/Main.unity", files)
         self.assertNotIn("<project>/Packages/com.example.embedded/Documentation~/index.md", files)
         self.assertEqual(["Embedded", "Game", "Game.Tests", "Lib"], first.components["closure"])
@@ -151,6 +155,8 @@ class KeyTests(CacheTestCase):
             "manifest": self.project / "Packages" / "manifest.json",
             "lock": self.project / "Packages" / "packages-lock.json",
             "precompiled": self.project / "Assets" / "Plugins" / "native.dll",
+            "code of an unrelated assembly": self.project / "Assets" / "Other" / "Other.cs",
+            "definition of an unrelated assembly": self.project / "Assets" / "Other" / "Other.asmdef",
         }
         for name, path in changes.items():
             with self.subTest(name):
@@ -165,6 +171,7 @@ class KeyTests(CacheTestCase):
         self.assertNotEqual(before, self.key("-testFilter", "Game.Tests.PlayerTests"))
         self.assertNotEqual(before, self.key(platform="PlayMode"))
         self.assertNotEqual(before, self.key(assemblies="Game.Tests,Other"))
+        self.assertNotEqual(before, self.key(target="Android"))
         other_editor = write(self.base / "editor2" / "Unity", "another editor\n")
         self.assertNotEqual(before, self.key(editor=other_editor))
         os.utime(self.editor, ns=(1, 1))
@@ -183,12 +190,14 @@ class KeyTests(CacheTestCase):
         inside = self.plan(str(self.project / "Assets" / "Scenes" / "Main.unity"))
         self.assertTrue(any(item.startswith("<project>/Assets/Scenes/Main.unity#sha256:") for item in inside.components["command"]))
 
-    def test_an_unrelated_assembly_and_a_scene_do_not_change_the_key(self):
+    def test_assets_outside_the_closure_do_not_change_the_key_but_any_code_does(self):
         before = self.key()
-        write(self.project / "Assets" / "Other" / "Other.cs", "class Other { int changed; }\n")
+        write(self.project / "Assets" / "Other" / "icon.png", "changed")
         write(self.project / "Assets" / "Scenes" / "Main.unity", "%YAML 1.1\nchanged\n")
-        write(self.project / "Assets" / "Loose.cs", "class Loose {}\n")
+        write(self.project / "Assets" / "Scenes" / "notes.txt", "changed")
         self.assertEqual(before, self.key())
+        write(self.project / "Assets" / "Loose.cs", "class Loose {}\n")  # Assembly-CSharp: compiled with every run
+        self.assertNotEqual(before, self.key())
 
     def test_an_asmref_folder_belongs_to_the_assembly_it_names(self):
         write(self.project / "Assets" / "Extra" / "Extra.asmref", json.dumps({"reference": "GUID:" + GAME_GUID}))
@@ -200,10 +209,13 @@ class KeyTests(CacheTestCase):
 
     def test_a_nested_assembly_takes_its_folder_out_of_the_enclosing_one(self):
         asmdef(self.project / "Assets" / "Game" / "Inner" / "Inner.asmdef", "Inner")
-        inner = write(self.project / "Assets" / "Game" / "Inner" / "Inner.cs", "class Inner {}\n")
-        before = self.key()
-        inner.write_text("class Inner { int changed; }\n", encoding="utf-8")
-        self.assertEqual(before, self.key())
+        asset = write(self.project / "Assets" / "Game" / "Inner" / "data.bytes", "data")
+        write(self.project / "Assets" / "Game" / "data.bytes", "data")
+        before = self.plan()
+        self.assertIn("<project>/Assets/Game/data.bytes", before.components["files"])
+        self.assertNotIn("<project>/Assets/Game/Inner/data.bytes", before.components["files"])
+        asset.write_text("changed", encoding="utf-8")
+        self.assertEqual(before.key, self.key())
 
     def test_a_linked_folder_is_followed_once(self):
         try:
@@ -221,6 +233,8 @@ class KeyTests(CacheTestCase):
             "-editorTestsResultFile": self.plan("-editorTestsResultFile", str(self.base / "x.xml")),
             "test platform": self.plan(platform="StandaloneWindows64"),
             "-assemblyNames": self.plan(assemblies=None),
+            "-buildTarget": self.plan(target=None),
+            "relative -testResults": self.plan(results="results.xml"),
             "not defined": self.plan(assemblies="Missing.Tests"),
         }
         for words, found in cases.items():
@@ -249,6 +263,8 @@ class KeyTests(CacheTestCase):
         self.assertIn("test-run", unitycache.failure("<test-suite/>"))
         self.assertIn("XML", unitycache.failure("<test-run"))
         self.assertIn("document type", unitycache.failure('<!DOCTYPE x [<!ENTITY a "b">]><test-run result="Passed" failed="0"/>'))
+        padded = "<?xml version='1.0'?>\n" + "<!--" + "x" * 10000 + "-->\n" + '<!DOCTYPE x [<!ENTITY a "b">]><test-run result="Passed" failed="0"/>'
+        self.assertIn("document type", unitycache.failure(padded))
 
 
 class StoreTests(CacheTestCase):
@@ -299,6 +315,15 @@ class StoreTests(CacheTestCase):
             self.skipTest("this machine cannot create a symbolic link")
         self.assertIn("link", unitycache.lookup(self.root(), found)[1])
 
+    def test_the_store_is_bounded_in_bytes(self):
+        first = self.plan()
+        unitycache.store(self.root(), first, PASSING)
+        os.utime(self.root() / f"{first.key}.json", (1, 1))  # the least recently used
+        second = self.plan("-testFilter", "X")
+        with mock.patch.object(unitycache, "MAX_STORE_BYTES", 1):
+            unitycache.store(self.root(), second, PASSING)
+        self.assertEqual([f"{second.key}.json"], [path.name for path in self.root().glob("*.json")])
+
     def test_an_entry_above_the_size_limit_is_ignored(self):
         found = self.plan()
         path, _ = unitycache.store(self.root(), found, PASSING)
@@ -313,6 +338,7 @@ class RunTests(CacheTestCase):
         args = self.args(*fake_args, results=results)
         out, err = io.StringIO(), io.StringIO()
         options.setdefault("lease_wait_sec", 0)
+        options.setdefault("lfs_materialize", False)
         cache = plan or unityrun.cache_plan(args, None, sys.executable)
         self.assertIsNotNone(cache.key, cache.reason)
         code = unityrun.run(args, unity=sys.executable, home=self.home, out=out, err=err, poll_sec=0.1, cancel_poll_sec=0.1,
@@ -336,6 +362,7 @@ class RunTests(CacheTestCase):
             code, lines, err = self.run_unity("--results", "pass", results=elsewhere)
         self.assertEqual((constants.EXIT_PASS, "STATUS PASS"), (code, lines[-1]), err)
         self.assertTrue(lines[-2].startswith("cached: PASS of key "), lines)
+        self.assertEqual(lines[-2] + "\n", (self.base / "Editor.log").read_text(encoding="utf-8"))  # the log of the earlier run is replaced
         self.assertEqual(self.results.read_bytes(), elsewhere.read_bytes())  # the file of the first run, byte for byte
         self.assertEqual([], list(self.manager.directory.glob("*.lock")))
 
@@ -385,7 +412,7 @@ class RunTests(CacheTestCase):
         self.assertTrue(held.acquired)
 
         def finish():
-            time.sleep(0.5)
+            time.sleep(2)
             unitycache.store(unitycache.cache_root(self.home), cache, PASSING)
             self.manager.release(cache.marker, "other", os.getpid())
 
@@ -400,15 +427,29 @@ class RunTests(CacheTestCase):
         self.assertTrue(lines[-2].startswith("cached: PASS"))
         self.assertTrue(self.results.is_file())
 
-    def test_a_live_holder_that_does_not_finish_in_time_blocks_and_names_no_cache(self):
+    def test_a_live_holder_that_does_not_finish_in_time_lets_unity_run_here(self):
         cache = unityrun.cache_plan(self.args("--results", "pass"), None, sys.executable)
         self.assertTrue(self.manager.try_acquire(cache.marker, OTHER, "other", 300, "computing", os.getpid()).acquired)
-        with self.no_unity():
+        with mock.patch.object(unityrun.supervise, "supervise", wraps=unityrun.supervise.supervise) as started:
             code, lines, err = self.run_unity("--results", "pass", lease_wait_sec=0.3, plan=cache)
-        self.assertEqual((constants.EXIT_BLOCKED, "STATUS BLOCKED"), (code, lines[-1]), err)
-        self.assertIn("--no-cache", lines[-2])
+        self.assertEqual((constants.EXIT_PASS, "STATUS PASS", 1), (code, lines[-1], started.call_count), err)
+        self.assertIn("Unity runs here", err)
         held = [path.name for path in self.manager.directory.glob("*.lock")]
         self.assertEqual([lease.lease_file_name(cache.marker)], held)  # the other session's marker stays
+
+    def test_the_marker_is_taken_after_the_project_lease_and_before_the_slot(self):
+        cache = unityrun.cache_plan(self.args("--results", "pass"), None, sys.executable)
+        order = []
+        original = lease.LeaseManager.try_acquire
+
+        def noted(manager, resource, *args, **kwargs):
+            order.append(resource.split(":")[0])
+            return original(manager, resource, *args, **kwargs)
+
+        with mock.patch.object(lease.LeaseManager, "try_acquire", noted):
+            code, _, err = self.run_unity("--results", "pass", plan=cache)
+        self.assertEqual(constants.EXIT_PASS, code, err)
+        self.assertEqual(["unity-project", "unity-result", "unity-editor"], [name for index, name in enumerate(order) if name not in order[:index]])
 
     def test_no_cache_does_not_wait_for_a_live_holder(self):
         cache = unityrun.cache_plan(self.args("--results", "pass"), None, sys.executable)
@@ -470,7 +511,7 @@ class CommandLineTests(HostTestCase):
 
     def cli(self, *options, extra=("--results", "pass")):
         return run_cli("unity", "run", "--unity", sys.executable, "--lease-wait", "0", "--no-offload", *options, "--",
-                       FAKE, "-batchmode", "-projectPath", str(self.project), "-runTests", "-testPlatform", "EditMode",
+                       FAKE, "-batchmode", "-projectPath", str(self.project), "-runTests", "-testPlatform", "EditMode", "-buildTarget", "Win64",
                        "-assemblyNames", "Game.Tests", "-testResults", str(self.results), *extra)
 
     def test_cache_status_reports_miss_then_hit_and_runs_nothing(self):
@@ -502,6 +543,12 @@ class CommandLineTests(HostTestCase):
         status = json.loads(out)
         self.assertIsNone(status["key"])
         self.assertIn("-runTests", status["reason"])
+
+    def test_cache_status_of_an_offloaded_run_runs_nothing(self):
+        with mock.patch.object(unityrun.supervise, "supervise", side_effect=AssertionError("Unity was started")):
+            code, out, err = self.cli("--cache-status", "--offload-from", "build-pc", "--offload-project", "Game", "--offload-sha", "0" * 40)
+        self.assertEqual(0, code, err)
+        self.assertIn("offloaded", json.loads(out)["reason"])
 
     def test_a_hit_and_no_cache(self):
         self.cli()
