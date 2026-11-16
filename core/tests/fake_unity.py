@@ -1,7 +1,8 @@
 """A stand-in for the Unity Editor: the tests start it as `<python> fake_unity.py <Unity arguments>`.
 
 It understands `-logFile` (like Unity) plus a few test switches: `--exit N`, `--sleep SEC`, `--grow` (keep writing to the log while
-sleeping), `--text TEXT` (written to the log first), `--dump DIR` (writes argv, the leases it sees and its pid into DIR), `--print`, `--no-log` (never opens the log, like a Unity that fails first).
+sleeping), `--text TEXT` (written to the log first), `--dump DIR` (writes argv, the leases it sees and its pid into DIR), `--print`, `--no-log` (never opens the log, like a Unity that fails first),
+`--results pass|fail` (writes an NUnit `test-run` file to `-testResults`), `--append FILE` (changes a file while it runs).
 (also writes the text to stdout)."""
 
 import json
@@ -42,6 +43,17 @@ def main():
         leases = Path(os.environ.get("FAKE_UNITY_LEASES", ""))
         names = sorted(p.name for p in leases.glob("*.lock")) if leases.is_dir() else []
         (folder / "leases.json").write_text(json.dumps(names), encoding="utf-8")
+    append = value("--append")
+    if append:  # change an input of the run while it runs
+        with open(append, "a", encoding="utf-8") as changed:
+            changed.write("// changed while the run ran\n")
+    results, outcome = value("-testResults"), value("--results")
+    if results and outcome:
+        passed = outcome == "pass"
+        Path(results).parent.mkdir(parents=True, exist_ok=True)
+        Path(results).write_text(
+            f'<?xml version="1.0" encoding="utf-8"?>\n<test-run id="2" testcasecount="3" result="{"Passed" if passed else "Failed(Child)"}" '
+            f'total="3" passed="{3 if passed else 2}" failed="{0 if passed else 1}" skipped="0">\n</test-run>\n', encoding="utf-8")
     end = time.monotonic() + float(value("--sleep", "0"))
     while time.monotonic() < end:
         if handle and "--grow" in sys.argv:
