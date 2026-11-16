@@ -435,10 +435,10 @@ def _whole_editor_binding_warnings(config: Config) -> list[str]:
     unfiltered = []
     for spec in editor:
         template = config.resolve_runner(spec.runner)[0] if spec.runner is not None else None
-        if template is not None and ASSEMBLIES_COMMA not in template and ASSEMBLIES_SEMICOLON not in template:
+        if template is not None and not filters_by_target(template):
             unfiltered.append(spec.raw)
     if unfiltered:
-        return [f"bindings.editor: {', '.join(unfiltered)} runs a command without {ASSEMBLIES_COMMA} or {ASSEMBLIES_SEMICOLON}, so it runs the "
+        return [f"bindings.editor: {', '.join(unfiltered)} runs a command without {', '.join(_FILTERING)}, so it runs the "
                 f"same tests whichever assemblies are selected; {tail}"]
     bound = {name for spec in editor for name in spec.target.split(",")}
     if len(bound) < 2 or not named <= bound:
@@ -484,8 +484,8 @@ def _validate_assemblies(config: Config, where: str, member: Mapping[str, Any], 
         errors.extend(f"{where}.{field_name}: {message}" for message in _placeholder_problems(template or ""))
         if name is None:  # a named runner was checked under `runners`
             warnings.extend(f"{where}.{field_name}: {message}" for message in _literal_filter_problems(template, set() if filtered is None else filtered))
-        if ASSEMBLIES_COMMA not in (template or "") and ASSEMBLIES_SEMICOLON not in (template or ""):
-            warnings.append(f"{where}.{field_name}: the runner has no {ASSEMBLIES_COMMA} or {ASSEMBLIES_SEMICOLON} placeholder, so it cannot filter by "
+        if not filters_by_target(template):
+            warnings.append(f"{where}.{field_name}: the runner has no {', '.join(_FILTERING)} placeholder, so it cannot filter by "
                             "assembly and runs the same tests whichever assemblies are selected")
 
 
@@ -565,29 +565,56 @@ def _over_selection_warnings(config: Config) -> list[str]:
 #: must quote the placeholder, for example `-assemblyNames "{assemblies;}"`.
 ASSEMBLIES_COMMA = "{assemblies}"
 ASSEMBLIES_SEMICOLON = "{assemblies;}"
+#: The united targets as test-name prefixes for `-testFilter`: each target `\A` + the regex-escaped name, joined with `;`. The Unity Test
+#: Framework reads every `-testFilter` item as an unanchored regular expression on the full test name, so a bare name also matches where it
+#: appears inside a longer name and its `.` matches any character. It is a plain prefix, not a namespace boundary: `Game.Ui.Tests.Hud`
+#: selects `Game.Ui.Tests.HudBindingTests` too. The anchor is `\A`, not `^`, which `cmd.exe` drops from an unquoted argument.
+PREFIXES_SEMICOLON = "{prefixes;}"
+_FILTERING = (ASSEMBLIES_COMMA, ASSEMBLIES_SEMICOLON, PREFIXES_SEMICOLON)
 #: `-testFilter` given the assembly list: Unity matches it against test names, not assemblies (`-assemblyNames` is the option for them).
 _TEST_FILTER_ASSEMBLIES = re.compile(r"(?<![\w-])-testFilter(?:\s+|=)[\"']?\{assemblies;?\}", re.IGNORECASE)
+#: `-assemblyNames` given the prefixes: they are patterns, not assembly names.
+_ASSEMBLY_NAMES_PREFIXES = re.compile(r"(?<![\w-])-assemblyNames(?:\s+|=)[\"']?\{prefixes;\}", re.IGNORECASE)
+
+
+def filters_by_target(template: str | None) -> bool:
+    """The runner puts the selected targets into its command (one of the placeholders), so it runs only what was selected."""
+    return template is not None and any(placeholder in template for placeholder in _FILTERING)
 
 
 def _filter_problems(template: str) -> list[str]:
-    """A runner that passes the assembly list to `-testFilter`: the names match test names (and any test whose name starts the same way),
-    not assemblies."""
-    if not _TEST_FILTER_ASSEMBLIES.search(template):
-        return []
-    return ["-testFilter gets the assembly list, but Unity matches -testFilter against test names, not assemblies; pass the list with "
-            "-assemblyNames instead"]
-_PLACEHOLDER = re.compile(r"(?<!\$)\{(?:assemblies[^{}\s]*|assembly)\}")  # look-alikes of ours only; a shell's ${assemblyDir}, ${HOME} or {a,b} is the command's own
+    """A runner that passes the assembly list to `-testFilter` (the names match test names, unanchored, not assemblies), or the prefixes to
+    `-assemblyNames`."""
+    problems = []
+    if _TEST_FILTER_ASSEMBLIES.search(template):
+        problems.append("-testFilter gets the assembly list, but Unity matches -testFilter against test names, not assemblies, and reads each "
+                        f"item as an unanchored regular expression; pass assemblies with -assemblyNames, or, when the targets are test-name "
+                        f"prefixes, write -testFilter \"{PREFIXES_SEMICOLON}\" (each target anchored and escaped)")
+    if _ASSEMBLY_NAMES_PREFIXES.search(template):
+        problems.append(f"-assemblyNames gets {PREFIXES_SEMICOLON}, which are test-name patterns, not assembly names; use {ASSEMBLIES_SEMICOLON} "
+                        "there, or pass the prefixes to -testFilter")
+    return problems
+
+
+# Look-alikes of ours only; a shell's ${assemblyDir}, ${HOME} or {a,b} is the command's own.
+_PLACEHOLDER = re.compile(r"(?<!\$)\{(?:assemblies[^{}\s]*|assembly|prefix[^{}\s]*)\}")
 
 
 def _placeholder_problems(template: str) -> list[str]:
-    """A `{assembl...}` in a runner template must be one of the two assembly placeholders; a typo would otherwise be run as text."""
-    known = (ASSEMBLIES_COMMA, ASSEMBLIES_SEMICOLON)
-    return [f"unknown placeholder {found!r} in the runner {template!r} (use {ASSEMBLIES_COMMA} or {ASSEMBLIES_SEMICOLON})"
-            for found in _PLACEHOLDER.findall(template) if found not in known]
+    """A `{assembl...}` or `{prefix...}` in a runner template must be one of our placeholders; a typo would otherwise be run as text."""
+    return [f"unknown placeholder {found!r} in the runner {template!r} (use {ASSEMBLIES_COMMA}, {ASSEMBLIES_SEMICOLON} or {PREFIXES_SEMICOLON})"
+            for found in _PLACEHOLDER.findall(template) if found not in _FILTERING]
+
+
+def anchored_prefix(name: str) -> str:
+    """`\\A` and the target as a literal: a target is `[A-Za-z0-9._-]` (see `_NAME`), so only `.` needs escaping. `-` is literal outside a
+    character class, but `\\x2D` keeps the value free of anything a reader could take for an option or a range."""
+    return "\\A" + name.replace(".", "\\.").replace("-", "\\x2D")
 
 
 def expand_runner(template: str, assemblies: Sequence[str]) -> str:
-    return template.replace(ASSEMBLIES_SEMICOLON, ";".join(assemblies)).replace(ASSEMBLIES_COMMA, ",".join(assemblies))
+    return (template.replace(PREFIXES_SEMICOLON, ";".join(anchored_prefix(name) for name in assemblies))
+            .replace(ASSEMBLIES_SEMICOLON, ";".join(assemblies)).replace(ASSEMBLIES_COMMA, ",".join(assemblies)))
 
 
 # --- paths -----------------------------------------------------------------------------------------------------------------------
