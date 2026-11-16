@@ -5,6 +5,8 @@
 ones that reach such an assembly through `references` (by name or by `GUID:`), directly or through other assemblies of the project or the
 package. Whatever the graph cannot say is a `GraphError` and the caller keeps the broader kind (fail closed): a file that belongs to no
 assembly, an assembly that cannot be read, a name or a GUID that two assemblies share, a change of a test assembly of the package itself.
+The same graph narrows a change of the project's own C# code (the `assemblies` member of an area): `ProjectFolders` finds the assembly of a
+file, `changed_definition` judges a modified `.asmdef` and `narrow_project` names the test assemblies that reach the changed ones.
 The module has no dependency outside the standard library; the callers pass the readers of the files.
 """
 
@@ -255,6 +257,75 @@ def changed_assemblies(
                 raise GraphError(f"{relative}: belongs to no assembly")
             add(owner, relative)
     return changed
+
+
+#: Members of an assembly definition whose change the graph can judge: the name (a renamed assembly counts under both names), the references (the
+#: graph is read as of the new state) and the root namespace (it only sets what the Editor proposes for new scripts).
+_GRAPH_MEMBERS = frozenset({"name", "references", "rootNamespace"})
+
+
+def changed_definition(path: str, new: bytes, old: bytes) -> list[str]:
+    """The names a modified assembly definition of the project counts under: the new one and, when it was renamed, the old one too. Raises
+    `GraphError` when a member other than `name`, `references` and `rootNamespace` changed (platforms, defines, compiler options, ...): what such
+    a change does to the assemblies that reference it is not in the graph."""
+    new_document, old_document = _json_document(path, new), _json_document(path, old)
+    differ = sorted(key for key in set(new_document) | set(old_document)
+                    if key not in _GRAPH_MEMBERS and json.dumps(new_document.get(key), sort_keys=True) != json.dumps(old_document.get(key), sort_keys=True))
+    if differ:
+        raise GraphError(f"{path}: {', '.join(differ)} changed; only name, references and rootNamespace can be judged by the graph")
+    names = [parse_definition(path, new, None).name, parse_definition(path, old, None).name]
+    return list(dict.fromkeys(names))
+
+
+class ProjectFolders:
+    """Which assembly of the project a file of its `Assets` or `Packages` folders belongs to. `tree` lists the files (repository-relative),
+    `graph` holds the project's assemblies (their `path` as in `tree`) and `read` returns a file of the tree."""
+
+    def __init__(self, tree: Iterable[str], graph: Graph, read: Callable[[str], bytes | None]) -> None:
+        self.graph = graph
+        self.read = read
+        self.definitions: dict[str, str] = {}
+        self.references: dict[str, str] = {}
+        for path in sorted(tree):
+            folder, _, name = path.rpartition("/")
+            if name.endswith(".asmdef"):
+                self.definitions.setdefault(folder, path)
+            elif name.endswith(".asmref"):
+                self.references.setdefault(folder, path)
+        self.by_path = {assembly.path: assembly for assembly in graph.assemblies}
+
+    def referenced(self, path: str, data: bytes | None) -> str:
+        """The assembly of the project that an `.asmref` names. Raises `GraphError` for one that names nothing or an assembly outside the project."""
+        if data is None:
+            raise GraphError(f"{path}: cannot be read")
+        reference = _json_document(path, data).get("reference")
+        if not isinstance(reference, str) or not reference:
+            raise GraphError(f"{path}: names no assembly")
+        name = self.graph.target(reference)
+        if name not in self.graph.by_name:
+            raise GraphError(f"{path}: names {reference!r}, which is not an assembly of this project")
+        return name
+
+    def owner(self, path: str) -> str:
+        """The assembly a file compiles into: the nearest `.asmdef` above it, or the one an `.asmref` of the nearest such folder names. Raises
+        `GraphError` for a file that belongs to no assembly definition (Unity's predefined assemblies such as Assembly-CSharp are not in the graph)."""
+        folder = path.rpartition("/")[0]
+        while True:
+            if folder in self.definitions:
+                assembly = self.by_path.get(self.definitions[folder])
+                if assembly is None:
+                    raise GraphError(f"{path}: the assembly definition {self.definitions[folder]} cannot be read")
+                return assembly.name
+            if folder in self.references:
+                return self.referenced(self.references[folder], self.read(self.references[folder]))
+            if not folder:
+                raise GraphError(f"{path}: belongs to no assembly definition (a predefined assembly such as Assembly-CSharp cannot be narrowed)")
+            folder = folder.rpartition("/")[0]
+
+
+def narrow_project(project: Sequence[Assembly], changed: Mapping[str, Sequence[str]]) -> list[dict[str, Any]]:
+    """The test assemblies of the project that reach a changed assembly of the project (a changed test assembly reaches itself); see `narrow`."""
+    return narrow(project, {}, "", changed)
 
 
 def narrow(
