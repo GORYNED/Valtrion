@@ -126,8 +126,8 @@ def _valid_digest(digest: str) -> bool:
     return isinstance(digest, str) and len(digest) == 64 and set(digest) <= _HEX64
 
 
-def _untrusted(path: Path, folder: bool = False) -> str | None:
-    """Why a cache file (or the cache folder) must not be trusted, or None."""
+def _untrusted(path: Path, folder: bool = False, limit: int = MAX_ENTRY_BYTES) -> str | None:
+    """Why a cache file (or the cache folder) must not be trusted, or None. `limit`: the largest file that is read."""
     try:
         info = os.lstat(path)
     except FileNotFoundError:
@@ -140,8 +140,8 @@ def _untrusted(path: Path, folder: bool = False) -> str | None:
         return "the cache folder is not a folder"
     if not folder and not stat.S_ISREG(info.st_mode):
         return "it is not a regular file"
-    if not folder and info.st_size > MAX_ENTRY_BYTES:
-        return f"it is larger than {MAX_ENTRY_BYTES} bytes"
+    if not folder and info.st_size > limit:
+        return f"it is larger than {limit} bytes"
     if os.name != "nt":
         euid = getattr(os, "geteuid", None)
         if euid is not None and info.st_uid != euid():
