@@ -274,7 +274,6 @@ class KeyTests(CacheTestCase):
                                             self.project, str(self.editor)),
             "-editorTestsResultFile": self.plan("-editorTestsResultFile", str(self.base / "x.xml")),
             "test platform": self.plan(platform="StandaloneWindows64"),
-            "-assemblyNames": self.plan(assemblies=None),
             "-buildTarget": self.plan(target=None),
             "relative -testResults": self.plan(results="results.xml"),
             "not defined": self.plan(assemblies="Missing.Tests"),
@@ -404,7 +403,7 @@ class RunTests(CacheTestCase):
         out, err = io.StringIO(), io.StringIO()
         options.setdefault("lease_wait_sec", 0)
         options.setdefault("lfs_materialize", False)
-        cache = plan or unityrun.cache_plan(args, None, sys.executable)
+        cache = plan or unityrun.cache_plan(args, None, sys.executable, home=self.home)
         self.assertIsNotNone(cache.key, cache.reason)
         code = unityrun.run(args, unity=sys.executable, home=self.home, out=out, err=err, poll_sec=0.1, cancel_poll_sec=0.1,
                             probe=FakeProbe(), guard_poll_sec=0.1, cache=cache, read_cache=read_cache, **options)

@@ -2,8 +2,9 @@
 
 `plan` turns one Unity command into a key: a SHA-256 over the Editor (version, executable path, size and modification time), the OS,
 the Valtrion Core version, the command (with `-projectPath`, `-logFile` and `-testResults` left out, paths inside the project written as
-`<project>/...` and an argument that names an existing file replaced by the hash of its content; it must name `-buildTarget`), the
-selected test assemblies and, by content, every file of those assemblies and of the assemblies they reach through `references`, the
+`<project>/...` and an argument that names an existing file replaced by the hash of its content; it must name `-buildTarget`, which
+`unity run` adds from host.json `unityBuildTarget` when the command has none), the selected test assemblies (every assembly of the
+project when the command names no `-assemblyNames`, for example a run that selects by `-testFilter` only) and, by content, every file of those assemblies and of the assemblies they reach through `references`, the
 code of the whole project (every `.cs`, `.asmdef` and `.asmref` and its `.meta`: everything compiles with the run), every precompiled
 file (`.dll`, `.so`, `.rsp`, ... and its `.meta`), `ProjectSettings/`, `Packages/manifest.json`,
 `Packages/packages-lock.json` and the `package.json` of every local package. The files are found in `Assets`, in the embedded packages
@@ -145,8 +146,6 @@ def _components(args: Sequence[str], project: Path, editor: str) -> dict[str, An
         # Without it the active platform of the project's Library decides the defines (UNITY_ANDROID, ...) and Application.platform.
         raise NoKey("the command names no -buildTarget, so the active build platform is unknown; name -buildTarget to cache")
     selected = assembly_names(args)
-    if not selected:
-        raise NoKey("the command selects no assemblies (-assemblyNames); a run of every assembly is not cached")
     project = Path(project)
     if not project.is_dir():
         raise NoKey(f"the Unity project folder {project} does not exist")
@@ -158,19 +157,48 @@ def _components(args: Sequence[str], project: Path, editor: str) -> dict[str, An
     for name in selected:
         if name not in graph.by_name:
             raise NoKey(f"the assembly {name} is not defined in Assets, an embedded package or a local (file:) package")
-    closure = _closure(graph, selected)
+    # Without -assemblyNames Unity runs every test assembly it finds (a -testFilter in the command, which is part of the key, may pick
+    # some tests of them), the predefined ones (Assembly-CSharp-Editor and the like) too: every scanned file of the project is in the key,
+    # scenes and assets outside any assembly folder included. Registry and git packages are keyed by the manifest and lock files.
+    closure = _closure(graph, selected) if selected else set(graph.by_name)
     files: dict[str, str] = {}
     for item in scan.files:
         owner = scan.owner(item.folder, graph)
         # The compiler inputs of the whole project count too: a compile error anywhere fails the run, and initialization code
         # ([InitializeOnLoad], [RuntimeInitializeOnLoadMethod]) of any assembly runs during the tests.
-        if item.precompiled or item.compiled or (owner is not None and owner in closure):
+        if not selected or item.precompiled or item.compiled or (owner is not None and owner in closure):
             files[item.label] = core.sha256_file(item.path)
+    settings_text: dict[str, str] = {}
     for label, path in scan.extra:
         files[label] = core.sha256_file(path) if path.exists() else "missing"
+        if "/ProjectSettings/" in label and path.is_file() and path.stat().st_size <= _TEXT_LIMIT:
+            # The same file with `\n` line endings: tells "Unity re-saved a CRLF checkout with LF" from a real change (`changed_inputs`).
+            settings_text[label] = core.sha256_bytes(path.read_bytes().replace(b"\r\n", b"\n"))
     return {"format": FORMAT, "coreVersion": __version__, "os": core.local_os(), "editor": editor_part,
             "testPlatform": PLATFORMS[platform.lower()], "assemblies": selected, "closure": sorted(closure),
-            "command": _command(args, project), "files": files}
+            "command": _command(args, project), "files": files, "settingsText": settings_text}
+
+
+_TEXT_LIMIT = 4 * 1024 * 1024
+_EOL_HINT = ("Unity re-saved them with LF line endings: give them LF in the checkout, for example `ProjectSettings/**/*.asset text eol=lf` "
+             "in the project's .gitattributes")
+
+
+def changed_inputs(before: Plan, after: Plan) -> str:
+    """Why `after` (the key computed again once Unity ended) differs from `before`: the inputs that changed, and a hint when the only change of
+    project settings files is their line endings."""
+    if after.key is None:
+        return after.reason or "the inputs cannot be read after the run"
+    old, new = before.components.get("files", {}), after.components.get("files", {})
+    changed = sorted(label for label in set(old) | set(new) if old.get(label) != new.get(label))
+    if not changed:
+        return "the inputs changed while Unity ran"
+    shown = ", ".join(changed[:5]) + (f" and {len(changed) - 5} more" if len(changed) > 5 else "")
+    old_text, new_text = before.components.get("settingsText", {}), after.components.get("settingsText", {})
+    eol_only = [label for label in changed if label in old_text and old_text.get(label) == new_text.get(label)]
+    if eol_only and len(eol_only) == len(changed):
+        return f"the inputs changed while Unity ran: {shown}; only their line endings changed, {_EOL_HINT}"
+    return f"the inputs changed while Unity ran: {shown}" + (f" ({', '.join(eol_only[:5])}: line endings only; {_EOL_HINT})" if eol_only else "")
 
 
 def editor_version(executable: str | Path) -> str | None:
@@ -378,6 +406,11 @@ class _Scan:
         dependencies = document.get("dependencies") if isinstance(document, dict) else None
         if not isinstance(dependencies, dict):
             return []
+        if not (manifest.parent / "packages-lock.json").exists():
+            moving = sorted(name for name, value in dependencies.items() if isinstance(value, str) and ("://" in value or value.startswith("git@")))
+            if moving:
+                # Without a lock file a git or URL dependency is whatever its branch holds today: its content is in no file of the key.
+                raise NoKey(f"Packages/packages-lock.json does not exist and {moving[0]} is a git or URL dependency, so its version is unknown")
         found = []
         for name, value in sorted(dependencies.items()):
             if isinstance(value, str) and value.startswith("file:"):

@@ -429,6 +429,28 @@ def _host_flag(key: str, default: bool, home: Path | None) -> bool:
     return value
 
 
+_BUILD_TARGET = re.compile(r"[A-Za-z][A-Za-z0-9]{0,63}")
+
+
+def unity_build_target(home: Path | None = None) -> str | None:
+    """`unityBuildTarget` of host.json: the `-buildTarget` that `unity run` passes to Unity when the command names none (for example
+    `StandaloneWindows64` on a Windows host, `iOS` on a Mac), so one check map serves every host and the result cache knows the platform.
+    None when host.json does not set it: the command is passed as it is."""
+    base = home or core.valtrion_home()
+    try:
+        document = core.read_json(host_json_path(base))
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError) as error:
+        raise ConfigError(f"cannot read {host_json_path(base)}: {error}") from error
+    value = document.get("unityBuildTarget") if isinstance(document, dict) else None
+    if value is None:
+        return None
+    if not isinstance(value, str) or not _BUILD_TARGET.fullmatch(value):
+        raise ConfigError("host.json: unityBuildTarget must be a Unity build target name such as StandaloneWindows64 or iOS")
+    return value
+
+
 def hidden_desktop(home: Path | None = None, default: bool = False) -> bool:
     """`hiddenDesktop` of host.json: whether `unity run` keeps the windows that tests open off the user's screen and away from the keyboard
     and the mouse (Windows: Unity runs on a desktop of its own; macOS: the Editor hides its own windows). `default` when host.json does not
