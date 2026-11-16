@@ -157,6 +157,13 @@ class BranchTests(unittest.TestCase):
         self.assertEqual(["body.md:2"], [finding.where for finding in findings])
 
 
+    def test_no_branch_checks_only_the_given_text(self):
+        body = self.repo / "issue.md"
+        body.write_text("title\nsee 192.168.1.9\n", encoding="utf-8")  # privacy: ok
+        self.assertEqual(0, check_privacy.main(["--no-branch"]))  # nothing given: nothing to find
+        self.assertEqual(1, check_privacy.main(["--no-branch", "--text-file", str(body)]))
+
+
 class RepositoryTests(unittest.TestCase):
     def test_this_repository_passes_its_own_check(self):
         findings, _ = check_privacy.run(None, True, [], check_privacy.load_hashes(), [])

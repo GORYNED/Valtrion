@@ -109,7 +109,10 @@ Install and integrate
 
 Verify in Unity
 7. Locate the exact licensed Editor from ProjectVersion.txt. Check that this
-   project is not open elsewhere and that a test slot is available. Start a
+   project is not open elsewhere and that a test slot is available. Every
+   session works in its own working copy with its own Editor; the host's
+   unity-editor slots decide how many run at once (see "Several agent
+   sessions on one Unity project" in docs/ai-agent-setup.md). Start a
    background batchmode PlayMode test with -assemblyNames Valtrion.SmokeTests
    (or the actual reused assembly), -testResults <absolute XML> and
    -logFile <absolute log>. Set GDV_PLAN to the copied plan's absolute path,
