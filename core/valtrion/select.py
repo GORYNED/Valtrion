@@ -584,7 +584,8 @@ def _placeholder_problems(template: str) -> list[str]:
 
 
 def anchored_prefix(name: str) -> str:
-    """`\\A` and the target as a literal: a target is `[A-Za-z0-9._-]` (see `_NAME`), so only `.` and `-` need escaping."""
+    """`\\A` and the target as a literal: a target is `[A-Za-z0-9._-]` (see `_NAME`), so only `.` needs escaping. `-` is literal outside a
+    character class, but `\\x2D` keeps the value free of anything a reader could take for an option or a range."""
     return "\\A" + name.replace(".", "\\.").replace("-", "\\x2D")
 
 
