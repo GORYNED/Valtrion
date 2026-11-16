@@ -561,7 +561,14 @@ def keep_result(plan: unitycache.Plan, root: Path, result_is_new: bool) -> str:
         return f"cache: not stored (key {short}): the -testResults file was not written by this run"
     again = _replan(plan)
     if again.key != plan.key:
-        return f"cache: not stored (key {short}): {unitycache.changed_inputs(plan, again)}"
+        why = unitycache.changed_inputs(plan, again)
+        if plan.project is not None:
+            if unitycache.first_with_library(root, plan.project):
+                why += f"; {unitycache.FIRST_RUN_HINT}"
+            unitycache.remember_library(root, plan.project)
+        return f"cache: not stored (key {short}): {why}"
+    if plan.project is not None:
+        unitycache.remember_library(root, plan.project)
     text, why = unitycache.read_result(plan.result_path) if plan.result_path is not None else (None, "no -testResults file")
     if text is None:
         return f"cache: not stored (key {short}): {why}"

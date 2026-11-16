@@ -23,12 +23,13 @@ import json
 import os
 import plistlib
 import re
+import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Sequence
 from xml.parsers import expat
 
-from . import __version__, core, resultcache
+from . import __version__, core, nowindow, resultcache
 from .asmgraph import GUID_PREFIX, Graph, GraphError, guid_of_meta, parse_definition
 from .providers.unity import support
 
@@ -179,6 +180,48 @@ def _components(args: Sequence[str], project: Path, editor: str) -> dict[str, An
             "command": _command(args, project), "files": files, "settingsText": settings_text}
 
 
+LIBRARIES = "libraries"
+FIRST_RUN_HINT = ("this was the first run Valtrion saw with this working copy's Library (new or rebuilt), when Unity often re-saves "
+                  "assets and settings; the next identical run usually stores")
+
+
+def library_identity(project: Path) -> str | None:
+    """Which `Library` folder the project has: its file id and creation time (a rebuilt Library is a new folder); None without one."""
+    try:
+        info = os.stat(Path(project) / "Library")
+    except OSError:
+        return None
+    born = getattr(info, "st_birthtime", None) or (info.st_ctime if os.name == "nt" else None)
+    return f"{info.st_dev}:{info.st_ino}:{born}"
+
+
+def _library_record(root: Path, project: Path) -> Path:
+    name = core.sha256_bytes(os.path.normcase(os.path.realpath(project)).encode("utf-8", "surrogateescape"))
+    return Path(root) / LIBRARIES / f"{name}.txt"
+
+
+def first_with_library(root: Path, project: Path) -> bool:
+    """True when no run of this project was seen with its current Library: none recorded, or the Library is another folder now."""
+    current = library_identity(project)
+    try:
+        return _library_record(root, project).read_text(encoding="utf-8").strip() != (current or "")
+    except OSError:
+        return True
+
+
+def remember_library(root: Path, project: Path) -> None:
+    """Record the project's current Library after a run (best effort: a failure only makes the next run look like a first one)."""
+    current = library_identity(project)
+    if current is None:
+        return
+    record = _library_record(root, project)
+    try:
+        record.parent.mkdir(parents=True, exist_ok=True)
+        record.write_text(current + "\n", encoding="utf-8")
+    except OSError:
+        pass
+
+
 _TEXT_LIMIT = 4 * 1024 * 1024
 _EOL_HINT = ("Unity re-saved them with LF line endings: give them LF in the checkout, for example `ProjectSettings/**/*.asset text eol=lf` "
              "in the project's .gitattributes")
@@ -309,6 +352,44 @@ def _inside(path: Path, project_real: str) -> str | None:
 
 
 @dataclass(frozen=True)
+class Ignored:
+    """The files and folders of a project that git ignores (`git ls-files --others --ignored --exclude-standard --directory`), as
+    normalized absolute paths; empty when the project is not in a git working copy or git cannot say."""
+    files: frozenset[str] = frozenset()
+    folders: tuple[str, ...] = ()
+
+    def covers(self, path: Path) -> bool:
+        text = os.path.normcase(os.path.abspath(path))
+        return text in self.files or any(text.startswith(folder) for folder in self.folders)
+
+
+_GIT_TIMEOUT_SEC = 60
+
+
+def git_ignored(project: Path) -> Ignored:
+    """What git ignores under the project's `Assets` and `Packages`. Any failure means nothing is left out (the key keeps every file)."""
+    environment = {name: value for name, value in os.environ.items() if not name.startswith("GIT_")}
+    try:
+        completed = subprocess.run(["git", "ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "-z", "--",
+                                    "Assets", "Packages"], cwd=project, capture_output=True, timeout=_GIT_TIMEOUT_SEC, check=False,
+                                   env=environment, **nowindow.OPTIONS)
+    except (OSError, subprocess.SubprocessError):
+        return Ignored()
+    if completed.returncode != 0:
+        return Ignored()
+    files, folders = set(), []
+    for item in completed.stdout.decode("utf-8", "surrogateescape").split("\0"):
+        if not item:
+            continue
+        absolute = os.path.normcase(os.path.abspath(Path(project) / item))
+        if item.endswith("/"):
+            folders.append(absolute.rstrip("\\/") + os.sep)
+        else:
+            files.add(absolute)
+    return Ignored(frozenset(files), tuple(folders))
+
+
+@dataclass(frozen=True)
 class _File:
     label: str
     path: Path
@@ -332,6 +413,7 @@ class _Scan:
 
     def __post_init__(self) -> None:
         project_real = os.path.realpath(self.project)
+        ignored = git_ignored(self.project)
         roots: list[tuple[str, Path]] = []
         if (self.project / "Assets").is_dir():
             roots.append((f"{PROJECT_LABEL}/Assets", self.project / "Assets"))
@@ -383,7 +465,12 @@ class _Scan:
                 for name in sorted(item for item in filenames if not _ignored(item)):
                     path = Path(dirpath) / name
                     relative = f"{relative_dir}/{name}" if relative_dir else name
-                    self.files.append(_File(f"{label}/{relative}", path, folder, _precompiled(relative), _compiled(name)))
+                    precompiled, compiled = _precompiled(relative), _compiled(name)
+                    # A file git ignores is build output (a generated link.xml, say) that may come and go while Unity runs; code and
+                    # precompiled files stay in the key even when ignored, as they compile with the run.
+                    if not (precompiled or compiled) and ignored.covers(path):
+                        continue
+                    self.files.append(_File(f"{label}/{relative}", path, folder, precompiled, compiled))
                     if name.endswith(".asmdef"):
                         if folder in self._definitions:
                             raise GraphError(f"{label}/{relative_dir}: holds more than one assembly definition")
