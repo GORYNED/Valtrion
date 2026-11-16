@@ -2,6 +2,10 @@
 
 Core (the `valtrion` Python package) and the Unity package `com.goryned.valtrion.unity` are versioned independently. The Unity changelog is in `integrations/unity/com.goryned.valtrion.unity/CHANGELOG.md`; `compat.json` lists compatible pairs.
 
+## Unreleased
+
+- **The `unity run` result cache serves the runners a check map writes (#165).** A relative `-testResults` is resolved under the project folder, as Unity does, before the key is computed; `host.json` `unityBuildTarget` (new, optional) is passed as `-buildTarget` when a test command names none, so one map serves a Windows and a Mac host and the run is cacheable; a command without `-assemblyNames` (a `-testFilter` run, for example with `{prefixes;}`) is keyed on every assembly of the project and its filter. Without `unityBuildTarget` a command is passed to Unity as before.
+
 ## 0.23.0 (2026-11-16)
 
 - **Upgrade note.** `compat.json` pairs Core 0.23.0 with Unity packages 0.17.x, 0.18.x and 0.19.x (their Core range is raised to below 0.24). A check map whose area carries `assemblies` needs package 0.19.0: 0.17.x and 0.18.x refuse that member. Update with `pipx upgrade valtrion` and run `valtrion hosts sync` on SSH hosts: the hosts of an offload must run the same Core version. Nothing else changes for a map or a runner that uses none of the new options; `check-config` may print new warnings (exit code unchanged).

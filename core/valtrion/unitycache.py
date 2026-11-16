@@ -2,8 +2,9 @@
 
 `plan` turns one Unity command into a key: a SHA-256 over the Editor (version, executable path, size and modification time), the OS,
 the Valtrion Core version, the command (with `-projectPath`, `-logFile` and `-testResults` left out, paths inside the project written as
-`<project>/...` and an argument that names an existing file replaced by the hash of its content; it must name `-buildTarget`), the
-selected test assemblies and, by content, every file of those assemblies and of the assemblies they reach through `references`, the
+`<project>/...` and an argument that names an existing file replaced by the hash of its content; it must name `-buildTarget`, which
+`unity run` adds from host.json `unityBuildTarget` when the command has none), the selected test assemblies (every assembly of the
+project when the command names no `-assemblyNames`, for example a run that selects by `-testFilter` only) and, by content, every file of those assemblies and of the assemblies they reach through `references`, the
 code of the whole project (every `.cs`, `.asmdef` and `.asmref` and its `.meta`: everything compiles with the run), every precompiled
 file (`.dll`, `.so`, `.rsp`, ... and its `.meta`), `ProjectSettings/`, `Packages/manifest.json`,
 `Packages/packages-lock.json` and the `package.json` of every local package. The files are found in `Assets`, in the embedded packages
@@ -145,8 +146,6 @@ def _components(args: Sequence[str], project: Path, editor: str) -> dict[str, An
         # Without it the active platform of the project's Library decides the defines (UNITY_ANDROID, ...) and Application.platform.
         raise NoKey("the command names no -buildTarget, so the active build platform is unknown; name -buildTarget to cache")
     selected = assembly_names(args)
-    if not selected:
-        raise NoKey("the command selects no assemblies (-assemblyNames); a run of every assembly is not cached")
     project = Path(project)
     if not project.is_dir():
         raise NoKey(f"the Unity project folder {project} does not exist")
@@ -158,7 +157,10 @@ def _components(args: Sequence[str], project: Path, editor: str) -> dict[str, An
     for name in selected:
         if name not in graph.by_name:
             raise NoKey(f"the assembly {name} is not defined in Assets, an embedded package or a local (file:) package")
-    closure = _closure(graph, selected)
+    # Without -assemblyNames Unity runs every test assembly it finds (a -testFilter in the command, which is part of the key, may pick
+    # some tests of them): every assembly of the project is in the closure. Test assemblies of a registry package are not scanned, so
+    # such a run is keyed on the manifest and lock files for them, like any other package content.
+    closure = _closure(graph, selected) if selected else set(graph.by_name)
     files: dict[str, str] = {}
     for item in scan.files:
         owner = scan.owner(item.folder, graph)

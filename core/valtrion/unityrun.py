@@ -80,6 +80,24 @@ def normalize_assembly_names(args: Sequence[str]) -> list[str]:
     return result
 
 
+def with_host_defaults(args: Sequence[str], project: Path, home: Path | None = None) -> list[str]:
+    """The command as Unity will run it, made explicit: a relative `-testResults` becomes the path under the project folder (Unity resolves
+    it against `-projectPath`, not the working directory), and a command without `-buildTarget` gets `unityBuildTarget` of host.json when
+    it is set. Both are what Unity would do anyway; written out, the result cache can key the run."""
+    result = list(args)
+    for position, item in enumerate(result[:-1]):
+        if item.lower() == "-testresults":
+            value = result[position + 1]
+            if value and not value.startswith("-") and not Path(value).expanduser().is_absolute():
+                result[position + 1] = str(Path(project) / value)
+    # Only a test run: a build (`-executeMethod`) chooses its platform itself.
+    if any(item.lower() == "-runtests" for item in result) and not has_option(result, "-buildTarget", "-activeBuildProfile"):
+        target = config.unity_build_target(home)
+        if target:
+            result += ["-buildTarget", target]
+    return result
+
+
 def _absolute(text: str) -> Path:
     return Path(text).expanduser().absolute()  # relative paths mean what they mean to Unity: from the working directory
 
@@ -274,6 +292,10 @@ def run(
     # An offloaded run (`prepare`) finds the folder and its Unity version only after the checkout has been reset to the commit.
     if prepare is None and not project.is_dir():
         return _result(out, constants.BLOCKED, f"the Unity project folder {project} does not exist")
+    try:
+        args = with_host_defaults(args, project, home)
+    except config.ConfigError as error:
+        return _result(out, constants.BLOCKED, str(error))
 
     editor, problem = None, None
     if unity:
@@ -477,7 +499,8 @@ def run(
                 input_watcher.join(timeout=2 * INPUT_POLL_SEC + 1)
 
 
-def cache_plan(unity_args: Sequence[str], project_dir: Path | None = None, unity: str | None = None) -> unitycache.Plan:
+def cache_plan(unity_args: Sequence[str], project_dir: Path | None = None, unity: str | None = None,
+               home: Path | None = None) -> unitycache.Plan:
     """The result cache key of a command, found the way `run` finds the project and the Editor; a plan without a key says why."""
     args = normalize_assembly_names(unity_args)
     given = option_value(args, "-projectPath")
@@ -489,6 +512,10 @@ def cache_plan(unity_args: Sequence[str], project_dir: Path | None = None, unity
         return unitycache.no_key("no Unity project", args)
     if not project.is_dir():
         return unitycache.no_key(f"the Unity project folder {project} does not exist", args)
+    try:
+        args = with_host_defaults(args, project, home)
+    except config.ConfigError as error:
+        return unitycache.no_key(str(error), args)
     if unity:
         editor, problem = _explicit_editor(unity)
     else:
