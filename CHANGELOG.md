@@ -2,6 +2,10 @@
 
 Core (the `valtrion` Python package) and the Unity package `com.goryned.valtrion.unity` are versioned independently. The Unity changelog is in `integrations/unity/com.goryned.valtrion.unity/CHANGELOG.md`; `compat.json` lists compatible pairs.
 
+## Unreleased
+
+- **`select` narrows a change of the project's own C# code to the test assemblies that depend on it (opt-in, #155).** An area may carry `"assemblies": {"kind", "runner", "playmodeRunner", "level"}`, like `byContent.assemblies`: a changed `.cs`, `.asmdef` or `.asmref` path of the area selects the project's test assemblies that reference its assembly, directly or not, and gives the member's kind instead of the area's. Whatever the graph cannot judge keeps the area's kind: a file without an assembly definition, an added or removed `.asmdef` or `.asmref`, an `.asmdef` change beyond `name`, `references` and `rootNamespace`, a Play Mode test assembly without `playmodeRunner`. `select --json` lists `projectAssemblies`; `check-config` warns when a map with `extends` leaves out `overridesPreset` on such an area. Maps without the member select as before.
+
 ## 0.22.3 (2026-11-15)
 
 - **Upgrade note.** `compat.json` is unchanged: Core 0.22.3 pairs with Unity packages 0.17.x and 0.18.x like 0.22.2. Update with `pipx upgrade valtrion` (and `valtrion hosts sync` on SSH hosts): every Windows host that takes offloaded runs needs it, 0.22.2 reports those runs `BLOCKED`.
