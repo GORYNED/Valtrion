@@ -8,6 +8,7 @@ Core (the `valtrion` Python package) and the Unity package `com.goryned.valtrion
   - *An `editor` binding that is the whole set.* With `extends: valtrion:unity/1` the preset's `**/*.cs` area adds `bind:editor` to every C# change; when the binding names every Edit and Play Mode assembly of the project's kinds, or runs a command that cannot filter by assembly, any `.cs` outside the project's `overridesPreset` areas selects every Editor suite.
   - *Assemblies passed to `-testFilter`.* `-testFilter "{assemblies;}"` matches test names, not assemblies; the warning suggests `-assemblyNames`.
   - *`unityEditorSlots` in `checks.json`.* It is informational (`select --json` prints it); the number of Editors at once is `unityEditorSlots` of `host.json`. The examples no longer set it.
+- **Docs: several agent sessions on one Unity project (#152).** `docs/ai-agent-setup.md` says it as a rule: one working copy per session, one Editor per working copy (the folder lease), the host's `unity-editor` slots decide how many Editors run at once (`unityEditorSlots` in `checks.json` limits nothing), each copy has its own `Library` (a Unity Accelerator in `host.json` shares imports), and test reports stay out of the tracked tree. No behavior changes.
 
 ## 0.22.3 (2026-11-15)
 

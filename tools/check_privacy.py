@@ -13,7 +13,7 @@ names (`Game`, `Example Phone`, `build-pc`, `dev`). This script holds no private
    `python tools/check_privacy.py --hash "Example Name"`. (A hash hides a name from a reader, not from someone who tries guesses.)
 
 What is checked: the lines a branch adds (`--base`, default `origin/main`), its commit messages, its branch name, and any text you give with
-`--text-file` (a pull request title and body). `--all` checks every tracked text file instead. Images and other binary files cannot be read:
+`--text-file` (a pull request title and body; an issue or a comment, with `--no-branch`). `--all` checks every tracked text file instead. Images and other binary files cannot be read:
 they are listed, and a person must look at them (a screenshot needs its names masked). A line may end with `privacy: ok` to be skipped.
 
 Exit code 0: nothing found. 1: something found (what and where, never the private name itself). 2: the check could not run.
@@ -209,7 +209,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Check that a change carries no private names, paths or addresses (see the module text).")
     parser.add_argument("--base", default="origin/main", help="check what this branch adds to BASE (default origin/main)")
     parser.add_argument("--all", action="store_true", help="check every tracked text file instead of the branch's changes")
-    parser.add_argument("--text-file", type=Path, action="append", default=[], help="also check this text (a pull request title and body)")
+    parser.add_argument("--no-branch", action="store_true", help="check only the --text-file texts (an issue, a comment), not a branch")
+    parser.add_argument("--text-file",type=Path, action="append", default=[], help="also check this text (a pull request title and body)")
     parser.add_argument("--hash", metavar="NAME", help="print the line for tools/privacy-terms.sha256 for NAME and exit")
     arguments = parser.parse_args(argv)
     if arguments.hash is not None:
@@ -217,7 +218,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 0
     hashes, terms = load_hashes(), load_private_terms()
     try:
-        findings, binaries = run(None if arguments.all else arguments.base, arguments.all, arguments.text_file, hashes, terms)
+        findings, binaries = run(None if arguments.all or arguments.no_branch else arguments.base,arguments.all, arguments.text_file, hashes, terms)
     except (RuntimeError, OSError) as error:
         print(f"The privacy check could not run: {error}", file=sys.stderr)
         return 2
