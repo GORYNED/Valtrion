@@ -2,6 +2,10 @@
 
 Core (the `valtrion` Python package) and the Unity package `com.goryned.valtrion.unity` are versioned independently. The Unity changelog is in `integrations/unity/com.goryned.valtrion.unity/CHANGELOG.md`; `compat.json` lists compatible pairs.
 
+## Unreleased
+
+- **`unity run` reuses a passing Editor test result while nothing it depends on has changed (#154).** An Edit Mode or Play Mode run with `-runTests`, `-testResults` and `-assemblyNames` gets a key: a SHA-256 over the Editor, the OS, the Core version, the command (output paths left out, project paths made relative) and the content of the selected assemblies, every assembly they reach through `references`, precompiled files, `ProjectSettings/`, the package manifest and lock file and local packages. A `PASS` is stored under `<valtrion home>/unity-result-cache/`, shared by every working copy on the host; the same run then prints `cached: PASS of key …` and `STATUS PASS`, writes the stored result file and starts no Unity. While a key is being computed it is leased as `unity-result:<key>`, and a second run with the same key waits for its result instead of starting a second Editor. `--no-cache` runs Unity anyway, `--cache-status` prints the key, its inputs and whether it is a hit. Commands that cannot be keyed run as before. Scenes and other assets outside the assembly folders are not in the key; see `docs/cli.md`.
+
 ## 0.22.3 (2026-11-15)
 
 - **Upgrade note.** `compat.json` is unchanged: Core 0.22.3 pairs with Unity packages 0.17.x and 0.18.x like 0.22.2. Update with `pipx upgrade valtrion` (and `valtrion hosts sync` on SSH hosts): every Windows host that takes offloaded runs needs it, 0.22.2 reports those runs `BLOCKED`.
