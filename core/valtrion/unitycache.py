@@ -168,11 +168,37 @@ def _components(args: Sequence[str], project: Path, editor: str) -> dict[str, An
         # ([InitializeOnLoad], [RuntimeInitializeOnLoadMethod]) of any assembly runs during the tests.
         if item.precompiled or item.compiled or (owner is not None and owner in closure):
             files[item.label] = core.sha256_file(item.path)
+    settings_text: dict[str, str] = {}
     for label, path in scan.extra:
         files[label] = core.sha256_file(path) if path.exists() else "missing"
+        if "/ProjectSettings/" in label and path.is_file() and path.stat().st_size <= _TEXT_LIMIT:
+            # The same file with `\n` line endings: tells "Unity re-saved a CRLF checkout with LF" from a real change (`changed_inputs`).
+            settings_text[label] = core.sha256_bytes(path.read_bytes().replace(b"\r\n", b"\n"))
     return {"format": FORMAT, "coreVersion": __version__, "os": core.local_os(), "editor": editor_part,
             "testPlatform": PLATFORMS[platform.lower()], "assemblies": selected, "closure": sorted(closure),
-            "command": _command(args, project), "files": files}
+            "command": _command(args, project), "files": files, "settingsText": settings_text}
+
+
+_TEXT_LIMIT = 4 * 1024 * 1024
+_EOL_HINT = ("Unity re-saved them with LF line endings: give them LF in the checkout, for example `ProjectSettings/**/*.asset text eol=lf` "
+             "in the project's .gitattributes")
+
+
+def changed_inputs(before: Plan, after: Plan) -> str:
+    """Why `after` (the key computed again once Unity ended) differs from `before`: the inputs that changed, and a hint when the only change of
+    project settings files is their line endings."""
+    if after.key is None:
+        return after.reason or "the inputs cannot be read after the run"
+    old, new = before.components.get("files", {}), after.components.get("files", {})
+    changed = sorted(label for label in set(old) | set(new) if old.get(label) != new.get(label))
+    if not changed:
+        return "the inputs changed while Unity ran"
+    shown = ", ".join(changed[:5]) + (f" and {len(changed) - 5} more" if len(changed) > 5 else "")
+    old_text, new_text = before.components.get("settingsText", {}), after.components.get("settingsText", {})
+    eol_only = [label for label in changed if label in old_text and old_text.get(label) == new_text.get(label)]
+    if eol_only and len(eol_only) == len(changed):
+        return f"the inputs changed while Unity ran: {shown}; only their line endings changed, {_EOL_HINT}"
+    return f"the inputs changed while Unity ran: {shown}" + (f" ({', '.join(eol_only[:5])}: line endings only; {_EOL_HINT})" if eol_only else "")
 
 
 def editor_version(executable: str | Path) -> str | None:

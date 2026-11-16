@@ -76,6 +76,38 @@ class DefaultsTests(CacheTestCase):
         self.assertEqual(str(self.project / "Builds" / "editmode.xml"), argv[argv.index("-testResults") + 1])
 
 
+class ChangedInputTests(CacheTestCase):
+    def settings(self):
+        return self.project / "ProjectSettings" / "ProjectSettings.asset"
+
+    def test_a_settings_file_that_unity_re_saved_with_lf_gets_the_gitattributes_hint(self):
+        self.settings().write_bytes(b"%YAML 1.1\r\nPlayerSettings:\r\n  a: 1\r\n")
+        before = self.plan()
+        self.settings().write_bytes(b"%YAML 1.1\nPlayerSettings:\n  a: 1\n")
+        why = unitycache.changed_inputs(before, self.plan())
+        self.assertIn("<project>/ProjectSettings/ProjectSettings.asset", why)
+        self.assertIn("only their line endings changed", why)
+        self.assertIn("eol=lf", why)
+
+    def test_a_real_change_names_the_file_without_the_hint(self):
+        before = self.plan()
+        self.settings().write_bytes(b"%YAML 1.1\nPlayerSettings:\n  a: 2\n")
+        (self.project / "Assets" / "Game" / "Player.cs").write_text("class Player { int x; }\n", encoding="utf-8")
+        why = unitycache.changed_inputs(before, self.plan())
+        self.assertIn("ProjectSettings.asset", why)
+        self.assertIn("Player.cs", why)
+        self.assertNotIn("eol=lf", why)
+
+    def test_a_mixed_change_marks_the_line_ending_only_files(self):
+        self.settings().write_bytes(b"a\r\nb\r\n")
+        before = self.plan()
+        self.settings().write_bytes(b"a\nb\n")
+        (self.project / "Assets" / "Game" / "Player.cs").write_text("class Player { int y; }\n", encoding="utf-8")
+        why = unitycache.changed_inputs(before, self.plan())
+        self.assertIn("line endings only", why)
+        self.assertIn("Player.cs", why)
+
+
 class FilterOnlyTests(CacheTestCase):
     def test_a_run_without_assembly_names_is_keyed_on_every_assembly_and_its_filter(self):
         found = self.plan("-testFilter", r"\AGame\.Tests", assemblies=None)
