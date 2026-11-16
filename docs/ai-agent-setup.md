@@ -44,3 +44,13 @@ work in the folder it prints, and release them in the same task with
 ```
 
 For the full step-by-step version, including a Unity Editor smoke test, use the [detailed guide](ai-agent-setup-detailed.md). A Unity project that uses Git LFS needs no extra setup in an agent's worktree: `valtrion unity run` turns LFS pointer files into their content before Unity starts, from a cache shared by every checkout on the host (see [`unity run`](cli.md#unity-run)). The [Quick Start](quick-start.md) shows the same flow by hand.
+
+## Several agent sessions on one Unity project
+
+Valtrion lets several sessions test one Unity project at the same time, each in its own folder:
+
+- **One working copy per session.** Give every session its own checkout, for example a git worktree (`git worktree add`, or the worktree option of your agent). Two sessions never share a folder: they would edit the same files and fight over one `Library`.
+- **One Editor per working copy.** `valtrion unity run` holds a lease on the project folder (`unity-project:<hash of the folder>`) while Unity runs. A second run on the same folder waits in a bounded queue (`--lease-wait`) and ends `BLOCKED` naming the holder if the folder is still busy; an Editor opened by hand on that folder also makes the run `BLOCKED`. Runs on other working copies are not affected.
+- **The host decides how many Editors run at once.** Every run also takes one slot of the host's `unity-editor` capacity: 2 by default, or `unityEditorSlots` in `host.json` ([work-root.md](work-root.md)). A run waits in a fair queue for a free slot, or goes to another host marked for offloading ([cli.md](cli.md#offloading-editor-runs-to-another-host)). `unityEditorSlots` in a project's `checks.json` is informational and limits nothing.
+- **Each working copy has its own `Library`.** The first import of a new copy is the slow part. A Unity Accelerator named in `host.json` (`unityAccelerator`) serves imported assets to every copy on the host, and Git LFS content comes from a cache shared by every checkout.
+- **Keep reports out of the tracked tree.** Write `-testResults` and `-logFile` to a folder the project ignores, or outside the working copy, so a report never shows up as a changed file of the next selection.
