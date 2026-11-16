@@ -116,6 +116,8 @@ def plan(args: Sequence[str], project: Path, editor: str) -> Plan:
         return Plan(None, {}, result_path, f"the assembly graph cannot be used: {error}", args, project, editor)
     except (OSError, ValueError) as error:
         return Plan(None, {}, result_path, f"an input cannot be read: {error}", args, project, editor)
+    except Exception as error:  # noqa: BLE001 - whatever else goes wrong means no key (fail closed), never a run without a status
+        return Plan(None, {}, result_path, f"the key cannot be computed ({type(error).__name__}: {error})", args, project, editor)
     return Plan(core.sha256_bytes(_canonical(components)), components, result_path, None, args, project, editor)
 
 
@@ -171,47 +173,52 @@ def _components(args: Sequence[str], project: Path, editor: str) -> dict[str, An
 
 
 def editor_version(executable: str | Path) -> str | None:
-    """The version the Editor executable says it is: `CFBundleVersion` of the `.app` it lies in (macOS) or the file version resource
-    (Windows); None when it cannot be read (the path, size and modification time still identify the file)."""
+    """The version the Editor executable states: `CFBundleVersion` of the `.app` it lies in (macOS) or the file version resource
+    (Windows). None when the executable carries no version (no `.app`, no resource, Linux): the path, size and modification time still
+    identify it. A version source that exists but cannot be read raises `NoKey` (fail closed)."""
     path = Path(executable)
     for parent in path.parents:
         if parent.suffix == ".app":
             try:
                 with open(parent / "Contents" / "Info.plist", "rb") as handle:
                     info = plistlib.load(handle)
-            except (OSError, ValueError, plistlib.InvalidFileException):
-                return None
-            value = info.get("CFBundleVersion") or info.get("CFBundleShortVersionString") if isinstance(info, dict) else None
-            return str(value) if value else None
+                value = info.get("CFBundleVersion") or info.get("CFBundleShortVersionString")
+            except Exception as error:  # noqa: BLE001 - a truncated or odd plist raises expat, attribute or value errors
+                raise NoKey(f"the version of the Editor cannot be read from {parent.name}/Contents/Info.plist "
+                            f"({type(error).__name__})") from error
+            if not isinstance(value, str) or not value:
+                raise NoKey(f"{parent.name}/Contents/Info.plist states no CFBundleVersion")
+            return value
     if os.name == "nt":
-        return _windows_file_version(path)
+        try:
+            return _windows_file_version(path)
+        except Exception as error:  # noqa: BLE001 - ctypes.ArgumentError and the like
+            raise NoKey(f"the file version of the Editor cannot be read ({type(error).__name__})") from error
     return None
 
 
 def _windows_file_version(path: Path) -> str | None:  # pragma: no cover - needs Windows
-    try:
-        import ctypes
-        from ctypes import wintypes
+    """The file version resource of `path`, or None when it has none; raises when it has one that cannot be read."""
+    import ctypes
+    from ctypes import wintypes
 
-        version = ctypes.WinDLL("version")
-        version.GetFileVersionInfoSizeW.argtypes = [wintypes.LPCWSTR, ctypes.POINTER(wintypes.DWORD)]
-        version.GetFileVersionInfoW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, ctypes.c_void_p]
-        version.VerQueryValueW.argtypes = [ctypes.c_void_p, wintypes.LPCWSTR, ctypes.POINTER(ctypes.c_void_p), ctypes.POINTER(wintypes.UINT)]
-        size = version.GetFileVersionInfoSizeW(str(path), None)
-        if not size:
-            return None
-        buffer = ctypes.create_string_buffer(size)
-        if not version.GetFileVersionInfoW(str(path), 0, size, buffer):
-            return None
-        pointer, length = ctypes.c_void_p(), wintypes.UINT()
-        if not version.VerQueryValueW(buffer, "\\", ctypes.byref(pointer), ctypes.byref(length)) or length.value < 16:
-            return None
-        signature, _structure, high, low = ctypes.cast(pointer, ctypes.POINTER(wintypes.DWORD * 4)).contents
-        if signature != 0xFEEF04BD:
-            return None
-        return f"{high >> 16}.{high & 0xFFFF}.{low >> 16}.{low & 0xFFFF}"
-    except (OSError, AttributeError, ValueError):
+    version = ctypes.WinDLL("version")
+    version.GetFileVersionInfoSizeW.argtypes = [wintypes.LPCWSTR, ctypes.POINTER(wintypes.DWORD)]
+    version.GetFileVersionInfoW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, ctypes.c_void_p]
+    version.VerQueryValueW.argtypes = [ctypes.c_void_p, wintypes.LPCWSTR, ctypes.POINTER(ctypes.c_void_p), ctypes.POINTER(wintypes.UINT)]
+    size = version.GetFileVersionInfoSizeW(str(path), None)
+    if not size:
         return None
+    buffer = ctypes.create_string_buffer(size)
+    if not version.GetFileVersionInfoW(str(path), 0, size, buffer):
+        raise OSError("GetFileVersionInfoW failed")
+    pointer, length = ctypes.c_void_p(), wintypes.UINT()
+    if not version.VerQueryValueW(buffer, "\\", ctypes.byref(pointer), ctypes.byref(length)) or length.value < 16:
+        return None
+    signature, _structure, high, low = ctypes.cast(pointer, ctypes.POINTER(wintypes.DWORD * 4)).contents
+    if signature != 0xFEEF04BD:
+        raise ValueError("the version resource has no fixed file information")
+    return f"{high >> 16}.{high & 0xFFFF}.{low >> 16}.{low & 0xFFFF}"
 
 
 def _closure(graph: Graph, selected: Sequence[str]) -> set[str]:
@@ -318,15 +325,18 @@ class _Scan:
         settings = self.project / "ProjectSettings"
         if not settings.is_dir():
             raise NoKey("the project has no ProjectSettings folder")
-        for folder in (settings, self.project / "UserSettings"):  # UserSettings: per-user Editor settings, when the project has them
-            if not folder.is_dir():
+        # Not UserSettings/: it belongs to one working copy (usually not in git) and the Editor rewrites it as it runs.
+        visited_settings: set[str] = set()
+        for dirpath, dirnames, filenames in os.walk(settings, followlinks=True, onerror=_fail):
+            real = os.path.normcase(os.path.realpath(dirpath))
+            if real in visited_settings:
+                dirnames[:] = []
                 continue
-            for dirpath, dirnames, filenames in os.walk(folder, onerror=_fail):
-                # Window layouts change no test result and the Editor writes them as it closes.
-                dirnames[:] = sorted(name for name in dirnames if not (folder.name == "UserSettings" and name == "Layouts"))
-                for name in sorted(filenames):
-                    path = Path(dirpath) / name
-                    self.extra.append((f"{PROJECT_LABEL}/{Path(os.path.relpath(path, self.project)).as_posix()}", path))
+            visited_settings.add(real)
+            dirnames.sort()
+            for name in sorted(filenames):
+                path = Path(dirpath) / name
+                self.extra.append((f"{PROJECT_LABEL}/{Path(os.path.relpath(path, self.project)).as_posix()}", path))
         visited: set[str] = set()
         for number, (label, root) in enumerate(roots):
             if (root / "package.json").is_file():

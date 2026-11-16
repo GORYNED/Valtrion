@@ -561,18 +561,34 @@ def answer_from_cache(plan: unitycache.Plan, home: Path | None = None, out: Text
     try:
         manager = lease.LeaseManager(home)
         resource = lease.unity_project_resource(plan.project)
-        taken = manager.acquire(resource, os.environ.get("GDV_OWNER") or f"{_user()}@{core.local_host_id()}", session, LEASE_TTL_SEC,
-                                "result cache lookup", pid, worktree=str(plan.project), wait_sec=0)
     except (config.ConfigError, ValueError, OSError):
         return None
-    if not taken.acquired:
-        return None
-    try:
-        current = _replan(plan)
-        hit = unitycache.lookup(root, current)[0] if current.key else None
-        return answer_hit(hit, current, out) if hit is not None else None
-    finally:
-        manager.release(resource, session, pid)
+    handlers = _Handlers()
+    with handlers:  # SIGTERM, SIGHUP, Ctrl+C: the lease is given back like in `run`
+        try:
+            try:
+                taken = manager.acquire(resource, os.environ.get("GDV_OWNER") or f"{_user()}@{core.local_host_id()}", session,
+                                        LEASE_TTL_SEC, "result cache lookup", pid, worktree=str(plan.project), wait_sec=0)
+                if not taken.acquired:
+                    return None
+                current = _replan(plan)
+                hit = unitycache.lookup(root, current)[0] if current.key else None
+                return answer_hit(hit, current, out) if hit is not None else None
+            except (ValueError, OSError):
+                return None
+            except Interrupted as stop:
+                return _result(out, constants.BLOCKED, f"interrupted ({stop}); the leases were released")
+            except KeyboardInterrupt:
+                return _result(out, constants.BLOCKED, "interrupted; the leases were released")
+        finally:
+            handlers.cleaning = True
+            for _attempt in range(2):
+                try:
+                    manager.release(resource, session, pid)  # releasing a lease this run does not hold changes nothing
+                    break
+                except Interrupted:
+                    continue
+            handlers.finished.set()
 
 
 def _cache_step(cache: unitycache.Plan, hold: Callable[[str], None], manager: lease.LeaseManager, keeper: lease.LeaseKeeper, owner: str,
@@ -627,8 +643,12 @@ def _cache_step(cache: unitycache.Plan, hold: Callable[[str], None], manager: le
         _say(err, f"cache: the inputs changed while the run waited; the key is now {again.key}")
         cache = again
         hold(cache.marker or "")
-        if manager.try_acquire(cache.marker or "", owner, session, ttl_sec, purpose(cache), pid, worktree=str(project)).acquired:
+        again_taken = manager.try_acquire(cache.marker or "", owner, session, ttl_sec, purpose(cache), pid, worktree=str(project))
+        if again_taken.acquired:
             keeper.add(cache.marker or "")
+        else:
+            holder = again_taken.holder.describe() if again_taken.holder is not None else "another session"
+            _say(err, f"cache: key {cache.key} is being computed by another session ({holder}); not waiting again")
     hit, _ = unitycache.lookup(cache_root, cache)
     if hit is not None:
         return answer_hit(hit, cache, out), cache

@@ -182,12 +182,11 @@ class KeyTests(CacheTestCase):
         with mock.patch.object(unitycache, "__version__", "0.0.0"):
             self.assertNotEqual(current, self.key())
 
-    def test_user_settings_are_in_the_key_but_window_layouts_are_not(self):
+    def test_user_settings_are_not_in_the_key(self):
         before = self.key()
         write(self.project / "UserSettings" / "Layouts" / "default.dwlt", "layout")
-        self.assertEqual(before, self.key())
         write(self.project / "UserSettings" / "EditorUserSettings.asset", "settings")
-        self.assertNotEqual(before, self.key())
+        self.assertEqual(before, self.key())
 
     def test_an_output_option_without_a_value_keeps_the_next_argument(self):
         command = unitycache._command(["-logFile", "-runTests", "-testResults"], self.project)
@@ -202,8 +201,23 @@ class KeyTests(CacheTestCase):
             plistlib.dump({"CFBundleVersion": "6000.6.7f1"}, handle)
         self.assertEqual("6000.6.7f1", unitycache.editor_version(executable))
         self.assertEqual("6000.6.7f1", self.plan(editor=executable).components["editor"]["fileVersion"])
-        (app / "Contents" / "Info.plist").write_text("broken", encoding="utf-8")
-        self.assertIsNone(unitycache.editor_version(executable))
+        for broken in ("broken", '<?xml version="1.0"?><plist version="1.0"><dict><key>CFBundleVersion</key>',
+                       '<?xml version="1.0"?><plist version="1.0"><dict><key>Built</key><date>xx</date></dict></plist>',
+                       '<?xml version="1.0"?><plist version="1.0"><dict></dict></plist>'):
+            with self.subTest(broken):
+                (app / "Contents" / "Info.plist").write_text(broken, encoding="utf-8")
+                with self.assertRaises(unitycache.NoKey):
+                    unitycache.editor_version(executable)
+                found = self.plan(editor=executable)
+                self.assertIsNone(found.key)
+                self.assertIn("Info.plist", found.reason)
+        self.assertIsNone(unitycache.editor_version(self.editor))  # an executable without a version: identified by its file
+
+    def test_anything_unexpected_while_the_key_is_computed_means_no_key(self):
+        with mock.patch.object(unitycache, "editor_version", side_effect=AttributeError("odd")):
+            found = self.plan()
+        self.assertIsNone(found.key)
+        self.assertIn("AttributeError", found.reason)
 
     @unittest.skipUnless(os.name == "nt", "the file version resource is a Windows feature")
     def test_the_editor_version_is_read_from_the_file_version_resource(self):
@@ -491,6 +505,7 @@ class RunTests(CacheTestCase):
         self.assertIn("the inputs changed while the run waited", err)
         self.assertNotIn("cached:", "\n".join(lines))
         self.assertEqual(2, len(self.entries()))
+        self.assertEqual([], list(self.manager.directory.glob("*.lock")))
 
     def test_a_hit_is_answered_only_under_the_project_lease(self):
         cache = unityrun.cache_plan(self.args("--results", "pass"), None, sys.executable)
