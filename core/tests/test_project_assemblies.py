@@ -317,6 +317,50 @@ class FallbackTests(ProjectCase):
         write(self.root, "Packages/com.example.lib/Runtime/Lib.cs", "public class Lib { int b; }\n")
         self.unresolved(self.select_json("--include-worktree"), "Packages/com.example.lib/Runtime/Lib.cs", "takes com.example.lib")
 
+    def test_a_removed_folder_and_a_folder_without_a_guid(self):
+        folder = "fileFormatVersion: 2\nguid: " + "e" * 32 + "\nfolderAsset: yes\n"
+        self.base({"Assets/Core.meta": folder})
+        self.unresolved(self.changed({}, remove=["Assets/Core.meta"]), "Assets/Core.meta", "a folder was added or removed")
+        self.base({"Assets/Core.meta": "fileFormatVersion: 2\nfolderAsset: yes\n"})
+        payload = self.changed({"Assets/Core.meta": "fileFormatVersion: 2\nfolderAsset: yes\nlabels: []\n"})
+        self.unresolved(payload, "Assets/Core.meta", "its GUID changed")
+
+    def test_a_project_without_its_markers_at_head(self):
+        self.base({}, remove=["ProjectSettings/ProjectVersion.txt"])
+        payload = self.changed({"Assets/Core/Core.cs": "public class Core { int a; }\n"})
+        self.unresolved(payload, "Assets/Core/Core.cs", "has no ProjectSettings/ProjectVersion.txt")
+
+    def test_another_manifest_that_cannot_be_read(self):
+        for text in ('{"dependencies": {}, "dependencies": {}}', "{ not json", '{"dependencies": []}'):
+            with self.subTest(text=text):
+                git(self.root, "reset", "-q", "--hard", "main")
+                self.base({"Other/Packages/manifest.json": text})
+                payload = self.changed({"Assets/Core/Core.cs": "public class Core { int a; }\n"})
+                self.unresolved(payload, "Assets/Core/Core.cs", "Other/Packages/manifest.json cannot be read")
+                write(self.root, "Assets/Core/Core.cs", "public class Core { int b; }\n")
+                self.unresolved(self.select_json("--include-worktree"), "Assets/Core/Core.cs", "Other/Packages/manifest.json cannot be read")
+                git(self.root, "reset", "-q", "--hard")
+                git(self.root, "checkout", "-q", "main")
+                self.commit({}, remove=["Other/Packages/manifest.json"])
+                git(self.root, "checkout", "-q", "-B", "work")
+
+    def test_another_manifest_that_is_broken_only_in_the_working_tree(self):
+        self.base({"Other/Packages/manifest.json": json.dumps({"dependencies": {}})})
+        write(self.root, "Other/Packages/manifest.json", "{ not json")
+        write(self.root, "Assets/Core/Core.cs", "public class Core { int a; }\n")
+        self.unresolved(self.select_json("--include-worktree"), "Assets/Core/Core.cs", "cannot be read")
+
+    def test_an_absolute_or_differently_cased_file_dependency(self):
+        for value in ("file:C:/libs/x", "file:/libs/x", "file:../../packages/COM.EXAMPLE.LIB"):
+            with self.subTest(value=value):
+                git(self.root, "reset", "-q", "--hard", "main")
+                self.base({"Game/Packages/manifest.json": json.dumps({"dependencies": {"x": value}})})
+                payload = self.changed({"Assets/Core/Core.cs": "public class Core { int a; }\n"})
+                self.unresolved(payload, "Assets/Core/Core.cs", "Game/Packages/manifest.json takes x")
+                git(self.root, "checkout", "-q", "main")
+                self.commit({}, remove=["Game/Packages/manifest.json"])
+                git(self.root, "checkout", "-q", "-B", "work")
+
     def test_a_deleted_script(self):
         payload = self.changed({}, remove=["Assets/Other/Other.cs"])
         self.unresolved(payload, "Assets/Other/Other.cs", "a script was deleted or moved")

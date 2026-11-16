@@ -29,6 +29,7 @@ _DOCUMENT_STEMS = frozenset({"license", "licence", "changelog", "readme", "notic
 #: An assembly that references the test runner or NUnit holds tests, whatever its define constraints say.
 _TEST_RUNNERS = frozenset({"UnityEngine.TestRunner", "UnityEditor.TestRunner",
                            GUID_PREFIX + "27619889b8ba8c24980f49ee34dbb44a", GUID_PREFIX + "0acc523941302664db1f4e527237feb3"})
+_NUNIT = "nunit.framework.dll"
 
 
 def _is_test_runner(reference: str) -> bool:
@@ -36,7 +37,6 @@ def _is_test_runner(reference: str) -> bool:
     if reference[:len(GUID_PREFIX)].upper() == GUID_PREFIX:
         return GUID_PREFIX + reference[len(GUID_PREFIX):].lower() in _TEST_RUNNERS
     return reference in _TEST_RUNNERS
-_NUNIT = "nunit.framework.dll"
 
 
 class GraphError(Exception):

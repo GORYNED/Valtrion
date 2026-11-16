@@ -302,10 +302,12 @@ def validate_config(config: Config, validator: Validator | None = None) -> tuple
                 if missing:
                     warnings.append(f"areas[{index}].assemblies: the member's kind {member_kind!r} lacks {', '.join(missing)} of the area's kind "
                                     f"{area['kind']!r}; a narrowed path selects them at no level (the narrowed test assemblies aside)")
-            dropped = sorted(_dropped_kinds(config))
-            if dropped:
-                warnings.append(f"areas[{index}].assemblies: a narrowed path drops the kinds {', '.join(dropped)} of {config.preset['id']} "  # type: ignore[index]
-                                "(the narrowing replaces them); its other kinds, such as native or shader, stay")
+    narrowing = [index for index, area in enumerate(config.areas) if "assemblies" in area]
+    dropped = sorted(_dropped_kinds(config))
+    if config.preset is not None and narrowing and dropped:
+        warnings.append(f"areas[{narrowing[0]}].assemblies" + (f" and {len(narrowing) - 1} more area(s) with the member" if len(narrowing) > 1 else "")
+                        + f": a narrowed path drops the kinds {', '.join(dropped)} of {config.preset['id']} (the narrowing replaces them); "
+                        "its other kinds, such as native or shader, stay")
     for index, rule in enumerate(config.json_rules):
         where = f"jsonRules[{index}]"
         glob = rule["glob"]
@@ -1128,24 +1130,39 @@ def _require_unity_project(root: Path, project: str, include_worktree: bool) -> 
 def _refuse_foreign_users(root: Path, project: str, include_worktree: bool) -> None:
     """Raises `GraphError` when another project of the repository takes a package of this one through a `file:` dependency: its test
     assemblies reach this code too and are not in this project's graph."""
-    scopes = _project_scopes(project)
+    scopes = [scope.casefold() for scope in _project_scopes(project)]
     own = f"{project}/Packages/manifest.json" if project else "Packages/manifest.json"
-    arguments = ["ls-files", "-z", "--cached"] + (["--others", "--exclude-standard"] if include_worktree else [])
-    for manifest in sorted(set(_split_z(_git(root, *arguments, "--", ":(glob)**/Packages/manifest.json")))):
-        if manifest == own:
-            continue
+    if include_worktree:
+        listed = _split_z(_git(root, "ls-files", "-z", "--cached", "--others", "--exclude-standard", "--", ":(glob)**/Packages/manifest.json"))
+    else:
+        listed = _split_z(_git(root, "ls-tree", "-r", "--name-only", "-z", "HEAD"))
+    manifests = sorted({path for path in listed if path == "Packages/manifest.json" or path.endswith("/Packages/manifest.json")} - {own})
+    for manifest in manifests:
+        unknown = f"{manifest} cannot be read, so whether it takes a package of this project is unknown"
         try:
-            data = (root / manifest).read_bytes() if include_worktree else _git(root, "show", f"HEAD:{manifest}")
-            dependencies = parse_json_object(data).get("dependencies")
-        except (GitError, OSError, _NotJson):
-            continue  # not in this state, or not readable: no dependency of it can be named
-        if not isinstance(dependencies, dict):
+            if include_worktree:
+                target = root / manifest
+                if not target.exists() and not target.is_symlink():
+                    continue  # deleted in the working tree
+                data = target.read_bytes()
+            else:
+                data = _git(root, "show", f"HEAD:{manifest}")
+            document = parse_json_object(data)
+        except (GitError, OSError, _NotJson) as error:
+            raise asmgraph.GraphError(f"{unknown}: {error}") from error
+        dependencies = document.get("dependencies")
+        if dependencies is None:
             continue
+        if not isinstance(dependencies, dict):
+            raise asmgraph.GraphError(f"{unknown}: dependencies is not an object")
         folder = manifest.rpartition("/")[0]
         for name, value in sorted(dependencies.items()):
             if not isinstance(value, str) or not value.startswith("file:"):
                 continue
-            target = posixpath.normpath(posixpath.join(folder, value[5:].replace("\\", "/")))
+            location = value[5:].replace("\\", "/")
+            if location.startswith("/") or re.match(r"^[A-Za-z]:", location):
+                raise asmgraph.GraphError(f"{manifest} takes {name} from the absolute path {value[5:]!r}, which may be this project")
+            target = posixpath.normpath(posixpath.join(folder, location)).casefold()
             if any(target == scope or target.startswith(scope + "/") for scope in scopes):
                 raise asmgraph.GraphError(f"{manifest} takes {name} from {target} (file:): the tests of that project are not in this project's graph")
 
@@ -1232,7 +1249,7 @@ class _ProjectGraph:
             new = self.read(path) if self.present(path) else None
             old = self.old(path) if path in self.old_files else None
             if asmgraph.is_folder_meta(new if new is not None else old or b""):
-                if new is None or old is None or asmgraph.guid_of_meta(new) != asmgraph.guid_of_meta(old):
+                if new is None or old is None or asmgraph.guid_of_meta(new) is None or asmgraph.guid_of_meta(new) != asmgraph.guid_of_meta(old):
                     raise asmgraph.GraphError(f"{path}: a folder was added or removed, or its GUID changed; what refers to it is not in the graph")
                 return {}  # the meta file of a folder belongs to no assembly and changes no code
         raise asmgraph.GraphError(f"{path}: not C# code or an assembly file, so the assembly graph cannot judge it")
