@@ -2,9 +2,10 @@
 
 `plan` turns one Unity command into a key: a SHA-256 over the Editor (version, executable path, size and modification time), the OS,
 the Valtrion Core version, the command (with `-projectPath`, `-logFile` and `-testResults` left out, paths inside the project written as
-`<project>/...` and an argument that names an existing file replaced by the hash of its content), the selected test assemblies and,
-by content, every file of those assemblies and of the assemblies they reach through `references` (source files, `.asmdef`/`.asmref`
-and `.meta`), every precompiled file (`.dll`, `.so`, `.rsp`, ... and its `.meta`), `ProjectSettings/`, `Packages/manifest.json`,
+`<project>/...` and an argument that names an existing file replaced by the hash of its content; it must name `-buildTarget`), the
+selected test assemblies and, by content, every file of those assemblies and of the assemblies they reach through `references`, the
+code of the whole project (every `.cs`, `.asmdef` and `.asmref` and its `.meta`: everything compiles with the run), every precompiled
+file (`.dll`, `.so`, `.rsp`, ... and its `.meta`), `ProjectSettings/`, `Packages/manifest.json`,
 `Packages/packages-lock.json` and the `package.json` of every local package. The files are found in `Assets`, in the embedded packages
 of `Packages/` and in the `file:` packages of the manifest; a file belongs to the nearest folder above it that holds an `.asmdef` or an
 `.asmref`. Whatever cannot be determined gives no key, and the run is not cached (fail closed).
