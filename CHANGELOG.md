@@ -4,6 +4,7 @@ Core (the `valtrion` Python package) and the Unity package `com.goryned.valtrion
 
 ## Unreleased
 
+- **Runner placeholder `{prefixes;}` for test-name prefixes (#157).** Each selected target becomes `\A` plus the name with `.` and `-` escaped, joined with `;`, for `-testFilter "{prefixes;}"`: the Unity Test Framework reads `-testFilter` items as unanchored regular expressions, so a bare name such as `Game.Ui.Tests` also matched `Other.Game.Ui.Tests...` and its dots matched any character. A plain prefix, not a namespace boundary. `check-config` knows the placeholder, rejects look-alikes such as `{prefixes}` in a `runners` template, points to it from the `-testFilter "{assemblies;}"` warning and warns about `-assemblyNames "{prefixes;}"`. A `{prefix...}` text in a named runner, valid before, is now an error.
 - **`check-config` warns about three more Editor test patterns (#151).** All are warnings; the exit code does not change.
   - *An `editor` binding that is the whole set.* With `extends: valtrion:unity/1` the preset's `**/*.cs` area adds `bind:editor` to every C# change; when the binding names every Edit and Play Mode assembly of the project's kinds, or runs a command that cannot filter by assembly, any `.cs` outside the project's `overridesPreset` areas selects every Editor suite.
   - *Assemblies passed to `-testFilter`.* `-testFilter "{assemblies;}"` matches test names, not assemblies; the warning suggests `-assemblyNames`.
