@@ -2,6 +2,10 @@
 
 Core (the `valtrion` Python package) and the Unity package `com.goryned.valtrion.unity` are versioned independently. The Unity changelog is in `integrations/unity/com.goryned.valtrion.unity/CHANGELOG.md`; `compat.json` lists compatible pairs.
 
+## Unreleased
+
+- **`unity run --rerun-failed RESULTS.xml` runs only the tests that failed in an earlier result (#153).** It reads the NUnit 3 file, sets `-testFilter` to the exact full names of the failed tests (escaped so Unity reads them as literal names) and leaves the other Unity arguments as given. Nothing failed: nothing runs, `STATUS NOTHING_TO_RUN`, exit code 4. An unreadable or non-NUnit file, or a `-testFilter` of your own, is `BLOCKED`. Not yet run against a real Editor.
+
 ## 0.22.3 (2026-11-15)
 
 - **Upgrade note.** `compat.json` is unchanged: Core 0.22.3 pairs with Unity packages 0.17.x and 0.18.x like 0.22.2. Update with `pipx upgrade valtrion` (and `valtrion hosts sync` on SSH hosts): every Windows host that takes offloaded runs needs it, 0.22.2 reports those runs `BLOCKED`.

@@ -1624,6 +1624,9 @@ def _configure_unity(parser: argparse.ArgumentParser) -> None:
                           "or take the keyboard and the mouse (default: hiddenDesktop of host.json, on)")
     run.add_argument("--progress-window", action=argparse.BooleanOptionalAction, default=None,
                      help="Windows only: show one small window with the progress of the run; the dashboard shows it too (default: progressWindow of host.json, off)")
+    run.add_argument("--rerun-failed", metavar="RESULTS.xml", default=None,
+                     help="run only the tests that failed in this NUnit 3 result file of an earlier run: -testFilter is set to their exact names "
+                          "(not combined with a -testFilter of your own); nothing failed: nothing runs, STATUS NOTHING_TO_RUN, exit 4")
     run.add_argument(STOP_ON_STDIN_EOF, action="store_true", help=argparse.SUPPRESS)  # added by a caller that keeps this command's input open
     placement = run.add_mutually_exclusive_group()
     placement.add_argument("--offload", action="store_true",
@@ -1649,6 +1652,14 @@ def _unity(arguments: argparse.Namespace) -> int:
 
     if arguments.action == "_progress":
         return progresswindow.run_window(arguments.log, arguments.done, arguments.parent_pid, arguments.title, arguments.detail, arguments.progress)
+    if arguments.rerun_failed is not None:
+        from . import unityrerun
+
+        line, code = unityrerun.apply(arguments.raw_argv, print, lambda status, reason: unityrun._result(sys.stdout, status, reason))
+        if line is None:
+            return code
+        arguments.raw_argv = line
+        arguments.rerun_failed = None
     entry = _entry(arguments)
     try:  # the remote host applies its own host.json when no wait was given; here the wait only sizes the transport timeout
         wait = _lease_wait(arguments.lease_wait, unityrun.DEFAULT_LEASE_WAIT_SEC)
