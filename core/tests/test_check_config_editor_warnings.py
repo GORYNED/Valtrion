@@ -122,6 +122,35 @@ class EditorWarningTests(RepoCase):
         data["bindings"]["editor"] = []
         self.assertEqual([], self.matching(self.warnings(data), "bindings.editor"))
 
+    def test_an_override_area_that_takes_all_code_silences_the_binding_warning(self):
+        for glob in ("Assets/**", "**/*.cs", "Game/Assets/**/*.cs"):
+            data = copy.deepcopy(PRESET_MAP)
+            data["areas"].append({"glob": glob, "kind": "ui", "overridesPreset": True})
+            self.assertEqual([], self.matching(self.warnings(data), "bindings.editor"), glob)
+
+    def test_an_unfiltered_binding_without_kinds_of_its_own_gives_no_warning(self):
+        data = copy.deepcopy(PRESET_MAP)
+        del data["areas"], data["kinds"]
+        data["runners"]["all"] = "valtrion unity run -- -runTests -testPlatform EditMode"
+        data["bindings"]["editor"] = ["editmode:Game.Tests@all"]
+        self.assertEqual([], self.matching(self.warnings(data), "bindings.editor"))
+
+    def test_a_literal_runner_of_a_binding_is_named_under_bindings_once(self):
+        data = copy.deepcopy(PRESET_MAP)
+        data["bindings"]["editor"] = [f"editmode:Game.Tests@{FILTER_RUNNER}"]
+        data["jsonRules"] = [{"glob": "Packages/manifest.json", "root": "dependencies", "keys": [
+            {"match": "*", "kind": "ui", "byContent": {"managed": "ui", "platform": "ui",
+                                                        "assemblies": {"kind": "ui", "runner": FILTER_RUNNER}}}]}]
+        found = self.matching(self.warnings(data), "-testFilter gets the assembly list")
+        self.assertEqual(1, len(found), found)
+        self.assertTrue(found[0].startswith("bindings.editor[0]:"), found[0])
+
+    def test_a_literal_equal_to_a_named_runner_is_not_reported_twice(self):
+        data = self.without_slots()
+        data["runners"] = {"unity-editmode": FILTER_RUNNER}
+        data["kinds"]["ui"]["L2"] = [f"editmode:Ui.Tests@{FILTER_RUNNER}"]
+        self.assertEqual(1, len(self.matching(self.warnings(data), "-testFilter gets the assembly list")))
+
     def test_a_map_without_extends_gives_no_binding_warning(self):
         self.assertEqual([], self.matching(self.warnings(self.without_slots()), "bindings.editor"))
 

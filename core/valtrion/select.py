@@ -256,6 +256,8 @@ def validate_config(config: Config, validator: Validator | None = None) -> tuple
     used: set[str] = set()
     inherited: set[str] = set()  # kinds that are the preset's own, as the project did not write a kind of that name
     bound: set[str] = set()
+    # Runner texts already checked for `-testFilter "{assemblies;}"`: a literal command repeated in many entries is reported once.
+    filtered: set[str] = set(config.runners.values())
     if config.preset is None:
         if "bindings" in config.data:
             warnings.append("bindings: has no effect without extends")
@@ -270,9 +272,12 @@ def validate_config(config: Config, validator: Validator | None = None) -> tuple
             for position, raw in enumerate(entries):
                 bound.add(raw)
                 try:
-                    parse_spec(raw)
+                    spec = parse_spec(raw)
                 except ValueError as error:
                     errors.append(f"bindings.{slot}[{position}]: {error}")
+                    continue
+                if spec.type in _EDITOR_TYPES and spec.runner is not None and spec.runner not in config.runners:
+                    warnings.extend(f"bindings.{slot}[{position}]: {message}" for message in _literal_filter_problems(spec.runner, filtered))
     for reason in sorted({item for item in config.full_set_reasons if config.full_set_reasons.count(item) > 1}):
         errors.append(f"fullSetReasons: {reason!r} is listed twice")
     for index, area in enumerate(config.areas):
@@ -308,7 +313,7 @@ def validate_config(config: Config, validator: Validator | None = None) -> tuple
                 if name not in kinds:
                     errors.append(f"{where}.keys[{position}].byContent.{role}: kind {name!r} has no entry in kinds")
             if "assemblies" in by_content:
-                _validate_assemblies(config, f"{where}.keys[{position}].byContent.assemblies", by_content["assemblies"], errors, warnings)
+                _validate_assemblies(config, f"{where}.keys[{position}].byContent.assemblies", by_content["assemblies"], errors, warnings, filtered)
     for index, rule in enumerate(config.content_rules):
         where = f"contentRules[{index}]"
         if rule["kind"] not in kinds:
@@ -347,7 +352,6 @@ def validate_config(config: Config, validator: Validator | None = None) -> tuple
     for kind in sorted(set(kinds) - used - set(config.preset["kinds"] if config.preset else ())):
         warnings.append(f"kind {kind!r} is not used by any area (selected only by the widest set)")
     plan_ids: dict[str, str] = {}
-    literal_filters: set[str] = set()  # a literal runner of a binding is in every kind that uses the slot: warn about it once
     for kind in sorted(kinds):
         for level in LEVELS:
             for raw in kinds[kind].get(level, ()):
@@ -362,9 +366,8 @@ def validate_config(config: Config, validator: Validator | None = None) -> tuple
                     if name is None:  # a literal command is checked here; a named one was checked once under `runners`
                         # Only a warning: text that was a valid literal command before (`{assembly}`, `{assemblies.txt}`) must stay valid.
                         warnings.extend(f"kinds.{kind}.{level}: {message}" for message in _placeholder_problems(template or ""))
-                        if template and template not in literal_filters:
-                            literal_filters.add(template)
-                            warnings.extend(f"kinds.{kind}.{level}: {message}" for message in _filter_problems(template))
+                        if not (kind in inherited and raw in bound):  # a binding's runner was checked under `bindings`
+                            warnings.extend(f"kinds.{kind}.{level}: {message}" for message in _literal_filter_problems(template, filtered))
                         if config.runners and _NAME.match(spec.runner):
                             warnings.append(f"kinds.{kind}.{level}: {spec.runner!r} is not a key of runners ({', '.join(sorted(config.runners))}); "
                                             "it is used as a literal command")
@@ -394,30 +397,48 @@ def _whole_editor_binding_warnings(config: Config) -> list[str]:
         return []
     entries = [parse_spec(raw) for raw in config.data.get("bindings", {}).get("editor", ())]
     editor = [spec for spec in entries if spec.type in _EDITOR_TYPES]
-    if not editor:
-        return []
-    tail = ("the preset's area **/*.cs (kind 'managed-code') adds it to every C# change, so a .cs file that no project area with "
-            "\"overridesPreset\": true covers selects the whole set; cover the code folders with such areas, or bind a smaller set")
-    unfiltered = [spec.raw for spec in editor if spec.runner is not None
-                  and ASSEMBLIES_COMMA not in (config.resolve_runner(spec.runner)[0] or "")
-                  and ASSEMBLIES_SEMICOLON not in (config.resolve_runner(spec.runner)[0] or "")]
-    if unfiltered:
-        return [f"bindings.editor: {', '.join(unfiltered)} runs a command without {ASSEMBLIES_COMMA} or {ASSEMBLIES_SEMICOLON}, so it runs the "
-                f"same tests whichever assemblies are selected; {tail}"]
-    bound = {(spec.type, name) for spec in editor for name in spec.target.split(",")}
     own = set(config.kinds) - (set(config.preset["kinds"]) - set(config.preset["replaced"]))
-    named = set()
+    named = set()  # the Edit and Play Mode assemblies the project's own kinds name: what a narrower selection could pick from
     for kind in own:
         for raw in (item for entries in config.kinds[kind].values() for item in entries):
             spec = parse_spec(raw)
             if spec.type in _EDITOR_TYPES:
-                named.update((spec.type, name) for name in spec.target.split(","))
-    if len(bound) < 2 or not named or not named <= bound:
+                named.update(name for name in spec.target.split(","))
+    project_areas = config.areas[: config.preset["projectCounts"]["areas"]]
+    if not editor or not named or any(area.get("overridesPreset") and _covers_all_code(area["glob"]) for area in project_areas):
+        return []
+    tail = ("the preset's area **/*.cs (kind 'managed-code') adds it to every C# change, so a .cs file that no project area with "
+            "\"overridesPreset\": true covers selects the whole set; cover the code folders with such areas, or bind a smaller set")
+    unfiltered = []
+    for spec in editor:
+        template = config.resolve_runner(spec.runner)[0] if spec.runner is not None else None
+        if template is not None and ASSEMBLIES_COMMA not in template and ASSEMBLIES_SEMICOLON not in template:
+            unfiltered.append(spec.raw)
+    if unfiltered:
+        return [f"bindings.editor: {', '.join(unfiltered)} runs a command without {ASSEMBLIES_COMMA} or {ASSEMBLIES_SEMICOLON}, so it runs the "
+                f"same tests whichever assemblies are selected; {tail}"]
+    bound = {name for spec in editor for name in spec.target.split(",")}
+    if len(bound) < 2 or not named <= bound:
         return []
     return [f"bindings.editor: names every Edit and Play Mode assembly of the project's kinds ({len(bound)} assemblies); {tail}"]
 
 
-def _validate_assemblies(config: Config, where: str, member: Mapping[str, Any], errors: list[str], warnings: list[str]) -> None:
+def _covers_all_code(glob: str) -> bool:
+    """An area glob that takes every C# file of a project (`**`, `**/*.cs`, `Assets/**`, `Assets/**/*.cs`): the preset's `**/*.cs` no longer
+    reaches project code through it."""
+    return glob in ("**", "**/*", "**/*.cs") or re.fullmatch(r"(?:[^*?\[/]+/)*Assets/\*\*(?:/\*(?:\.cs)?)?", glob) is not None
+
+
+def _literal_filter_problems(template: str | None, seen: set[str]) -> list[str]:
+    """`_filter_problems` of a literal runner command, once per command text."""
+    if not template or template in seen:
+        return []
+    seen.add(template)
+    return _filter_problems(template)
+
+
+def _validate_assemblies(config: Config, where: str, member: Mapping[str, Any], errors: list[str], warnings: list[str],
+                         filtered: set[str] | None = None) -> None:
     """`byContent.assemblies`: the kind exists, the runners are usable and the narrowed kind does not already hold the whole set."""
     kind = member["kind"]
     if kind not in config.kinds:
@@ -439,7 +460,7 @@ def _validate_assemblies(config: Config, where: str, member: Mapping[str, Any], 
                 warnings.append(f"{where}.{field_name}: {text!r} is not a key of runners ({', '.join(sorted(config.runners))}); it is used as a literal command")
         errors.extend(f"{where}.{field_name}: {message}" for message in _placeholder_problems(template or ""))
         if name is None:  # a named runner was checked under `runners`
-            warnings.extend(f"{where}.{field_name}: {message}" for message in _filter_problems(template or ""))
+            warnings.extend(f"{where}.{field_name}: {message}" for message in _literal_filter_problems(template, set() if filtered is None else filtered))
         if ASSEMBLIES_COMMA not in (template or "") and ASSEMBLIES_SEMICOLON not in (template or ""):
             warnings.append(f"{where}.{field_name}: the runner has no {ASSEMBLIES_COMMA} or {ASSEMBLIES_SEMICOLON} placeholder, so it cannot filter by "
                             "assembly and runs the same tests whichever assemblies are selected")
