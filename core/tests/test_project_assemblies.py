@@ -408,12 +408,12 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual([], errors)
         found = [message for message in warnings if "assemblies" in message]
         self.assertEqual(1, len(found), warnings)
-        self.assertIn("drops the kinds asset-meta, assembly-config, editor-code, managed-code, tests", found[0])
+        self.assertIn("drops the kinds assembly-config, asset-meta, editor-code, managed-code, tests", found[0])
         self.assertNotIn("overridesPreset", found[0])
         data = preset_map()
         data["kinds"]["managed-code"] = {"L0": ["l0"]}
         _, warnings = self.messages(data)
-        self.assertTrue(any("drops the kinds asset-meta, assembly-config, editor-code, tests of" in message for message in warnings), warnings)
+        self.assertTrue(any("drops the kinds assembly-config, asset-meta, editor-code, tests of" in message for message in warnings), warnings)
 
     def test_a_check_of_the_area_kind_that_the_member_kind_lacks_is_a_warning(self):
         data = checks_map()
