@@ -288,10 +288,12 @@ def validate_config(config: Config, validator: Validator | None = None) -> tuple
         if "assemblies" in area:
             _validate_assemblies(config, f"areas[{index}].assemblies", area["assemblies"], errors, warnings)
             used.add(area["assemblies"]["kind"])
-            if config.preset is not None and not config.from_preset("areas", index) and not area.get("overridesPreset"):
-                warnings.append(f"areas[{index}].assemblies: the map extends {config.preset['id']} and the area has no \"overridesPreset\": true, so "
-                                "the preset's areas that match the same files still add their kinds (for example the whole Edit Mode set) and the "
-                                "narrowing selects nothing less; set \"overridesPreset\": true on the area")
+            level = area["assemblies"].get("level", ASSEMBLIES_LEVEL)
+            for current in LEVELS[1: LEVELS.index(level)]:
+                editor = [raw for raw in kinds.get(area["kind"], {}).get(current, ()) if raw.strip().lower().startswith(_EDITOR_TYPES)]
+                if editor:
+                    warnings.append(f"areas[{index}].assemblies: the area's kind {area['kind']!r} has {', '.join(editor)} at {current}, below the "
+                                    f"member's level {level}; a narrowed path selects no Editor suite at {current}")
     for index, rule in enumerate(config.json_rules):
         where = f"jsonRules[{index}]"
         glob = rule["glob"]
@@ -547,7 +549,8 @@ def classify(
             classified[path] = [equivalent[path]["kind"]]
             continue
         narrowed = _narrowed_areas(project_assemblies, path)
-        kinds = sorted({narrowed[index]["kind"] if index in narrowed else area["kind"] for index, area in matching_areas(config, compiled, path)})
+        kinds = sorted({narrowed[index]["kind"] if index in narrowed else area["kind"]
+                        for index, area in _without_replaced(config, matching_areas(config, compiled, path), narrowed)})
         if kinds:
             classified[path] = kinds
         else:
@@ -558,6 +561,13 @@ def classify(
 def _narrowed_areas(project_assemblies: Mapping[str, Sequence[Mapping[str, Any]]] | None, path: str) -> dict[int, Mapping[str, Any]]:
     """Area index -> the narrowed `assemblies` record of `path` (see `project_assembly_paths`)."""
     return {record["area"]: record for record in (project_assemblies or {}).get(path, ()) if record["status"] == "narrowed"}
+
+
+def _without_replaced(config: Config, matched: list[tuple[int, dict]], narrowed: Mapping[int, Any]) -> list[tuple[int, dict]]:
+    """The matching areas of a path, without the preset's areas of `presets.NARROWED_KINDS` when an `assemblies` member narrowed the path."""
+    if not narrowed:
+        return matched
+    return [(index, area) for index, area in matched if not (config.from_preset("areas", index) and area["kind"] in presets.NARROWED_KINDS)]
 
 
 def compile_areas(config: Config) -> list[tuple[int, re.Pattern[str], list[re.Pattern[str]], dict]]:
@@ -839,6 +849,16 @@ def _project_scopes(project: str) -> list[str]:
     return [f"{project}/Assets" if project else "Assets", f"{project}/Packages" if project else "Packages"]
 
 
+def _project_tree(root: Path, revision: str, project: str) -> list[str]:
+    return _split_z(_git(root, "ls-tree", "-r", "--name-only", "-z", revision, "--", *(":(literal)" + scope for scope in _project_scopes(project))))
+
+
+def _unity_visible(paths: Sequence[str], project: str) -> set[str]:
+    """The paths Unity imports: none below a folder whose name ends in `~` or starts with `.` (inside the project)."""
+    start = len(project) + 1 if project else 0
+    return {path for path in paths if not any(segment.endswith("~") or segment.startswith(".") for segment in path[start:].split("/")[:-1])}
+
+
 def _project_snapshot(
         root: Path, project: str, include_worktree: bool) -> tuple[set[str], Any, list[asmgraph.Assembly], list[str]]:
     """The files of the Unity project in the repository folder `project` (`""` for the root), a reader of them (None for a file deleted in the
@@ -849,8 +869,8 @@ def _project_snapshot(
     if include_worktree:
         listed = _split_z(_git(root, "ls-files", "-z", "--cached", "--others", "--exclude-standard", "--", *(":(literal)" + scope for scope in scopes)))
     else:
-        listed = _split_z(_git(root, "ls-tree", "-r", "--name-only", "-z", "HEAD", "--", *scopes))
-    files = set(listed)
+        listed = _project_tree(root, "HEAD", project)
+    files = _unity_visible(listed, project)
 
     def read(path: str) -> bytes | None:
         if not include_worktree:
@@ -1071,33 +1091,57 @@ class _ProjectGraph:
         self.error: str | None = None
         self.assemblies: list[asmgraph.Assembly] = []
         self.folders: asmgraph.ProjectFolders | None = None
+        #: The first `.cs` file of the project's `Assets` folder outside every assembly definition, or None.
+        self.loose: str | None = None
+        self.include_worktree = include_worktree
         try:
             files, read, assemblies, _ = _project_snapshot(root, project, include_worktree)
             if include_worktree:  # an assembly file deleted in the working tree is gone
                 files = files - {path for path in _assembly_files(files) if read(path) is None}
             graph = asmgraph.Graph(assemblies)
-            old = _assembly_files(_split_z(_git(root, "ls-tree", "-r", "--name-only", "-z", merge_base, "--", *_project_scopes(project))))
+            self.old_files = _unity_visible(_project_tree(root, merge_base, project), project)
+            old = _assembly_files(self.old_files)
             new = _assembly_files(files)
             if old != new:
                 moved = [f"{path} was added" for path in sorted(new - old)] + [f"{path} was removed" for path in sorted(old - new)]
                 raise asmgraph.GraphError(f"{moved[0]}" + (f" (+{len(moved) - 1} more)" if len(moved) > 1 else "")
                                           + ": files move between assemblies, which the graph of one state cannot judge")
             self.read = read
+            self.files = files
             self.assemblies = assemblies
             self.folders = asmgraph.ProjectFolders(files, graph, read)
+            self.loose = self.folders.loose_code(_project_scopes(project)[0])
         except (asmgraph.GraphError, GitError, OSError, ValueError, RecursionError) as error:
             self.error = str(error)
 
     def old(self, path: str) -> bytes:
         return _git(self.root, "show", f"{self.merge_base}:{path}")
 
+    def present(self, path: str) -> bool:
+        """Whether the path exists in the new state (`HEAD`, or the working tree)."""
+        if path not in self.files:
+            return False
+        return not self.include_worktree or self.read(path) is not None
+
     def changed(self, path: str) -> dict[str, list[str]]:
-        """Assembly name -> [path] for one changed path. Raises `GraphError` (or `GitError`) when the path cannot be judged."""
+        """Assembly name -> [path] for one changed path (empty for the `.meta` file of a folder). Raises `GraphError` (or `GitError`) when the
+        path cannot be judged."""
         folders = self.folders
         assert folders is not None
         name = path.rsplit("/", 1)[-1]
-        if name.endswith((".cs", ".cs.meta")):
+        if name.endswith(".cs"):
+            if not self.present(path):
+                raise asmgraph.GraphError(f"{path}: a script was deleted or moved; scenes, prefabs and assets that use its classes are not in the graph")
             return {folders.owner(path): [path]}
+        if name.endswith(".cs.meta"):
+            if path in self.old_files:
+                new = self.read(path) if self.present(path) else None
+                if new is None or asmgraph.guid_of_meta(new) != asmgraph.guid_of_meta(self.old(path)):
+                    raise asmgraph.GraphError(f"{path}: the GUID of a script changed or the script is gone; what refers to it by GUID is not in the graph")
+            return {folders.owner(path): [path]}
+        if name.endswith(".asmref.meta"):
+            reference = path[:-5]
+            return {folders.referenced(reference, self.read(reference) if self.present(reference) else self.old(reference)): [path]}
         if name.endswith(".asmdef"):
             new = self.read(path)
             if new is None:
@@ -1112,12 +1156,19 @@ class _ProjectGraph:
         if name.endswith(".asmref"):
             names = [folders.referenced(path, self.read(path)), folders.referenced(path, self.old(path))]
             return {item: [path] for item in dict.fromkeys(names)}
+        if name.endswith(".meta") and asmgraph.is_folder_meta(self.read(path) if self.present(path) else self.old(path)):
+            return {}  # the meta file of a folder belongs to no assembly and changes no code
         raise asmgraph.GraphError(f"{path}: not C# code or an assembly file, so the assembly graph cannot judge it")
 
 
 def _project_record(graph: _ProjectGraph, changed: Mapping[str, Sequence[str]], index: int, member: Mapping[str, Any]) -> dict[str, Any]:
     """`{area, status: "narrowed", kind, level, changed, tests}` for the changed assemblies of one path, or `{area, status: "unresolved", reason}`."""
     try:
+        if graph.loose is not None:
+            implicit = asmgraph.predefined_reach(graph.assemblies, changed)
+            if implicit is not None:
+                raise asmgraph.GraphError(f"{implicit} is referenced by Unity's predefined assemblies (autoReferenced is not false) and the project has "
+                                          f"code outside every assembly definition ({graph.loose}), whose tests the graph cannot name")
         tests = asmgraph.narrow_project(graph.assemblies, changed)
         for test in tests:
             runner = member["runner"] if test["mode"] == "editmode" else member.get("playmodeRunner")
@@ -1339,7 +1390,8 @@ class Selection:
                 add(entry["kind"], path, {"rule": f"equivalenceRules[{entry['rule']}]", "glob": entry["glob"]})
             else:
                 records = {record["area"]: record for record in self.project_assemblies.get(path, ())}
-                for index, area in matching_areas(config, areas, path):
+                narrowed = _narrowed_areas(self.project_assemblies, path)
+                for index, area in _without_replaced(config, matching_areas(config, areas, path), narrowed):
                     detail = {"rule": f"areas[{index}]", "glob": area["glob"]}
                     origin = config.from_preset("areas", index)
                     if origin:

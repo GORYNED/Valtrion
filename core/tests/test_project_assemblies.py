@@ -22,8 +22,9 @@ def meta(guid):
     return f"fileFormatVersion: 2\nguid: {guid}\n"
 
 
-def asm(name, references=(), test=False, editor=False, **extra):
-    document = {"name": name, "references": list(references), "includePlatforms": ["Editor"] if editor else []}
+def asm(name, references=(), test=False, editor=False, auto=False, **extra):
+    """An assembly definition; not referenced by the predefined assemblies unless `auto` (the fixture has code outside every definition)."""
+    document = {"name": name, "references": list(references), "includePlatforms": ["Editor"] if editor else [], "autoReferenced": auto}
     if test:
         document["defineConstraints"] = ["UNITY_INCLUDE_TESTS"]
     document.update(extra)
@@ -46,10 +47,18 @@ def checks_map(member=None, areas=None):
     }
 
 
+def preset_map():
+    data = checks_map()
+    data.update(extends="valtrion:unity/1", bindings={"editor": [WHOLE_EDIT], "player": [], "device": []})
+    return data
+
+
 PROJECT = {
     "Assets/Core/Game.Core.asmdef": asm("Game.Core"),
     "Assets/Core/Core.cs": "public class Core { }\n",
+    "Assets/Core/Core.cs.meta": meta("c" * 32),
     "Assets/Shared/Game.Core.asmref": json.dumps({"reference": "Game.Core"}),
+    "Assets/Shared/Game.Core.asmref.meta": meta("d" * 32),
     "Assets/Shared/Part.cs": "public class Part { }\n",
     "Assets/Ui/Game.Ui.asmdef": asm("Game.Ui", ["Game.Core"]),
     "Assets/Ui/Ui.cs": "public class Ui { }\n",
@@ -90,6 +99,12 @@ class ProjectCase(unittest.TestCase):
             os.remove(self.root / path)
         git(self.root, "add", "-A")
         git(self.root, "commit", "-q", "-m", "change")
+
+    def base(self, files, remove=()):
+        """Change the base commit (`main`) and start `work` again from it."""
+        git(self.root, "checkout", "-q", "main")
+        self.commit(files, remove)
+        git(self.root, "checkout", "-q", "-B", "work")
 
     def write_checks(self, data):
         self.checks_path.write_text(json.dumps(data), encoding="utf-8")
@@ -141,12 +156,21 @@ class NarrowingTests(ProjectCase):
         payload = self.changed({"Assets/Tests/Ui/UiTests.cs": "public class UiTests { int a; }\n"})
         self.assertEqual(["editmode:Game.Ui.Tests"], self.suites(payload))
 
-    def test_an_added_and_a_deleted_file_with_its_meta_file_are_narrowed(self):
-        payload = self.changed({"Assets/Other/New.cs": "public class New { }\n", "Assets/Other/New.cs.meta": meta("a" * 32)},
-                               remove=["Assets/Other/Other.cs"])
+    def test_an_added_file_with_its_meta_file_is_narrowed(self):
+        payload = self.changed({"Assets/Other/New.cs": "public class New { }\n", "Assets/Other/New.cs.meta": meta("a" * 32)})
         self.assertEqual(["editmode:Game.Other.Tests"], self.suites(payload))
-        self.assertEqual({"Assets/Other/New.cs", "Assets/Other/New.cs.meta", "Assets/Other/Other.cs"},
+        self.assertEqual({"Assets/Other/New.cs", "Assets/Other/New.cs.meta"},
                          {path for path, records in payload["projectAssemblies"].items() if records[0]["status"] == "narrowed"})
+
+    def test_the_meta_file_of_a_folder_changes_no_assembly(self):
+        payload = self.changed({"Assets/Core.meta": "fileFormatVersion: 2\nguid: " + "e" * 32 + "\nfolderAsset: yes\n"})
+        record = self.record(payload, "Assets/Core.meta")
+        self.assertEqual(("narrowed", [], []), (record["status"], record["changed"], record["tests"]))
+
+    def test_the_meta_file_of_an_asmref_counts_for_the_assembly_it_names(self):
+        payload = self.changed({"Assets/Shared/Game.Core.asmref.meta": meta("d" * 32) + "labels: []\n"})
+        self.assertEqual([{"assembly": "Game.Core", "files": ["Assets/Shared/Game.Core.asmref.meta"]}],
+                         self.record(payload, "Assets/Shared/Game.Core.asmref.meta")["changed"])
 
     def test_the_whole_set_stays_at_the_level_the_narrowed_kind_keeps_it(self):
         self.commit({"Assets/Other/Other.cs": "public class Other { int a; }\n"})
@@ -159,6 +183,11 @@ class NarrowingTests(ProjectCase):
         payload = self.changed({"Assets/Core/Core.cs": "public class Core { int a; }\n"})
         self.assertEqual(["extra", "narrowed"], self.kinds(payload))
         self.assertIn("l0:extra", [item["key"] for item in payload["l0"]])
+
+    def test_a_definition_in_a_folder_unity_does_not_import_is_not_in_the_graph(self):
+        self.base({"Assets/Samples~/Game.Core.asmdef": asm("Game.Core"), "Assets/.hidden/Game.Core.asmdef": asm("Game.Core")})
+        payload = self.changed({"Assets/Core/Core.cs": "public class Core { int a; }\n"})
+        self.assertEqual("narrowed", self.record(payload, "Assets/Core/Core.cs")["status"])
 
     def test_a_working_tree_change_counts_with_include_worktree(self):
         write(self.root, "Assets/Other/Other.cs", "public class Other { int a; }\n")
@@ -243,6 +272,27 @@ class FallbackTests(ProjectCase):
         payload = self.changed({"Assets/Ui/Game.Ui.asmdef": asm("Game.Core"), "Assets/Core/Core.cs": "public class Core { int a; }\n"})
         self.unresolved(payload, "Assets/Core/Core.cs", "the assembly 'Game.Core' is defined in")
 
+    def test_a_deleted_script(self):
+        payload = self.changed({}, remove=["Assets/Other/Other.cs"])
+        self.unresolved(payload, "Assets/Other/Other.cs", "a script was deleted or moved")
+
+    def test_a_script_whose_guid_changed(self):
+        payload = self.changed({"Assets/Core/Core.cs.meta": meta("f" * 32)})
+        self.unresolved(payload, "Assets/Core/Core.cs.meta", "the GUID of a script changed")
+
+    def test_an_auto_referenced_assembly_while_the_project_has_code_outside_every_definition(self):
+        self.base({"Assets/Other/Game.Other.asmdef": asm("Game.Other", auto=True), "Assets/Editor/Tests/EditorTests.cs": "public class EditorTests { }\n"})
+        payload = self.changed({"Assets/Other/Other.cs": "public class Other { int a; }\n"})
+        self.unresolved(payload, "Assets/Other/Other.cs", "Game.Other is referenced by Unity's predefined assemblies")
+        git(self.root, "reset", "-q", "--hard", "main")  # a change that reaches no auto referenced assembly still narrows
+        payload = self.changed({"Assets/Core/Core.cs": "public class Core { int a; }\n"})
+        self.assertEqual("narrowed", self.record(payload, "Assets/Core/Core.cs")["status"])
+
+    def test_an_auto_referenced_assembly_narrows_when_every_script_has_a_definition(self):
+        self.base({"Assets/Other/Game.Other.asmdef": asm("Game.Other", auto=True)}, remove=["Assets/Loose/Loose.cs"])
+        payload = self.changed({"Assets/Other/Other.cs": "public class Other { int a; }\n"})
+        self.assertEqual(["editmode:Game.Other.Tests"], self.suites(payload))
+
     def test_too_many_assembly_definitions(self):
         original = select.MAX_PROJECT_ASSEMBLIES
         select.MAX_PROJECT_ASSEMBLIES = 3
@@ -308,17 +358,14 @@ class ConfigTests(unittest.TestCase):
         _, warnings = self.messages(checks_map({"kind": "code", "runner": "edit"}))
         self.assertTrue(any("areas[0].assemblies.kind" in message and "add nothing" in message for message in warnings), warnings)
 
-    def preset_map(self, **area):
-        data = checks_map()
-        data.update(extends="valtrion:unity/1", bindings={"editor": [WHOLE_EDIT], "player": [], "device": []})
-        data["areas"][0].update(area)
-        return data
+    def test_a_map_with_extends_needs_no_overrides_preset(self):
+        errors, warnings = self.messages(preset_map())
+        self.assertEqual([], errors)
+        self.assertEqual([], [message for message in warnings if "assemblies" in message], warnings)
 
-    def test_a_map_with_extends_warns_without_overrides_preset(self):
-        _, warnings = self.messages(self.preset_map())
-        self.assertTrue(any("areas[0].assemblies" in message and "overridesPreset" in message for message in warnings), warnings)
-        _, warnings = self.messages(self.preset_map(overridesPreset=True))
-        self.assertEqual([], [message for message in warnings if "overridesPreset" in message])
+    def test_editor_suites_of_the_area_kind_below_the_member_level_are_a_warning(self):
+        _, warnings = self.messages(checks_map({"kind": "narrowed", "runner": "edit", "playmodeRunner": "play", "level": "L3"}))
+        self.assertTrue(any("areas[0].assemblies" in message and "below the member's level L3" in message for message in warnings), warnings)
 
     def test_the_schema_knows_the_member(self):
         code, out, _ = run("validate", str(CONTRACTS / "fixtures" / "valid" / "checks-area-assemblies.json"))
@@ -328,15 +375,22 @@ class ConfigTests(unittest.TestCase):
 
 
 class PresetNarrowingTests(ProjectCase):
-    data = None
+    data = preset_map()
 
-    def test_with_overrides_preset_the_preset_areas_do_not_cancel_the_narrowing(self):
-        data = checks_map()
-        data.update(extends="valtrion:unity/1", bindings={"editor": [WHOLE_EDIT], "player": [], "device": []})
-        data["areas"][0]["overridesPreset"] = True
-        self.write_checks(data)
+    def test_a_narrowed_path_drops_the_preset_kinds_the_narrowing_replaces(self):
         payload = self.changed({"Assets/Other/Other.cs": "public class Other { int a; }\n"})
+        self.assertEqual(["narrowed"], self.kinds(payload))
         self.assertEqual(["editmode:Game.Other.Tests"], self.suites(payload))
+
+    def test_a_narrowed_path_keeps_the_heavy_preset_kinds(self):
+        self.base({"Assets/Plugins/Android/Foo/Game.Foo.asmdef": asm("Game.Foo"), "Assets/Plugins/Android/Foo/Foo.cs": "public class Foo { }\n"})
+        payload = self.changed({"Assets/Plugins/Android/Foo/Foo.cs": "public class Foo { int a; }\n"})
+        self.assertEqual("narrowed", self.record(payload, "Assets/Plugins/Android/Foo/Foo.cs")["status"])
+        self.assertEqual(["narrowed", "native"], self.kinds(payload))
+
+    def test_an_unresolved_path_keeps_every_preset_kind(self):
+        payload = self.changed({"Assets/Loose/Loose.cs": "public class Loose { int a; }\n"})
+        self.assertEqual(["code", "managed-code"], self.kinds(payload))
 
 
 class GraphTests(unittest.TestCase):
@@ -365,6 +419,23 @@ class GraphTests(unittest.TestCase):
         for path in ("Assets/l.cs", "Assets/X/x.cs"):
             with self.assertRaises(asmgraph.GraphError, msg=path):
                 folders.owner(path)
+        self.assertEqual("Assets/l.cs", folders.loose_code("Assets"))
+        self.assertIsNone(asmgraph.ProjectFolders(tree[:-1], graph, files.get).loose_code("Assets"))
+
+    def test_two_assembly_files_in_one_folder_are_an_error(self):
+        graph = asmgraph.Graph([asmgraph.parse_definition("Assets/A/A.asmdef", asm("A").encode(), None)])
+        for other in ("Assets/A/B.asmdef", "Assets/A/C.asmref"):
+            with self.assertRaises(asmgraph.GraphError, msg=other):
+                asmgraph.ProjectFolders(["Assets/A/A.asmdef", other], graph, lambda path: None)
+
+    def test_a_reference_to_the_test_runner_or_nunit_makes_a_test_assembly(self):
+        for document in (asm("T", ["UnityEngine.TestRunner"]), asm("T", ["UnityEditor.TestRunner"]), asm("T", precompiledReferences=["nunit.framework.dll"])):
+            self.assertTrue(asmgraph.parse_definition("T.asmdef", document.encode(), None).test, document)
+        self.assertFalse(asmgraph.parse_definition("T.asmdef", asm("T", ["UnityEngine.UI"]).encode(), None).test)
+
+    def test_an_assembly_is_auto_referenced_unless_it_says_otherwise(self):
+        self.assertTrue(asmgraph.parse_definition("A.asmdef", json.dumps({"name": "A"}).encode(), None).auto_referenced)
+        self.assertFalse(asmgraph.parse_definition("A.asmdef", asm("A").encode(), None).auto_referenced)
 
 
 if __name__ == "__main__":

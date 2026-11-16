@@ -26,6 +26,9 @@ _DOCUMENT_SUFFIXES = (".md", ".markdown", ".txt")
 #: Files that reach assemblies other than the one whose folder they sit in (precompiled references, `csc.rsp`).
 _PRECOMPILED_SUFFIXES = (".dll", ".so", ".a", ".bundle", ".dylib", ".jar", ".aar", ".rsp")
 _DOCUMENT_STEMS = frozenset({"license", "licence", "changelog", "readme", "notice", "authors"})
+#: An assembly that references the test runner or NUnit holds tests, whatever its define constraints say.
+_TEST_RUNNERS = frozenset({"UnityEngine.TestRunner", "UnityEditor.TestRunner"})
+_NUNIT = "nunit.framework.dll"
 
 
 class GraphError(Exception):
@@ -43,6 +46,8 @@ class Assembly:
     version_defines: tuple[str, ...]
     test: bool
     editor_only: bool
+    #: Unity's predefined assemblies (Assembly-CSharp and the like) reference it without naming it (`autoReferenced` is not false).
+    auto_referenced: bool = True
 
     @property
     def mode(self) -> str:
@@ -85,11 +90,13 @@ def parse_definition(path: str, data: bytes, guid: str | None) -> Assembly:
     versions = document.get("versionDefines") or []
     if not isinstance(versions, list):
         raise GraphError(f"{path}: versionDefines is not a list")
+    references = _strings(document, "references", path)
+    test = ("UNITY_INCLUDE_TESTS" in _strings(document, "defineConstraints", path) or "TestAssemblies" in _strings(document, "optionalUnityReferences", path)
+            or any(item in _TEST_RUNNERS for item in references) or _NUNIT in _strings(document, "precompiledReferences", path))
     return Assembly(
-        name=name, path=path, guid=guid, references=tuple(_strings(document, "references", path)),
+        name=name, path=path, guid=guid, references=tuple(references),
         version_defines=tuple(sorted({item["name"] for item in versions if isinstance(item, dict) and isinstance(item.get("name"), str)})),
-        test="UNITY_INCLUDE_TESTS" in _strings(document, "defineConstraints", path) or "TestAssemblies" in _strings(document, "optionalUnityReferences", path),
-        editor_only=document.get("includePlatforms") == ["Editor"])
+        test=test, editor_only=document.get("includePlatforms") == ["Editor"], auto_referenced=document.get("autoReferenced", True) is not False)
 
 
 class Graph:
@@ -286,13 +293,31 @@ class ProjectFolders:
         self.read = read
         self.definitions: dict[str, str] = {}
         self.references: dict[str, str] = {}
+        self.code: list[str] = []
         for path in sorted(tree):
             folder, _, name = path.rpartition("/")
-            if name.endswith(".asmdef"):
-                self.definitions.setdefault(folder, path)
-            elif name.endswith(".asmref"):
-                self.references.setdefault(folder, path)
+            if name.endswith((".asmdef", ".asmref")):
+                other = self.definitions.get(folder) or self.references.get(folder)
+                if other is not None:
+                    raise GraphError(f"{folder or '.'}: has more than one assembly definition or reference ({other} and {path})")
+                (self.definitions if name.endswith(".asmdef") else self.references)[folder] = path
+            elif name.endswith(".cs"):
+                self.code.append(path)
         self.by_path = {assembly.path: assembly for assembly in graph.assemblies}
+
+    def loose_code(self, assets: str) -> str | None:
+        """The first `.cs` file under the folder `assets` that no `.asmdef` or `.asmref` takes: it compiles into one of Unity's predefined
+        assemblies (Assembly-CSharp, Assembly-CSharp-Editor, the `firstpass` ones), which may hold tests. None when there is none."""
+        owned = set(self.definitions) | set(self.references)
+        for path in self.code:
+            if not path.startswith(assets + "/"):
+                continue
+            folder = path.rpartition("/")[0]
+            while folder not in owned and folder:
+                folder = folder.rpartition("/")[0]
+            if folder not in owned:
+                return path
+        return None
 
     def referenced(self, path: str, data: bytes | None) -> str:
         """The assembly of the project that an `.asmref` names. Raises `GraphError` for one that names nothing or an assembly outside the project."""
@@ -326,6 +351,13 @@ class ProjectFolders:
 def narrow_project(project: Sequence[Assembly], changed: Mapping[str, Sequence[str]]) -> list[dict[str, Any]]:
     """The test assemblies of the project that reach a changed assembly of the project (a changed test assembly reaches itself); see `narrow`."""
     return narrow(project, {}, "", changed)
+
+
+def predefined_reach(project: Sequence[Assembly], changed: Mapping[str, Sequence[str]]) -> str | None:
+    """The first assembly (by name) that is a changed one or reaches one and that Unity's predefined assemblies reference implicitly
+    (`autoReferenced`), or None: through it a change reaches the code outside every assembly definition, and the tests in it."""
+    graph = Graph(project)
+    return next((name for name in sorted(graph.dependents(changed)) if graph.by_name[name].auto_referenced), None)
 
 
 def narrow(

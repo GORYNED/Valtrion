@@ -98,6 +98,10 @@ def _unity_1() -> dict[str, Any]:
     }
 
 
+#: The preset kinds that stand for "some managed code or its assembly changed": for a path whose test assemblies an area's `assemblies` member
+#: named (`select`), the narrowing replaces them; the preset's heavier kinds (native, shader, platform settings, linking) stay.
+NARROWED_KINDS = frozenset({"managed-code", "editor-code", "tests", "assembly-config", "asset-meta"})
+
 #: id -> builder (a fresh copy each time, so a caller can never change a preset).
 PRESETS = {"valtrion:unity/1": _unity_1}
 
