@@ -2,6 +2,13 @@
 
 Core (the `valtrion` Python package) and the Unity package `com.goryned.valtrion.unity` are versioned independently. The Unity changelog is in `integrations/unity/com.goryned.valtrion.unity/CHANGELOG.md`; `compat.json` lists compatible pairs.
 
+## Unreleased
+
+- **`check-config` warns about three more Editor test patterns (#151).** All are warnings; the exit code does not change.
+  - *An `editor` binding that is the whole set.* With `extends: valtrion:unity/1` the preset's `**/*.cs` area adds `bind:editor` to every C# change; when the binding names every Edit and Play Mode assembly of the project's kinds, or runs a command that cannot filter by assembly, any `.cs` outside the project's `overridesPreset` areas selects every Editor suite.
+  - *Assemblies passed to `-testFilter`.* `-testFilter "{assemblies;}"` matches test names, not assemblies; the warning suggests `-assemblyNames`.
+  - *`unityEditorSlots` in `checks.json`.* It is informational (`select --json` prints it); the number of Editors at once is `unityEditorSlots` of `host.json`. The examples no longer set it.
+
 ## 0.22.3 (2026-11-15)
 
 - **Upgrade note.** `compat.json` is unchanged: Core 0.22.3 pairs with Unity packages 0.17.x and 0.18.x like 0.22.2. Update with `pipx upgrade valtrion` (and `valtrion hosts sync` on SSH hosts): every Windows host that takes offloaded runs needs it, 0.22.2 reports those runs `BLOCKED`.

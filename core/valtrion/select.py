@@ -334,15 +334,20 @@ def validate_config(config: Config, validator: Validator | None = None) -> tuple
         if not _NAME.match(name):
             errors.append(f"runners: invalid runner name {name!r} (letters, digits, '.', '_' and '-', starting with a letter or digit)")
         errors.extend(f"runners.{name}: {message}" for message in _placeholder_problems(template))
+        warnings.extend(f"runners.{name}: {message}" for message in _filter_problems(template))
         if _NAME.match(name) and shutil.which(name):
             warnings.append(f"runners.{name}: the name is also a program on PATH; an entry whose text after '@' is exactly {name!r} "
                             "used to be that command and now uses this runner")
     if not config.full_set_reasons and any(kinds[kind].get(level) for kind in kinds for level in LEVELS[LEVELS.index(DEFAULT_LEVEL) + 1:]):
         warnings.append(f"fullSetReasons: not declared, so `select --level {LEVELS[-1]}` and `--level {LEVELS[LEVELS.index(DEFAULT_LEVEL) + 1]}` need no reason; "
                         "list the reasons a full set may be asked for (for example release, data-migration, unity-version)")
+    if "unityEditorSlots" in config.data:
+        warnings.append("unityEditorSlots: informational only (`select` prints it); how many Unity Editors run at once is the "
+                        "`unityEditorSlots` of each host's host.json (default 2), not a value of the check map")
     for kind in sorted(set(kinds) - used - set(config.preset["kinds"] if config.preset else ())):
         warnings.append(f"kind {kind!r} is not used by any area (selected only by the widest set)")
     plan_ids: dict[str, str] = {}
+    literal_filters: set[str] = set()  # a literal runner of a binding is in every kind that uses the slot: warn about it once
     for kind in sorted(kinds):
         for level in LEVELS:
             for raw in kinds[kind].get(level, ()):
@@ -357,6 +362,9 @@ def validate_config(config: Config, validator: Validator | None = None) -> tuple
                     if name is None:  # a literal command is checked here; a named one was checked once under `runners`
                         # Only a warning: text that was a valid literal command before (`{assembly}`, `{assemblies.txt}`) must stay valid.
                         warnings.extend(f"kinds.{kind}.{level}: {message}" for message in _placeholder_problems(template or ""))
+                        if template and template not in literal_filters:
+                            literal_filters.add(template)
+                            warnings.extend(f"kinds.{kind}.{level}: {message}" for message in _filter_problems(template))
                         if config.runners and _NAME.match(spec.runner):
                             warnings.append(f"kinds.{kind}.{level}: {spec.runner!r} is not a key of runners ({', '.join(sorted(config.runners))}); "
                                             "it is used as a literal command")
@@ -374,7 +382,39 @@ def validate_config(config: Config, validator: Validator | None = None) -> tuple
                     errors.append(f"kinds.{kind}.{level}: plan id {plan.plan_id!r} is used by {previous!r} and {spec.target!r}")
     if not errors:  # the helpers read kinds and keys the checks above have just proven valid
         warnings.extend(_over_selection_warnings(config))
+        warnings.extend(_whole_editor_binding_warnings(config))
     return errors, warnings
+
+
+def _whole_editor_binding_warnings(config: Config) -> list[str]:
+    """The preset's `**/*.cs` area adds `bind:editor` to every C# change. When that binding is the whole set (it names every Edit and Play
+    Mode assembly of the project's own kinds, or runs a command that cannot filter by assembly), a `.cs` file outside the project's areas
+    selects every Editor suite."""
+    if config.preset is None or "managed-code" not in set(config.preset["kinds"]) - set(config.preset["replaced"]):
+        return []
+    entries = [parse_spec(raw) for raw in config.data.get("bindings", {}).get("editor", ())]
+    editor = [spec for spec in entries if spec.type in _EDITOR_TYPES]
+    if not editor:
+        return []
+    tail = ("the preset's area **/*.cs (kind 'managed-code') adds it to every C# change, so a .cs file that no project area with "
+            "\"overridesPreset\": true covers selects the whole set; cover the code folders with such areas, or bind a smaller set")
+    unfiltered = [spec.raw for spec in editor if spec.runner is not None
+                  and ASSEMBLIES_COMMA not in (config.resolve_runner(spec.runner)[0] or "")
+                  and ASSEMBLIES_SEMICOLON not in (config.resolve_runner(spec.runner)[0] or "")]
+    if unfiltered:
+        return [f"bindings.editor: {', '.join(unfiltered)} runs a command without {ASSEMBLIES_COMMA} or {ASSEMBLIES_SEMICOLON}, so it runs the "
+                f"same tests whichever assemblies are selected; {tail}"]
+    bound = {(spec.type, name) for spec in editor for name in spec.target.split(",")}
+    own = set(config.kinds) - (set(config.preset["kinds"]) - set(config.preset["replaced"]))
+    named = set()
+    for kind in own:
+        for raw in (item for entries in config.kinds[kind].values() for item in entries):
+            spec = parse_spec(raw)
+            if spec.type in _EDITOR_TYPES:
+                named.update((spec.type, name) for name in spec.target.split(","))
+    if len(bound) < 2 or not named or not named <= bound:
+        return []
+    return [f"bindings.editor: names every Edit and Play Mode assembly of the project's kinds ({len(bound)} assemblies); {tail}"]
 
 
 def _validate_assemblies(config: Config, where: str, member: Mapping[str, Any], errors: list[str], warnings: list[str]) -> None:
@@ -398,6 +438,8 @@ def _validate_assemblies(config: Config, where: str, member: Mapping[str, Any], 
             if config.runners and _NAME.match(text):
                 warnings.append(f"{where}.{field_name}: {text!r} is not a key of runners ({', '.join(sorted(config.runners))}); it is used as a literal command")
         errors.extend(f"{where}.{field_name}: {message}" for message in _placeholder_problems(template or ""))
+        if name is None:  # a named runner was checked under `runners`
+            warnings.extend(f"{where}.{field_name}: {message}" for message in _filter_problems(template or ""))
         if ASSEMBLIES_COMMA not in (template or "") and ASSEMBLIES_SEMICOLON not in (template or ""):
             warnings.append(f"{where}.{field_name}: the runner has no {ASSEMBLIES_COMMA} or {ASSEMBLIES_SEMICOLON} placeholder, so it cannot filter by "
                             "assembly and runs the same tests whichever assemblies are selected")
@@ -476,9 +518,20 @@ def _over_selection_warnings(config: Config) -> list[str]:
 
 #: Placeholders of a runner template: the united, sorted assembly list joined with `,` or with `;` (Unity's separator for `-assemblyNames` and
 #: `-testFilter`). Expansion does no quoting: a `;` ends a command in POSIX sh and PowerShell, so a template that is run through a shell
-#: must quote the placeholder, for example `-testFilter "{assemblies;}"`.
+#: must quote the placeholder, for example `-assemblyNames "{assemblies;}"`.
 ASSEMBLIES_COMMA = "{assemblies}"
 ASSEMBLIES_SEMICOLON = "{assemblies;}"
+#: `-testFilter` given the assembly list: Unity matches it against test names, not assemblies (`-assemblyNames` is the option for them).
+_TEST_FILTER_ASSEMBLIES = re.compile(r"(?<![\w-])-testFilter(?:\s+|=)[\"']?\{assemblies;?\}", re.IGNORECASE)
+
+
+def _filter_problems(template: str) -> list[str]:
+    """A runner that passes the assembly list to `-testFilter`: the names match test names (and any test whose name starts the same way),
+    not assemblies."""
+    if not _TEST_FILTER_ASSEMBLIES.search(template):
+        return []
+    return ["-testFilter gets the assembly list, but Unity matches -testFilter against test names, not assemblies; pass the list with "
+            "-assemblyNames instead"]
 _PLACEHOLDER = re.compile(r"(?<!\$)\{(?:assemblies[^{}\s]*|assembly)\}")  # look-alikes of ours only; a shell's ${assemblyDir}, ${HOME} or {a,b} is the command's own
 
 
