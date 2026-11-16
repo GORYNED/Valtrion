@@ -23,12 +23,14 @@ import json
 import os
 import plistlib
 import re
+import subprocess
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Sequence
 from xml.parsers import expat
 
-from . import __version__, core, resultcache
+from . import __version__, core, nowindow, resultcache
 from .asmgraph import GUID_PREFIX, Graph, GraphError, guid_of_meta, parse_definition
 from .providers.unity import support
 
@@ -179,6 +181,55 @@ def _components(args: Sequence[str], project: Path, editor: str) -> dict[str, An
             "command": _command(args, project), "files": files, "settingsText": settings_text}
 
 
+LIBRARIES = "libraries"
+FIRST_RUN_HINT = ("this was the first run Valtrion saw with this working copy's Library (new or rebuilt), when Unity often re-saves "
+                  "assets and settings; the next identical run usually stores")
+
+
+def library_identity(project: Path) -> str | None:
+    """Which `Library` folder the project has: its file id and creation time (a rebuilt Library is a new folder); None without one."""
+    try:
+        info = os.stat(Path(project) / "Library")
+    except OSError:
+        return None
+    born = getattr(info, "st_birthtime", None) or (info.st_ctime if os.name == "nt" else None)
+    return f"{info.st_dev}:{info.st_ino}:{born}"
+
+
+def _library_record(root: Path, project: Path) -> Path:
+    name = core.sha256_bytes(os.path.normcase(os.path.realpath(project)).encode("utf-8", "surrogateescape"))
+    return Path(root) / LIBRARIES / f"{name}.txt"
+
+
+def first_with_library(root: Path, project: Path) -> bool:
+    """True when no run of this project was seen with its current Library: none recorded, or the Library is another folder now."""
+    current = library_identity(project)
+    try:
+        return _library_record(root, project).read_text(encoding="utf-8").strip() != (current or "")
+    except OSError:
+        return True
+
+
+def remember_library(root: Path, project: Path) -> None:
+    """Record the project's current Library after a run (best effort: a failure only makes the next run look like a first one)."""
+    current = library_identity(project)
+    if current is None:
+        return
+    record = _library_record(root, project)
+    try:
+        record.parent.mkdir(parents=True, exist_ok=True)
+        record.write_text(current + "\n", encoding="utf-8")
+        stale = time.time() - LIBRARY_KEEP_DAYS * 86400  # records of working copies that are gone
+        for other in record.parent.glob("*.txt"):
+            if other != record and other.stat().st_mtime < stale:
+                other.unlink()
+    except OSError:
+        pass
+
+
+LIBRARY_KEEP_DAYS = 30
+
+
 _TEXT_LIMIT = 4 * 1024 * 1024
 _EOL_HINT = ("Unity re-saved them with LF line endings: give them LF in the checkout, for example `ProjectSettings/**/*.asset text eol=lf` "
              "in the project's .gitattributes")
@@ -306,6 +357,42 @@ def _inside(path: Path, project_real: str) -> str | None:
     if relative.startswith("..") or os.path.isabs(relative):
         return None
     return f"{PROJECT_LABEL}/{Path(relative).as_posix()}"
+
+
+_GIT_TIMEOUT_SEC = 10
+
+
+def git_ignored_labels(project: Path, labels: Sequence[str]) -> set[str]:
+    """Of the `<project>/...` labels, the ones git ignores and does not track (`git check-ignore`, which also answers for a file that is
+    gone). Any failure answers none."""
+    paths = {label[len(PROJECT_LABEL) + 1:]: label for label in labels if label.startswith(PROJECT_LABEL + "/")}
+    if not paths:
+        return set()
+    environment = {name: value for name, value in os.environ.items() if not name.startswith("GIT_")}
+    try:
+        completed = subprocess.run(["git", "check-ignore", "-z", "--stdin"], cwd=project, capture_output=True, timeout=_GIT_TIMEOUT_SEC,
+                                   check=False, env=environment, input="\0".join(paths).encode("utf-8", "surrogateescape") + b"\0",
+                                   **nowindow.OPTIONS)
+    except (OSError, subprocess.SubprocessError):
+        return set()
+    if completed.returncode not in (0, 1):  # 1: none of them is ignored; anything else: git cannot say
+        return set()
+    return {paths[item] for item in completed.stdout.decode("utf-8", "surrogateescape").split("\0") if item in paths}
+
+
+def only_build_output(before: Plan, after: Plan) -> list[str]:
+    """The inputs that changed while Unity ran when every one of them is a file git ignores that is not code (a generated `link.xml` written
+    and removed by a build step): such a run is stored under the key of the state it started from. Empty when anything else changed."""
+    if after.key is None or before.project is None:
+        return []
+    old, new = before.components.get("files", {}), after.components.get("files", {})
+    changed = sorted(label for label in set(old) | set(new) if old.get(label) != new.get(label))
+    others = {key: value for key, value in before.components.items() if key != "files"}
+    if not changed or others != {key: value for key, value in after.components.items() if key != "files"}:
+        return []
+    if any(_compiled(label.rsplit("/", 1)[-1]) or _precompiled(label.split("/", 1)[-1]) for label in changed):
+        return []
+    return changed if git_ignored_labels(before.project, changed) == set(changed) else []
 
 
 @dataclass(frozen=True)

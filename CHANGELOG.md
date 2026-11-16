@@ -2,6 +2,13 @@
 
 Core (the `valtrion` Python package) and the Unity package `com.goryned.valtrion.unity` are versioned independently. The Unity changelog is in `integrations/unity/com.goryned.valtrion.unity/CHANGELOG.md`; `compat.json` lists compatible pairs.
 
+## 0.23.2 (2026-11-16)
+
+- **Upgrade note.** `compat.json` is unchanged: Core 0.23.2 pairs with Unity packages 0.17.x, 0.18.x and 0.19.x like 0.23.1. Update with `pipx upgrade valtrion` (and `valtrion hosts sync` on SSH hosts).
+
+- **A build file that changes while Unity runs no longer stops a result from being stored (#167).** When the only inputs that changed during the run are files git ignores and does not track and none is code (a generated `link.xml` written and removed by a build step), the result is stored under the key of the state the run started from. Ignored files stay in the key, so an ignored asset that tests read still counts.
+- **`cache: not stored` says when the run was the first Valtrion saw with the working copy's `Library`** (new or rebuilt), when the Editor often re-saves assets; the next identical run usually stores.
+
 ## 0.23.1 (2026-11-16)
 
 - **Upgrade note.** `compat.json` is unchanged: Core 0.23.1 pairs with Unity packages 0.17.x, 0.18.x and 0.19.x like 0.23.0. Update with `pipx upgrade valtrion` (and `valtrion hosts sync` on SSH hosts). To cache the runs of a shared check map, set `unityBuildTarget` in each host's `host.json`.
