@@ -80,16 +80,23 @@ def normalize_assembly_names(args: Sequence[str]) -> list[str]:
     return result
 
 
-def with_host_defaults(args: Sequence[str], project: Path, home: Path | None = None) -> list[str]:
-    """The command as Unity will run it, made explicit: a relative `-testResults` becomes the path under the project folder (Unity resolves
-    it against `-projectPath`, not the working directory), and a command without `-buildTarget` gets `unityBuildTarget` of host.json when
-    it is set. Both are what Unity would do anyway; written out, the result cache can key the run."""
+def results_under_project(args: Sequence[str], project: Path) -> list[str]:
+    """A relative `-testResults` written as the path under the project folder, where Unity puts it (it resolves the path against
+    `-projectPath`, not the working directory). Used before a run is offloaded too, so the result comes back to the same place."""
     result = list(args)
     for position, item in enumerate(result[:-1]):
         if item.lower() == "-testresults":
             value = result[position + 1]
             if value and not value.startswith("-") and not Path(value).expanduser().is_absolute():
                 result[position + 1] = str(Path(project) / value)
+    return result
+
+
+def with_host_defaults(args: Sequence[str], project: Path, home: Path | None = None) -> list[str]:
+    """The command as Unity will run it, made explicit: a relative `-testResults` becomes the path under the project folder (Unity resolves
+    it against `-projectPath`, not the working directory), and a command without `-buildTarget` gets `unityBuildTarget` of host.json when
+    it is set. Both are what Unity would do anyway; written out, the result cache can key the run."""
+    result = results_under_project(args, project)
     # Only a test run: a build (`-executeMethod`) chooses its platform itself.
     if any(item.lower() == "-runtests" for item in result) and not has_option(result, "-buildTarget", "-activeBuildProfile"):
         target = config.unity_build_target(home)

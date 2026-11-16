@@ -158,15 +158,15 @@ def _components(args: Sequence[str], project: Path, editor: str) -> dict[str, An
         if name not in graph.by_name:
             raise NoKey(f"the assembly {name} is not defined in Assets, an embedded package or a local (file:) package")
     # Without -assemblyNames Unity runs every test assembly it finds (a -testFilter in the command, which is part of the key, may pick
-    # some tests of them): every assembly of the project is in the closure. Test assemblies of a registry package are not scanned, so
-    # such a run is keyed on the manifest and lock files for them, like any other package content.
+    # some tests of them), the predefined ones (Assembly-CSharp-Editor and the like) too: every scanned file of the project is in the key,
+    # scenes and assets outside any assembly folder included. Registry and git packages are keyed by the manifest and lock files.
     closure = _closure(graph, selected) if selected else set(graph.by_name)
     files: dict[str, str] = {}
     for item in scan.files:
         owner = scan.owner(item.folder, graph)
         # The compiler inputs of the whole project count too: a compile error anywhere fails the run, and initialization code
         # ([InitializeOnLoad], [RuntimeInitializeOnLoadMethod]) of any assembly runs during the tests.
-        if item.precompiled or item.compiled or (owner is not None and owner in closure):
+        if not selected or item.precompiled or item.compiled or (owner is not None and owner in closure):
             files[item.label] = core.sha256_file(item.path)
     settings_text: dict[str, str] = {}
     for label, path in scan.extra:
@@ -406,6 +406,11 @@ class _Scan:
         dependencies = document.get("dependencies") if isinstance(document, dict) else None
         if not isinstance(dependencies, dict):
             return []
+        if not (manifest.parent / "packages-lock.json").exists():
+            moving = sorted(name for name, value in dependencies.items() if isinstance(value, str) and ("://" in value or value.startswith("git@")))
+            if moving:
+                # Without a lock file a git or URL dependency is whatever its branch holds today: its content is in no file of the key.
+                raise NoKey(f"Packages/packages-lock.json does not exist and {moving[0]} is a git or URL dependency, so its version is unknown")
         found = []
         for name, value in sorted(dependencies.items()):
             if isinstance(value, str) and value.startswith("file:"):

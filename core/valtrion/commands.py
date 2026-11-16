@@ -1721,6 +1721,10 @@ def _unity(arguments: argparse.Namespace) -> int:
             answered = unityrun.answer_from_cache(plan, None, sys.stdout)
             if answered is not None:
                 return answered
+        given = unityrun.option_value(unity_args, "-projectPath")
+        here = Path(given).expanduser().absolute() if given is not None else (found or arguments.project_dir)
+        if here is not None:  # an offloaded result comes back where a local run would write it
+            unity_args = unityrun.results_under_project(unity_args, Path(here))
         placed = _unity_offload(arguments, unity_args, found)
         if placed is not None:
             return placed

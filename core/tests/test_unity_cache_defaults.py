@@ -5,6 +5,7 @@ import io
 import json
 import sys
 from pathlib import Path
+from unittest import mock
 
 from valtrion import config, constants, unitycache, unityrun
 
@@ -76,6 +77,26 @@ class DefaultsTests(CacheTestCase):
         self.assertEqual(str(self.project / "Builds" / "editmode.xml"), argv[argv.index("-testResults") + 1])
 
 
+class OffloadPathTests(CacheTestCase):
+    def test_an_offloaded_run_gets_the_result_path_under_the_project(self):
+        from valtrion import commands
+        from .test_select import run as cli
+
+        seen = {}
+
+        def offload(arguments, unity_args, found):
+            seen["args"] = list(unity_args)
+            return 0
+
+        with mock.patch.object(commands, "_unity_offload", side_effect=offload), \
+                mock.patch.object(unityrun, "answer_from_cache", return_value=None):
+            cli("unity", "run", "--no-cache", "--", "-batchmode", "-projectPath", str(self.project), "-runTests",
+                "-testResults", "Builds/editmode.xml")
+        args = seen["args"]
+        self.assertEqual(str(self.project / "Builds" / "editmode.xml"), args[args.index("-testResults") + 1])
+        self.assertNotIn("-buildTarget", args)  # the receiving host adds its own
+
+
 class ChangedInputTests(CacheTestCase):
     def settings(self):
         return self.project / "ProjectSettings" / "ProjectSettings.asset"
@@ -116,6 +137,27 @@ class FilterOnlyTests(CacheTestCase):
         self.assertIn("Other", found.components["closure"])
         self.assertNotEqual(found.key, self.plan("-testFilter", r"\AGame\.Other", assemblies=None).key)
         self.assertNotEqual(found.key, self.plan("-testFilter", r"\AGame\.Tests").key)
+
+    def test_a_scene_or_resource_outside_every_assembly_folder_changes_its_key(self):
+        resource = self.project / "Assets" / "Resources" / "Config.asset"
+        resource.parent.mkdir(parents=True, exist_ok=True)
+        resource.write_text("a: 1\n", encoding="utf-8")
+        before = self.key("-testFilter", "x", assemblies=None)
+        named = self.key("-testFilter", "x")
+        resource.write_text("a: 2\n", encoding="utf-8")
+        self.assertNotEqual(before, self.key("-testFilter", "x", assemblies=None))  # every test of the project may load it
+        self.assertEqual(named, self.key("-testFilter", "x"))  # the documented limit of a run that names its assemblies
+
+    def test_no_lock_file_with_a_git_dependency_gives_no_key(self):
+        manifest = self.project / "Packages" / "manifest.json"
+        lock = self.project / "Packages" / "packages-lock.json"
+        document = json.loads(manifest.read_text(encoding="utf-8"))
+        document["dependencies"]["com.example.git"] = "https://example.com/pkg.git#main"
+        manifest.write_text(json.dumps(document), encoding="utf-8")
+        if lock.exists():
+            self.assertIsNotNone(self.plan().key)
+            lock.rename(lock.with_name("lock.bak"))
+        self.assertIn("packages-lock.json does not exist", self.plan().reason)
 
     def test_any_asset_file_of_any_assembly_changes_its_key(self):
         before = self.key("-testFilter", "x", assemblies=None)
