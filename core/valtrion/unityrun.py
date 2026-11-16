@@ -6,7 +6,7 @@ reverse order on every exit. Unity runs under the watchdog: a hard timeout, a st
 lost lease each end in killing the whole process tree. The last line printed on stdout is `STATUS <name>`.
 
 An Edit Mode or Play Mode test run with a key (`unitycache`) is answered from the host's result cache when an identical run passed
-before, without a lease and without Unity; while it runs, the lease `unity-result:<key>` tells other sessions that the key is being
+before, under the project lease and without an Editor slot or Unity; while it runs, the lease `unity-result:<key>` tells other sessions that the key is being
 computed, and they wait for its result instead of starting a second identical Editor run.
 """
 
