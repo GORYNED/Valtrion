@@ -257,6 +257,8 @@ def validate_config(config: Config, validator: Validator | None = None) -> tuple
     used: set[str] = set()
     inherited: set[str] = set()  # kinds that are the preset's own, as the project did not write a kind of that name
     bound: set[str] = set()
+    # Runner texts already checked for `-testFilter "{assemblies;}"`: a literal command repeated in many entries is reported once.
+    filtered: set[str] = set(config.runners.values())
     if config.preset is None:
         if "bindings" in config.data:
             warnings.append("bindings: has no effect without extends")
@@ -271,9 +273,12 @@ def validate_config(config: Config, validator: Validator | None = None) -> tuple
             for position, raw in enumerate(entries):
                 bound.add(raw)
                 try:
-                    parse_spec(raw)
+                    spec = parse_spec(raw)
                 except ValueError as error:
                     errors.append(f"bindings.{slot}[{position}]: {error}")
+                    continue
+                if spec.type in _EDITOR_TYPES and spec.runner is not None and spec.runner not in config.runners:
+                    warnings.extend(f"bindings.{slot}[{position}]: {message}" for message in _literal_filter_problems(spec.runner, filtered))
     for reason in sorted({item for item in config.full_set_reasons if config.full_set_reasons.count(item) > 1}):
         errors.append(f"fullSetReasons: {reason!r} is listed twice")
     for index, area in enumerate(config.areas):
@@ -287,7 +292,7 @@ def validate_config(config: Config, validator: Validator | None = None) -> tuple
             if not excluded or excluded.startswith("/") or ".." in excluded.replace("\\", "/").split("/") or "\\" in excluded:
                 errors.append(f"areas[{index}]: exclude glob {excluded!r} must be repository-relative with '/' separators and no '..'")
         if "assemblies" in area:
-            _validate_assemblies(config, f"areas[{index}].assemblies", area["assemblies"], errors, warnings)
+            _validate_assemblies(config, f"areas[{index}].assemblies", area["assemblies"], errors, warnings, filtered)
             used.add(area["assemblies"]["kind"])
             level = area["assemblies"].get("level", ASSEMBLIES_LEVEL)
             for current in LEVELS[1: LEVELS.index(level)]:
@@ -331,7 +336,7 @@ def validate_config(config: Config, validator: Validator | None = None) -> tuple
                 if name not in kinds:
                     errors.append(f"{where}.keys[{position}].byContent.{role}: kind {name!r} has no entry in kinds")
             if "assemblies" in by_content:
-                _validate_assemblies(config, f"{where}.keys[{position}].byContent.assemblies", by_content["assemblies"], errors, warnings)
+                _validate_assemblies(config, f"{where}.keys[{position}].byContent.assemblies", by_content["assemblies"], errors, warnings, filtered)
     for index, rule in enumerate(config.content_rules):
         where = f"contentRules[{index}]"
         if rule["kind"] not in kinds:
@@ -357,12 +362,16 @@ def validate_config(config: Config, validator: Validator | None = None) -> tuple
         if not _NAME.match(name):
             errors.append(f"runners: invalid runner name {name!r} (letters, digits, '.', '_' and '-', starting with a letter or digit)")
         errors.extend(f"runners.{name}: {message}" for message in _placeholder_problems(template))
+        warnings.extend(f"runners.{name}: {message}" for message in _filter_problems(template))
         if _NAME.match(name) and shutil.which(name):
             warnings.append(f"runners.{name}: the name is also a program on PATH; an entry whose text after '@' is exactly {name!r} "
                             "used to be that command and now uses this runner")
     if not config.full_set_reasons and any(kinds[kind].get(level) for kind in kinds for level in LEVELS[LEVELS.index(DEFAULT_LEVEL) + 1:]):
         warnings.append(f"fullSetReasons: not declared, so `select --level {LEVELS[-1]}` and `--level {LEVELS[LEVELS.index(DEFAULT_LEVEL) + 1]}` need no reason; "
                         "list the reasons a full set may be asked for (for example release, data-migration, unity-version)")
+    if "unityEditorSlots" in config.data:
+        warnings.append("unityEditorSlots: informational only (`select` prints it); how many Unity Editors run at once is the "
+                        "`unityEditorSlots` of each host's host.json (default 2), not a value of the check map")
     for kind in sorted(set(kinds) - used - set(config.preset["kinds"] if config.preset else ())):
         warnings.append(f"kind {kind!r} is not used by any area (selected only by the widest set)")
     plan_ids: dict[str, str] = {}
@@ -380,6 +389,8 @@ def validate_config(config: Config, validator: Validator | None = None) -> tuple
                     if name is None:  # a literal command is checked here; a named one was checked once under `runners`
                         # Only a warning: text that was a valid literal command before (`{assembly}`, `{assemblies.txt}`) must stay valid.
                         warnings.extend(f"kinds.{kind}.{level}: {message}" for message in _placeholder_problems(template or ""))
+                        if not (kind in inherited and raw in bound):  # a binding's runner was checked under `bindings`
+                            warnings.extend(f"kinds.{kind}.{level}: {message}" for message in _literal_filter_problems(template, filtered))
                         if config.runners and _NAME.match(spec.runner):
                             warnings.append(f"kinds.{kind}.{level}: {spec.runner!r} is not a key of runners ({', '.join(sorted(config.runners))}); "
                                             "it is used as a literal command")
@@ -397,10 +408,60 @@ def validate_config(config: Config, validator: Validator | None = None) -> tuple
                     errors.append(f"kinds.{kind}.{level}: plan id {plan.plan_id!r} is used by {previous!r} and {spec.target!r}")
     if not errors:  # the helpers read kinds and keys the checks above have just proven valid
         warnings.extend(_over_selection_warnings(config))
+        warnings.extend(_whole_editor_binding_warnings(config))
     return errors, warnings
 
 
-def _validate_assemblies(config: Config, where: str, member: Mapping[str, Any], errors: list[str], warnings: list[str]) -> None:
+def _whole_editor_binding_warnings(config: Config) -> list[str]:
+    """The preset's `**/*.cs` area adds `bind:editor` to every C# change. When that binding is the whole set (it names every Edit and Play
+    Mode assembly of the project's own kinds, or runs a command that cannot filter by assembly), a `.cs` file outside the project's areas
+    selects every Editor suite."""
+    if config.preset is None or "managed-code" not in set(config.preset["kinds"]) - set(config.preset["replaced"]):
+        return []
+    entries = [parse_spec(raw) for raw in config.data.get("bindings", {}).get("editor", ())]
+    editor = [spec for spec in entries if spec.type in _EDITOR_TYPES]
+    own = set(config.kinds) - (set(config.preset["kinds"]) - set(config.preset["replaced"]))
+    named = set()  # the Edit and Play Mode assemblies the project's own kinds name: what a narrower selection could pick from
+    for kind in own:
+        for raw in (item for entries in config.kinds[kind].values() for item in entries):
+            spec = parse_spec(raw)
+            if spec.type in _EDITOR_TYPES:
+                named.update(name for name in spec.target.split(","))
+    project_areas = config.areas[: config.preset["projectCounts"]["areas"]]
+    if not editor or not named or any(area.get("overridesPreset") and _covers_all_code(area["glob"]) for area in project_areas):
+        return []
+    tail = ("the preset's area **/*.cs (kind 'managed-code') adds it to every C# change, so a .cs file that no project area with "
+            "\"overridesPreset\": true covers selects the whole set; cover the code folders with such areas, or bind a smaller set")
+    unfiltered = []
+    for spec in editor:
+        template = config.resolve_runner(spec.runner)[0] if spec.runner is not None else None
+        if template is not None and ASSEMBLIES_COMMA not in template and ASSEMBLIES_SEMICOLON not in template:
+            unfiltered.append(spec.raw)
+    if unfiltered:
+        return [f"bindings.editor: {', '.join(unfiltered)} runs a command without {ASSEMBLIES_COMMA} or {ASSEMBLIES_SEMICOLON}, so it runs the "
+                f"same tests whichever assemblies are selected; {tail}"]
+    bound = {name for spec in editor for name in spec.target.split(",")}
+    if len(bound) < 2 or not named <= bound:
+        return []
+    return [f"bindings.editor: names every Edit and Play Mode assembly of the project's kinds ({len(bound)} assemblies); {tail}"]
+
+
+def _covers_all_code(glob: str) -> bool:
+    """An area glob that takes every C# file of a project (`**`, `**/*.cs`, `Assets/**`, `Assets/**/*.cs`): the preset's `**/*.cs` no longer
+    reaches project code through it."""
+    return glob in ("**", "**/*", "**/*.cs") or re.fullmatch(r"(?:[^*?\[/]+/)*Assets/\*\*(?:/\*(?:\.cs)?)?", glob) is not None
+
+
+def _literal_filter_problems(template: str | None, seen: set[str]) -> list[str]:
+    """`_filter_problems` of a literal runner command, once per command text."""
+    if not template or template in seen:
+        return []
+    seen.add(template)
+    return _filter_problems(template)
+
+
+def _validate_assemblies(config: Config, where: str, member: Mapping[str, Any], errors: list[str], warnings: list[str],
+                         filtered: set[str] | None = None) -> None:
     """`byContent.assemblies`: the kind exists, the runners are usable and the narrowed kind does not already hold the whole set."""
     kind = member["kind"]
     if kind not in config.kinds:
@@ -421,6 +482,8 @@ def _validate_assemblies(config: Config, where: str, member: Mapping[str, Any], 
             if config.runners and _NAME.match(text):
                 warnings.append(f"{where}.{field_name}: {text!r} is not a key of runners ({', '.join(sorted(config.runners))}); it is used as a literal command")
         errors.extend(f"{where}.{field_name}: {message}" for message in _placeholder_problems(template or ""))
+        if name is None:  # a named runner was checked under `runners`
+            warnings.extend(f"{where}.{field_name}: {message}" for message in _literal_filter_problems(template, set() if filtered is None else filtered))
         if ASSEMBLIES_COMMA not in (template or "") and ASSEMBLIES_SEMICOLON not in (template or ""):
             warnings.append(f"{where}.{field_name}: the runner has no {ASSEMBLIES_COMMA} or {ASSEMBLIES_SEMICOLON} placeholder, so it cannot filter by "
                             "assembly and runs the same tests whichever assemblies are selected")
@@ -499,9 +562,20 @@ def _over_selection_warnings(config: Config) -> list[str]:
 
 #: Placeholders of a runner template: the united, sorted assembly list joined with `,` or with `;` (Unity's separator for `-assemblyNames` and
 #: `-testFilter`). Expansion does no quoting: a `;` ends a command in POSIX sh and PowerShell, so a template that is run through a shell
-#: must quote the placeholder, for example `-testFilter "{assemblies;}"`.
+#: must quote the placeholder, for example `-assemblyNames "{assemblies;}"`.
 ASSEMBLIES_COMMA = "{assemblies}"
 ASSEMBLIES_SEMICOLON = "{assemblies;}"
+#: `-testFilter` given the assembly list: Unity matches it against test names, not assemblies (`-assemblyNames` is the option for them).
+_TEST_FILTER_ASSEMBLIES = re.compile(r"(?<![\w-])-testFilter(?:\s+|=)[\"']?\{assemblies;?\}", re.IGNORECASE)
+
+
+def _filter_problems(template: str) -> list[str]:
+    """A runner that passes the assembly list to `-testFilter`: the names match test names (and any test whose name starts the same way),
+    not assemblies."""
+    if not _TEST_FILTER_ASSEMBLIES.search(template):
+        return []
+    return ["-testFilter gets the assembly list, but Unity matches -testFilter against test names, not assemblies; pass the list with "
+            "-assemblyNames instead"]
 _PLACEHOLDER = re.compile(r"(?<!\$)\{(?:assemblies[^{}\s]*|assembly)\}")  # look-alikes of ours only; a shell's ${assemblyDir}, ${HOME} or {a,b} is the command's own
 
 

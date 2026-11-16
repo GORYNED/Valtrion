@@ -1,7 +1,6 @@
 {
   "schema": "gdv.checks/1",
   "platforms": { "required": ["ios"], "dev": ["windows", "editor"] },
-  "unityEditorSlots": 1,
   "runners": {
     "unity-editmode": "valtrion unity run -- -batchmode -projectPath . -runTests -testPlatform EditMode -assemblyNames \"{assemblies;}\" -testResults Builds/editmode.xml -logFile Builds/editmode.log"
   },
