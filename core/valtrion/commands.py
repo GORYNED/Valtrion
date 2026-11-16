@@ -89,7 +89,10 @@ def _forward(arguments: argparse.Namespace, entry: config.HostEntry, extra: Sequ
         return _blocked(arguments.command, str(error))
     line = _strip_host_options(arguments.raw_argv)
     place = line.index("--") if "--" in line else len(line)  # `extra` options go before the user's own command after `--`
-    result = target.call([*line[:place], *extra, *line[place:]], timeout)
+    try:
+        result = target.call([*line[:place], *extra, *line[place:]], timeout)
+    except ValueError as error:  # an argument the host's shell would interpret (see transport.quote_cmd): nothing was sent
+        return _blocked(arguments.command, str(error))
     sys.stdout.write(result.stdout)
     sys.stderr.write(result.stderr)
     if result.timed_out:
@@ -1605,7 +1608,8 @@ def _configure_unity(parser: argparse.ArgumentParser) -> None:
     window.add_argument("--title", default="")
     window.add_argument("--detail", default="")
     window.add_argument("--progress", type=Path, default=None)
-    run = sub.add_parser("run", help="run Unity in batch mode under the host's unity-project and unity-editor leases and the watchdog",
+    run = sub.add_parser("run", allow_abbrev=False,  # `--rerun` must not pass for `--rerun-failed`: the option is rewritten from the raw command line
+                         help="run Unity in batch mode under the host's unity-project and unity-editor leases and the watchdog",
                          description="valtrion unity run [options] -- <Unity arguments>. The last stdout line is STATUS <name>; "
                                      "exit codes: PASS 0, FAIL 1, BLOCKED 2, STALL and TIMEOUT 3.")
     run.add_argument("--project-dir", type=Path, help="Unity project (when the Unity arguments carry no -projectPath); default: GDV_UNITY_PROJECT or valtrion.json")

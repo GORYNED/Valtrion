@@ -18,9 +18,11 @@ OPTION = "--rerun-failed"
 #: results of work that was done), so a caller cannot take it for a pass or for a block.
 STATUS_NOTHING_TO_RUN = "NOTHING_TO_RUN"
 EXIT_NOTHING_TO_RUN = 4
-MAX_RESULT_BYTES = 256 * 1024 * 1024
-#: Characters that mean something in a .NET regular expression. Whitespace is escaped by `\s`-safe `\ `; `;` is handled apart.
-_REGEX_SPECIAL = frozenset("\\*+?|{}[]()^$.#")
+MAX_RESULT_BYTES = 64 * 1024 * 1024
+#: Longest `-testFilter` value built. A command line is limited (cmd.exe 8191 characters for the whole line, the Task Scheduler hand-over and
+#: SSH add their own); a longer list is refused instead of being cut or failing at some layer on the way.
+MAX_FILTER_CHARS = 6000
+_LITERAL = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_")
 
 
 class ResultError(Exception):
@@ -50,7 +52,11 @@ def failed_test_names(path: Path) -> list[str]:
         data = path.read_bytes()
     except OSError as error:
         raise ResultError(f"cannot read {path}: {error}") from error
-    if b"<!doctype" in data.lower() or b"<!entity" in data.lower():
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise ResultError(f"{path} is not UTF-8 text: {error}") from error
+    if "<!doctype" in text.lower() or "<!entity" in text.lower():
         raise ResultError(f"{path} contains a DOCTYPE or entity declaration, which is not read")
     try:
         root = ET.fromstring(data)
@@ -58,11 +64,11 @@ def failed_test_names(path: Path) -> list[str]:
         raise ResultError(f"{path} is not valid XML: {error}") from error
     if _local(root.tag) != "test-run":
         raise ResultError(f"{path} is not an NUnit 3 result (the root element is <{_local(root.tag)}>, not <test-run>)")
-    names: list[str] = []
+    names: dict[str, None] = {}  # ordered, without repeats
 
     def add(name: str | None) -> None:
-        if name and name not in names:
-            names.append(name)
+        if name:
+            names[name] = None
 
     def walk(element: ET.Element) -> None:
         for child in element:
@@ -82,25 +88,27 @@ def failed_test_names(path: Path) -> list[str]:
                 walk(child)
 
     walk(root)
-    return names
+    return list(names)
 
 
 def escape_name(name: str) -> str:
-    """A test name as a regular expression that matches exactly that name, anchored at both ends. `;` ends a name in `-testFilter`,
-    so it is written as `\\x3B`."""
+    r"""A test name as a regular expression that matches exactly that name (`\A...\z`). Only letters, digits and `_` stand for
+    themselves, `.` is `\.`, every other character is `\xNN` or `\uNNNN` (a UTF-16 unit, so a surrogate pair for a character beyond
+    the BMP). So the value holds none of the characters that cmd.exe, a shell or the `;` separator of `-testFilter` would act on: it
+    survives a .bat file, the quoting for cmd.exe over SSH and the Windows command line unchanged. `^` is not used for the anchor,
+    cmd.exe eats it."""
     out = []
     for char in name:
-        if char in _REGEX_SPECIAL:
-            out.append("\\" + char)
-        elif char == ";":
-            out.append("\\x3B")
-        elif char == " ":
-            out.append("\\x20")
-        elif char in "\r\n\t":
-            out.append({"\r": "\\r", "\n": "\\n", "\t": "\\t"}[char])
-        else:
+        if char in _LITERAL:
             out.append(char)
-    return "^" + "".join(out) + "$"
+        elif char == ".":
+            out.append("\\.")
+        elif ord(char) < 0x80:
+            out.append(f"\\x{ord(char):02X}")
+        else:
+            units = char.encode("utf-16-le", "surrogatepass")
+            out.extend(f"\\u{int.from_bytes(units[k:k + 2], 'little'):04X}" for k in range(0, len(units), 2))
+    return "\\A" + "".join(out) + "\\z"
 
 
 def test_filter(names: Sequence[str]) -> str:
@@ -148,5 +156,12 @@ def apply(raw_argv: Sequence[str], say, result_line) -> tuple[list[str] | None, 
         say(f"{OPTION}: no failed test in {result}; nothing to run, no test was run")
         say(f"STATUS {STATUS_NOTHING_TO_RUN}")
         return None, EXIT_NOTHING_TO_RUN
+    value = test_filter(names)
+    if len(value) > MAX_FILTER_CHARS:
+        return None, result_line(constants.BLOCKED, f"{OPTION}: {len(names)} failed tests make a -testFilter of {len(value)} characters, "
+                                                    f"more than the {MAX_FILTER_CHARS} that a command line carries safely; fix the first failures "
+                                                    f"and rerun, or run the tests by assembly")
+    if not any(item.lower() == "-runtests" for item in unity_args):
+        return None, result_line(constants.BLOCKED, f"{OPTION}: the Unity arguments have no -runTests, so -testFilter would select nothing")
     say(f"{OPTION}: running {len(names)} failed test(s) from {result}")
-    return [*kept, "--", *unity_args, "-testFilter", test_filter(names)], None
+    return [*kept, "--", *unity_args, "-testFilter", value], None

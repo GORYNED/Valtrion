@@ -1,13 +1,14 @@
 """`valtrion unity run --rerun-failed`: the failed names of an NUnit result, their escaping and the command line the fake Unity receives."""
 
+import argparse
 import json
 import re
+import subprocess
 import sys
-import tempfile
 import unittest
-from pathlib import Path
+from unittest import mock
 
-from valtrion import cli, unityrerun  # noqa: F401  (cli first: it registers the commands)
+from valtrion import cli, commands, transport, unityrerun  # noqa: F401  (cli first: it registers the commands)
 
 from .test_host import HostTestCase, run as run_cli
 from .test_unity_run import FAKE
@@ -48,7 +49,7 @@ class RerunTestCase(HostTestCase):
     def rerun(self, *unity_args):
         dump = self.base / "dump"
         code, out, err = run_cli("unity", "run", "--unity", sys.executable, "--lease-wait", "0", "--no-offload", "--rerun-failed", str(self.results),
-                                 "--", FAKE, "-batchmode", "-projectPath", str(self.project), *unity_args, "--dump", str(dump))
+                                 "--", FAKE, "-batchmode", "-runTests", "-projectPath", str(self.project), *unity_args, "--dump", str(dump))
         argv = json.loads((dump / "argv.json").read_text()) if (dump / "argv.json").exists() else None
         return code, out, err, argv
 
@@ -83,19 +84,44 @@ class FailedNamesTests(RerunTestCase):
             unityrerun.failed_test_names(self.results)
 
 
+def python_pattern(pattern):
+    r"""The pattern as Python's `re` reads it (`\z` is `\Z` before Python 3.14)."""
+    return pattern.replace("\\A", "^").replace("\\z", "\\Z")
+
+
 class EscapeTests(unittest.TestCase):
+    NAMES = ['A.B.C(1,"x y")', "A.B.D(1.5)", "A.B.[x]+{2}|?*$^#\\", "A.B.E(a;b)", "A.B.\u00e9\n", "A.B.100%", "A.B.&|<>^!", "A.B.\U0001F600"]
+
     def test_every_name_matches_only_itself(self):
-        names = ['A.B.C(1,"x y")', "A.B.D(1.5)", "A.B.[x]+{2}|?*$^#\\", "A.B.E(a;b)", "A.B.é\n"]
-        for name in names:
+        for name in self.NAMES[:-1]:  # the last one is a surrogate pair, which Python's `re` cannot match as one character
             pattern = unityrerun.escape_name(name)
-            self.assertNotIn(";", pattern)
-            self.assertTrue(re.fullmatch(pattern, name), name)
-            self.assertIsNone(re.search(pattern, name + "x"))
-            self.assertIsNone(re.search(pattern, "x" + name))
-        self.assertIsNone(re.search(unityrerun.escape_name("A.B.D(1.5)"), "A.B.D(105)"))
+            compiled = python_pattern(pattern)
+            self.assertTrue(re.fullmatch(compiled, name), name)
+            self.assertIsNone(re.search(compiled, name + "x"))
+            self.assertIsNone(re.search(compiled, "x" + name))
+        self.assertIsNone(re.search(python_pattern(unityrerun.escape_name("A.B.D(1.5)")), "A.B.D(105)"))
+
+    def test_the_value_has_only_characters_that_survive_every_command_line(self):
+        value = unityrerun.test_filter(self.NAMES)
+        self.assertEqual(len(self.NAMES), len(value.split(";")))
+        for char in '^&|<>%"() \t\r\n!\'`$':
+            self.assertNotIn(char, value)
+        self.assertRegex(value, r"^[A-Za-z0-9_.\\;]+$")
+
+    def test_a_character_beyond_the_bmp_is_a_surrogate_pair(self):
+        self.assertEqual("\\A\\uD83D\\uDE00\\z", unityrerun.escape_name("\U0001F600"))
+
+    def test_the_value_passes_list2cmdline_and_quote_cmd_unchanged(self):
+        value = unityrerun.test_filter(self.NAMES)
+        line = subprocess.list2cmdline(["-testFilter", value])
+        self.assertEqual(f"-testFilter {value}", line, "no quotes or backslash doubling were needed")
+        quoted = transport.quote_cmd(value)  # must not raise
+        self.assertEqual(value, quoted.strip('"'))
+        for char in '^&|<>%" ':
+            self.assertNotIn(char, quoted.strip('"'))
 
     def test_the_filter_joins_with_semicolons(self):
-        self.assertEqual("^A\\.B$;^C$", unityrerun.test_filter(["A.B", "C"]))
+        self.assertEqual("\\AA\\.B\\z;\\AC\\z", unityrerun.test_filter(["A.B", "C"]))
 
 
 class CommandTests(RerunTestCase):
@@ -111,13 +137,13 @@ class CommandTests(RerunTestCase):
         self.assertEqual(argv.index("-testFilter") + 1, argv.index(unityrerun.test_filter(unityrerun.failed_test_names(self.results))))
         value = argv[argv.index("-testFilter") + 1]
         self.assertEqual(4, len(value.split(";")))
-        self.assertIn('Game\\.Tests\\.Fixture\\.Param\\("a\\x3Bb",1\\.5\\)', value)
+        self.assertIn('Game\\.Tests\\.Fixture\\.Param\\x28\\x22a\\x3Bb\\x22\\x2C1\\.5\\x29', value)
 
     def test_the_equals_form(self):
         self.write(RESULT)
         dump = self.base / "dump"
         code, out, err = run_cli("unity", "run", "--unity", sys.executable, "--lease-wait", "0", "--no-offload", f"--rerun-failed={self.results}",
-                                 "--", FAKE, "-projectPath", str(self.project), "--dump", str(dump))
+                                 "--", FAKE, "-runTests", "-projectPath", str(self.project), "--dump", str(dump))
         self.assertEqual(0, code, err)
         self.assertIn("-testFilter", json.loads((dump / "argv.json").read_text()))
 
@@ -149,6 +175,45 @@ class CommandTests(RerunTestCase):
             self.assertIsNone(argv)
             self.assertIn("-testFilter", out)
             self.assertEqual("STATUS BLOCKED", out.strip().splitlines()[-1])
+
+    def test_a_filter_that_is_too_long_is_blocked(self):
+        cases = "".join(f'<test-case fullname="Game.Tests.T{n}" result="Failed"/>' for n in range(2000))
+        self.write(f"<test-run>{cases}</test-run>")
+        code, out, err, argv = self.rerun()
+        self.assertEqual(2, code)
+        self.assertIsNone(argv)
+        self.assertIn("2000 failed tests", out)
+        self.assertIn(str(unityrerun.MAX_FILTER_CHARS), out)
+        self.assertEqual("STATUS BLOCKED", out.strip().splitlines()[-1])
+
+    def test_unity_arguments_without_run_tests_are_blocked(self):
+        self.write(RESULT)
+        dump = self.base / "dump"
+        code, out, err = run_cli("unity", "run", "--unity", sys.executable, "--no-offload", "--rerun-failed", str(self.results),
+                                 "--", FAKE, "-projectPath", str(self.project), "--dump", str(dump))
+        self.assertEqual(2, code)
+        self.assertIn("-runTests", out)
+        self.assertFalse(dump.exists())
+
+    def test_a_file_that_is_not_utf8_is_refused(self):
+        self.results.write_bytes('<?xml version="1.0" encoding="utf-16"?><test-run/>'.encode("utf-16"))
+        with self.assertRaises(unityrerun.ResultError):
+            unityrerun.failed_test_names(self.results)
+
+    def test_an_abbreviated_option_is_not_taken_for_it(self):
+        self.write(RESULT)
+        with self.assertRaises(SystemExit):
+            run_cli("unity", "run", "--unity", sys.executable, "--rerun", str(self.results), "--", FAKE, "-runTests")
+
+    def test_an_argument_the_host_cannot_quote_ends_blocked_not_in_a_traceback(self):
+        class Target:
+            def call(self, argv, timeout):
+                raise ValueError("argument contains a character that cmd.exe would interpret")
+
+        arguments = argparse.Namespace(command="unity", raw_argv=["unity", "run", "--", "-runTests"])
+        with mock.patch.object(commands, "_remote", return_value=Target()):
+            code = commands._forward(arguments, mock.Mock(id="win"))
+        self.assertEqual(2, code)
 
 
 if __name__ == "__main__":
