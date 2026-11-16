@@ -503,7 +503,7 @@ def answer_hit(hit: unitycache.Hit, plan: unitycache.Plan, out: TextIO) -> int:
         if plan.result_path is None:
             raise OSError("the command names no -testResults file")
         plan.result_path.parent.mkdir(parents=True, exist_ok=True)
-        plan.result_path.write_text(hit.text, encoding="utf-8")
+        plan.result_path.write_bytes(hit.text.encode("utf-8"))  # the text as Unity wrote it (no newline translation)
     except OSError as error:
         return _result(out, constants.BLOCKED, f"the cached result of key {hit.key} cannot be written to -testResults: {error}")
     return _result(out, constants.PASS, f"cached: PASS of key {hit.key} stored {hit.stored_utc}; Unity was not started "
