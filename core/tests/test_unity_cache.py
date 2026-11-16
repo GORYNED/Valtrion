@@ -657,6 +657,30 @@ class CommandLineTests(HostTestCase):
         self.assertEqual(constants.EXIT_BLOCKED, code)
         self.assertIn("without --host", out + err)
 
+    def test_rerun_failed_is_keyed_by_the_rewritten_filter_and_nothing_to_run_stores_nothing(self):
+        earlier = write(self.base / "earlier.xml", '<test-run result="Failed"><test-suite fullname="Game.Tests" result="Failed">'
+                                                   '<test-case fullname="Game.Tests.PlayerTests.Breaks" result="Failed"/></test-suite></test-run>')
+        code, out, err = self.cli("--rerun-failed", str(earlier), "--cache-status")
+        self.assertEqual(0, code, err)
+        self.assertTrue(out.strip(), (out, err))
+        rerun = json.loads(out)
+        self.assertIn("-testFilter", rerun["inputs"]["command"])
+        self.assertTrue(any("PlayerTests" in item for item in rerun["inputs"]["command"]))
+        self.assertNotEqual(json.loads(self.cli("--cache-status")[1])["key"], rerun["key"])
+        code, out, err = self.cli("--rerun-failed", str(earlier))
+        self.assertEqual((0, "STATUS PASS"), (code, out.strip().splitlines()[-1]), err)
+        root = unitycache.cache_root()
+        self.assertEqual([f"{rerun['key']}.json"], [path.name for path in root.glob("*.json")])
+        with mock.patch.object(unityrun.supervise, "supervise", side_effect=AssertionError("Unity was started")):
+            code, out, _ = self.cli("--rerun-failed", str(earlier))
+        self.assertIn("cached: PASS", out)
+        write(earlier, '<test-run result="Passed"><test-suite fullname="A" result="Passed"><test-case fullname="A.B" result="Passed"/>'
+                       '</test-suite></test-run>')
+        with mock.patch.object(unityrun.supervise, "supervise", side_effect=AssertionError("Unity was started")):
+            code, out, _ = self.cli("--rerun-failed", str(earlier))
+        self.assertEqual((4, "STATUS NOTHING_TO_RUN"), (code, out.strip().splitlines()[-1]))
+        self.assertEqual(1, len(list(root.glob("*.json"))))
+
     def test_a_hit_and_no_cache(self):
         self.cli()
         with mock.patch.object(unityrun.supervise, "supervise", side_effect=AssertionError("Unity was started")):

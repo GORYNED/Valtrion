@@ -89,7 +89,10 @@ def _forward(arguments: argparse.Namespace, entry: config.HostEntry, extra: Sequ
         return _blocked(arguments.command, str(error))
     line = _strip_host_options(arguments.raw_argv)
     place = line.index("--") if "--" in line else len(line)  # `extra` options go before the user's own command after `--`
-    result = target.call([*line[:place], *extra, *line[place:]], timeout)
+    try:
+        result = target.call([*line[:place], *extra, *line[place:]], timeout)
+    except ValueError as error:  # an argument the host's shell would interpret (see transport.quote_cmd): nothing was sent
+        return _blocked(arguments.command, str(error))
     sys.stdout.write(result.stdout)
     sys.stderr.write(result.stderr)
     if result.timed_out:
@@ -1605,9 +1608,11 @@ def _configure_unity(parser: argparse.ArgumentParser) -> None:
     window.add_argument("--title", default="")
     window.add_argument("--detail", default="")
     window.add_argument("--progress", type=Path, default=None)
-    run = sub.add_parser("run", help="run Unity in batch mode under the host's unity-project and unity-editor leases and the watchdog",
+    run = sub.add_parser("run", allow_abbrev=False,  # `--rerun` must not pass for `--rerun-failed`: the option is rewritten from the raw command line
+                         help="run Unity in batch mode under the host's unity-project and unity-editor leases and the watchdog",
                          description="valtrion unity run [options] -- <Unity arguments>. The last stdout line is STATUS <name>; "
-                                     "exit codes: PASS 0, FAIL 1, BLOCKED 2, STALL and TIMEOUT 3.")
+                                     "exit codes: PASS 0, FAIL 1, BLOCKED 2, STALL and TIMEOUT 3; with --rerun-failed also 4 (STATUS NOTHING_TO_RUN: no failed test, nothing ran), "
+                                     "which a script run with `set -e` must handle.")
     run.add_argument("--project-dir", type=Path, help="Unity project (when the Unity arguments carry no -projectPath); default: GDV_UNITY_PROJECT or valtrion.json")
     run.add_argument("--unity", help="path of the Unity executable (or a macOS .app) instead of the Editor of ProjectSettings/ProjectVersion.txt")
     run.add_argument("--lease-wait", type=_finite_seconds, default=None, metavar="SEC",
@@ -1630,6 +1635,9 @@ def _configure_unity(parser: argparse.ArgumentParser) -> None:
     run.add_argument("--cache-status", action="store_true",
                      help="print the result cache key of the command, its inputs, whether it is a hit and whether another session computes it, "
                           "as JSON; runs nothing (exit 0)")
+    run.add_argument("--rerun-failed", metavar="RESULTS.xml", default=None,
+                     help="run only the tests that failed in this NUnit 3 result file of an earlier run: -testFilter is set to their exact names "
+                          "(not combined with a -testFilter of your own); nothing failed: nothing runs, STATUS NOTHING_TO_RUN, exit 4")
     run.add_argument(STOP_ON_STDIN_EOF, action="store_true", help=argparse.SUPPRESS)  # added by a caller that keeps this command's input open
     placement = run.add_mutually_exclusive_group()
     placement.add_argument("--offload", action="store_true",
@@ -1655,6 +1663,16 @@ def _unity(arguments: argparse.Namespace) -> int:
 
     if arguments.action == "_progress":
         return progresswindow.run_window(arguments.log, arguments.done, arguments.parent_pid, arguments.title, arguments.detail, arguments.progress)
+    if arguments.rerun_failed is not None:
+        from . import unityrerun
+
+        # With --cache-status stdout carries one JSON document: the note about the rerun goes to stderr.
+        say = (lambda text: print(text, file=sys.stderr)) if arguments.cache_status else print
+        line, code = unityrerun.apply(arguments.raw_argv, say, lambda status, reason: unityrun._result(sys.stdout, status, reason))
+        if line is None:
+            return code
+        arguments.raw_argv = line
+        arguments.rerun_failed = None
     entry = _entry(arguments)
     try:  # the remote host applies its own host.json when no wait was given; here the wait only sizes the transport timeout
         wait = _lease_wait(arguments.lease_wait, unityrun.DEFAULT_LEASE_WAIT_SEC)
