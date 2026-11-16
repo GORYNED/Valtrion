@@ -27,7 +27,15 @@ _DOCUMENT_SUFFIXES = (".md", ".markdown", ".txt")
 _PRECOMPILED_SUFFIXES = (".dll", ".so", ".a", ".bundle", ".dylib", ".jar", ".aar", ".rsp")
 _DOCUMENT_STEMS = frozenset({"license", "licence", "changelog", "readme", "notice", "authors"})
 #: An assembly that references the test runner or NUnit holds tests, whatever its define constraints say.
-_TEST_RUNNERS = frozenset({"UnityEngine.TestRunner", "UnityEditor.TestRunner"})
+_TEST_RUNNERS = frozenset({"UnityEngine.TestRunner", "UnityEditor.TestRunner",
+                           GUID_PREFIX + "27619889b8ba8c24980f49ee34dbb44a", GUID_PREFIX + "0acc523941302664db1f4e527237feb3"})
+
+
+def _is_test_runner(reference: str) -> bool:
+    """A reference to `UnityEngine.TestRunner` or `UnityEditor.TestRunner`, by name or by the GUID of the Test Framework package."""
+    if reference[:len(GUID_PREFIX)].upper() == GUID_PREFIX:
+        return GUID_PREFIX + reference[len(GUID_PREFIX):].lower() in _TEST_RUNNERS
+    return reference in _TEST_RUNNERS
 _NUNIT = "nunit.framework.dll"
 
 
@@ -92,7 +100,7 @@ def parse_definition(path: str, data: bytes, guid: str | None) -> Assembly:
         raise GraphError(f"{path}: versionDefines is not a list")
     references = _strings(document, "references", path)
     test = ("UNITY_INCLUDE_TESTS" in _strings(document, "defineConstraints", path) or "TestAssemblies" in _strings(document, "optionalUnityReferences", path)
-            or any(item in _TEST_RUNNERS for item in references) or _NUNIT in _strings(document, "precompiledReferences", path))
+            or any(_is_test_runner(item) for item in references) or _NUNIT in _strings(document, "precompiledReferences", path))
     return Assembly(
         name=name, path=path, guid=guid, references=tuple(references),
         version_defines=tuple(sorted({item["name"] for item in versions if isinstance(item, dict) and isinstance(item.get("name"), str)})),
@@ -266,22 +274,21 @@ def changed_assemblies(
     return changed
 
 
-#: Members of an assembly definition whose change the graph can judge: the name (a renamed assembly counts under both names), the references (the
-#: graph is read as of the new state) and the root namespace (it only sets what the Editor proposes for new scripts).
-_GRAPH_MEMBERS = frozenset({"name", "references", "rootNamespace"})
+#: Members of an assembly definition whose change the graph can judge: the references (the graph is read as of the new state) and the root
+#: namespace (it only sets what the Editor proposes for new scripts). A new name is not one of them: `[SerializeReference]` data, `link.xml` and
+#: `InternalsVisibleTo` name the assembly.
+_GRAPH_MEMBERS = frozenset({"references", "rootNamespace"})
 
 
 def changed_definition(path: str, new: bytes, old: bytes) -> list[str]:
-    """The names a modified assembly definition of the project counts under: the new one and, when it was renamed, the old one too. Raises
-    `GraphError` when a member other than `name`, `references` and `rootNamespace` changed (platforms, defines, compiler options, ...): what such
-    a change does to the assemblies that reference it is not in the graph."""
+    """The name of a modified assembly definition of the project. Raises `GraphError` when a member other than `references` and
+    `rootNamespace` changed (the name, platforms, defines, compiler options, ...): what such a change does is not in the graph."""
     new_document, old_document = _json_document(path, new), _json_document(path, old)
     differ = sorted(key for key in set(new_document) | set(old_document)
                     if key not in _GRAPH_MEMBERS and json.dumps(new_document.get(key), sort_keys=True) != json.dumps(old_document.get(key), sort_keys=True))
     if differ:
-        raise GraphError(f"{path}: {', '.join(differ)} changed; only name, references and rootNamespace can be judged by the graph")
-    names = [parse_definition(path, new, None).name, parse_definition(path, old, None).name]
-    return list(dict.fromkeys(names))
+        raise GraphError(f"{path}: {', '.join(differ)} changed; only references and rootNamespace can be judged by the graph")
+    return [parse_definition(path, new, None).name]
 
 
 class ProjectFolders:

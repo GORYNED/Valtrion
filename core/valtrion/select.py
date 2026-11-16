@@ -11,6 +11,7 @@ import argparse
 import fnmatch
 import json
 import os
+import posixpath
 import re
 import shutil
 import subprocess
@@ -294,6 +295,17 @@ def validate_config(config: Config, validator: Validator | None = None) -> tuple
                 if editor:
                     warnings.append(f"areas[{index}].assemblies: the area's kind {area['kind']!r} has {', '.join(editor)} at {current}, below the "
                                     f"member's level {level}; a narrowed path selects no Editor suite at {current}")
+            member_kind = area["assemblies"]["kind"]
+            if member_kind in kinds and area["kind"] in kinds:
+                held = {raw.strip() for entries in kinds[member_kind].values() for raw in entries}
+                missing = [f"{current} {raw.strip()}" for current in LEVELS for raw in kinds[area["kind"]].get(current, ()) if raw.strip() not in held]
+                if missing:
+                    warnings.append(f"areas[{index}].assemblies: the member's kind {member_kind!r} lacks {', '.join(missing)} of the area's kind "
+                                    f"{area['kind']!r}; a narrowed path selects them at no level (the narrowed test assemblies aside)")
+            dropped = sorted(_dropped_kinds(config))
+            if dropped:
+                warnings.append(f"areas[{index}].assemblies: a narrowed path drops the kinds {', '.join(dropped)} of {config.preset['id']} "  # type: ignore[index]
+                                "(the narrowing replaces them); its other kinds, such as native or shader, stay")
     for index, rule in enumerate(config.json_rules):
         where = f"jsonRules[{index}]"
         glob = rule["glob"]
@@ -564,10 +576,19 @@ def _narrowed_areas(project_assemblies: Mapping[str, Sequence[Mapping[str, Any]]
 
 
 def _without_replaced(config: Config, matched: list[tuple[int, dict]], narrowed: Mapping[int, Any]) -> list[tuple[int, dict]]:
-    """The matching areas of a path, without the preset's areas of `presets.NARROWED_KINDS` when an `assemblies` member narrowed the path."""
+    """The matching areas of a path, without the preset's areas of `presets.NARROWED_KINDS` when an `assemblies` member narrowed the path. A kind
+    of that name that the project wrote itself is the project's and stays."""
     if not narrowed:
         return matched
-    return [(index, area) for index, area in matched if not (config.from_preset("areas", index) and area["kind"] in presets.NARROWED_KINDS)]
+    dropped = _dropped_kinds(config)
+    return [(index, area) for index, area in matched if not (config.from_preset("areas", index) and area["kind"] in dropped)]
+
+
+def _dropped_kinds(config: Config) -> set[str]:
+    """The preset kinds a narrowed path drops: `presets.NARROWED_KINDS` the project did not replace with its own kind of the same name."""
+    if config.preset is None:
+        return set()
+    return set(presets.NARROWED_KINDS) - set(config.preset["replaced"])
 
 
 def compile_areas(config: Config) -> list[tuple[int, re.Pattern[str], list[re.Pattern[str]], dict]]:
@@ -1080,6 +1101,55 @@ def _assembly_files(paths: Collection[str]) -> set[str]:
     return {path for path in paths if path.endswith((".asmdef", ".asmref"))}
 
 
+#: The files that make a folder a Unity project: without them a `Packages` folder may be a local package that another project uses.
+_PROJECT_MARKERS = ("Packages/manifest.json", "ProjectSettings/ProjectVersion.txt")
+
+
+def _exists(root: Path, path: str, include_worktree: bool) -> bool:
+    if include_worktree:
+        target = root / path
+        return target.is_file() and not target.is_symlink()
+    try:
+        _git(root, "cat-file", "-e", f"HEAD:{path}")
+    except GitError:
+        return False
+    return True
+
+
+def _require_unity_project(root: Path, project: str, include_worktree: bool) -> None:
+    """Raises `GraphError` when `project` lacks `Packages/manifest.json` or `ProjectSettings/ProjectVersion.txt`."""
+    for marker in _PROJECT_MARKERS:
+        path = f"{project}/{marker}" if project else marker
+        if not _exists(root, path, include_worktree):
+            raise asmgraph.GraphError(f"{project or '.'} has no {marker}, so it is not a Unity project whose test assemblies can be named "
+                                      "(its code may be a local package of another project)")
+
+
+def _refuse_foreign_users(root: Path, project: str, include_worktree: bool) -> None:
+    """Raises `GraphError` when another project of the repository takes a package of this one through a `file:` dependency: its test
+    assemblies reach this code too and are not in this project's graph."""
+    scopes = _project_scopes(project)
+    own = f"{project}/Packages/manifest.json" if project else "Packages/manifest.json"
+    arguments = ["ls-files", "-z", "--cached"] + (["--others", "--exclude-standard"] if include_worktree else [])
+    for manifest in sorted(set(_split_z(_git(root, *arguments, "--", ":(glob)**/Packages/manifest.json")))):
+        if manifest == own:
+            continue
+        try:
+            data = (root / manifest).read_bytes() if include_worktree else _git(root, "show", f"HEAD:{manifest}")
+            dependencies = parse_json_object(data).get("dependencies")
+        except (GitError, OSError, _NotJson):
+            continue  # not in this state, or not readable: no dependency of it can be named
+        if not isinstance(dependencies, dict):
+            continue
+        folder = manifest.rpartition("/")[0]
+        for name, value in sorted(dependencies.items()):
+            if not isinstance(value, str) or not value.startswith("file:"):
+                continue
+            target = posixpath.normpath(posixpath.join(folder, value[5:].replace("\\", "/")))
+            if any(target == scope or target.startswith(scope + "/") for scope in scopes):
+                raise asmgraph.GraphError(f"{manifest} takes {name} from {target} (file:): the tests of that project are not in this project's graph")
+
+
 class _ProjectGraph:
     """The assembly graph of one Unity project of the repository, read once per run. `error` says why it cannot be used (every path of the
     project then keeps its area's kind): it cannot be read, a name or a GUID is shared, it has too many assemblies, or an `.asmdef` or `.asmref`
@@ -1095,6 +1165,8 @@ class _ProjectGraph:
         self.loose: str | None = None
         self.include_worktree = include_worktree
         try:
+            _require_unity_project(root, project, include_worktree)
+            _refuse_foreign_users(root, project, include_worktree)
             files, read, assemblies, _ = _project_snapshot(root, project, include_worktree)
             if include_worktree:  # an assembly file deleted in the working tree is gone
                 files = files - {path for path in _assembly_files(files) if read(path) is None}
@@ -1156,8 +1228,13 @@ class _ProjectGraph:
         if name.endswith(".asmref"):
             names = [folders.referenced(path, self.read(path)), folders.referenced(path, self.old(path))]
             return {item: [path] for item in dict.fromkeys(names)}
-        if name.endswith(".meta") and asmgraph.is_folder_meta(self.read(path) if self.present(path) else self.old(path)):
-            return {}  # the meta file of a folder belongs to no assembly and changes no code
+        if name.endswith(".meta"):
+            new = self.read(path) if self.present(path) else None
+            old = self.old(path) if path in self.old_files else None
+            if asmgraph.is_folder_meta(new if new is not None else old or b""):
+                if new is None or old is None or asmgraph.guid_of_meta(new) != asmgraph.guid_of_meta(old):
+                    raise asmgraph.GraphError(f"{path}: a folder was added or removed, or its GUID changed; what refers to it is not in the graph")
+                return {}  # the meta file of a folder belongs to no assembly and changes no code
         raise asmgraph.GraphError(f"{path}: not C# code or an assembly file, so the assembly graph cannot judge it")
 
 
