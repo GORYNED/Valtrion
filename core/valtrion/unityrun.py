@@ -560,6 +560,13 @@ def keep_result(plan: unitycache.Plan, root: Path, result_is_new: bool) -> str:
     if not result_is_new:
         return f"cache: not stored (key {short}): the -testResults file was not written by this run"
     again = _replan(plan)
+    note = ""
+    if again.key != plan.key:
+        build_output = unitycache.only_build_output(plan, again)
+        if build_output:  # stored under the key of the state the tests started from
+            shown = ", ".join(build_output[:3]) + (f" and {len(build_output) - 3} more" if len(build_output) > 3 else "")
+            note = f" (files git ignores changed during the run and were not taken as inputs: {shown})"
+            again = plan
     if again.key != plan.key:
         why = unitycache.changed_inputs(plan, again)
         if plan.project is not None:
@@ -578,7 +585,7 @@ def keep_result(plan: unitycache.Plan, root: Path, result_is_new: bool) -> str:
         stored, why = None, f"it cannot be written ({error})"
     if stored is None:
         return f"cache: not stored (key {short}): {why}"
-    return f"cache: stored PASS under key {plan.key}"
+    return f"cache: stored PASS under key {plan.key}{note}"
 
 
 def _replan(plan: unitycache.Plan) -> unitycache.Plan:

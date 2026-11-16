@@ -24,6 +24,7 @@ import os
 import plistlib
 import re
 import subprocess
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Sequence
@@ -218,8 +219,15 @@ def remember_library(root: Path, project: Path) -> None:
     try:
         record.parent.mkdir(parents=True, exist_ok=True)
         record.write_text(current + "\n", encoding="utf-8")
+        stale = time.time() - LIBRARY_KEEP_DAYS * 86400  # records of working copies that are gone
+        for other in record.parent.glob("*.txt"):
+            if other != record and other.stat().st_mtime < stale:
+                other.unlink()
     except OSError:
         pass
+
+
+LIBRARY_KEEP_DAYS = 30
 
 
 _TEXT_LIMIT = 4 * 1024 * 1024
@@ -351,42 +359,40 @@ def _inside(path: Path, project_real: str) -> str | None:
     return f"{PROJECT_LABEL}/{Path(relative).as_posix()}"
 
 
-@dataclass(frozen=True)
-class Ignored:
-    """The files and folders of a project that git ignores (`git ls-files --others --ignored --exclude-standard --directory`), as
-    normalized absolute paths; empty when the project is not in a git working copy or git cannot say."""
-    files: frozenset[str] = frozenset()
-    folders: tuple[str, ...] = ()
-
-    def covers(self, path: Path) -> bool:
-        text = os.path.normcase(os.path.abspath(path))
-        return text in self.files or any(text.startswith(folder) for folder in self.folders)
+_GIT_TIMEOUT_SEC = 10
 
 
-_GIT_TIMEOUT_SEC = 60
-
-
-def git_ignored(project: Path) -> Ignored:
-    """What git ignores under the project's `Assets` and `Packages`. Any failure means nothing is left out (the key keeps every file)."""
+def git_ignored_labels(project: Path, labels: Sequence[str]) -> set[str]:
+    """Of the `<project>/...` labels, the ones git ignores and does not track (`git check-ignore`, which also answers for a file that is
+    gone). Any failure answers none."""
+    paths = {label[len(PROJECT_LABEL) + 1:]: label for label in labels if label.startswith(PROJECT_LABEL + "/")}
+    if not paths:
+        return set()
     environment = {name: value for name, value in os.environ.items() if not name.startswith("GIT_")}
     try:
-        completed = subprocess.run(["git", "ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "-z", "--",
-                                    "Assets", "Packages"], cwd=project, capture_output=True, timeout=_GIT_TIMEOUT_SEC, check=False,
-                                   env=environment, **nowindow.OPTIONS)
+        completed = subprocess.run(["git", "check-ignore", "-z", "--stdin"], cwd=project, capture_output=True, timeout=_GIT_TIMEOUT_SEC,
+                                   check=False, env=environment, input="\0".join(paths).encode("utf-8", "surrogateescape") + b"\0",
+                                   **nowindow.OPTIONS)
     except (OSError, subprocess.SubprocessError):
-        return Ignored()
-    if completed.returncode != 0:
-        return Ignored()
-    files, folders = set(), []
-    for item in completed.stdout.decode("utf-8", "surrogateescape").split("\0"):
-        if not item:
-            continue
-        absolute = os.path.normcase(os.path.abspath(Path(project) / item))
-        if item.endswith("/"):
-            folders.append(absolute.rstrip("\\/") + os.sep)
-        else:
-            files.add(absolute)
-    return Ignored(frozenset(files), tuple(folders))
+        return set()
+    if completed.returncode not in (0, 1):  # 1: none of them is ignored; anything else: git cannot say
+        return set()
+    return {paths[item] for item in completed.stdout.decode("utf-8", "surrogateescape").split("\0") if item in paths}
+
+
+def only_build_output(before: Plan, after: Plan) -> list[str]:
+    """The inputs that changed while Unity ran when every one of them is a file git ignores that is not code (a generated `link.xml` written
+    and removed by a build step): such a run is stored under the key of the state it started from. Empty when anything else changed."""
+    if after.key is None or before.project is None:
+        return []
+    old, new = before.components.get("files", {}), after.components.get("files", {})
+    changed = sorted(label for label in set(old) | set(new) if old.get(label) != new.get(label))
+    others = {key: value for key, value in before.components.items() if key != "files"}
+    if not changed or others != {key: value for key, value in after.components.items() if key != "files"}:
+        return []
+    if any(_compiled(label.rsplit("/", 1)[-1]) or _precompiled(label.split("/", 1)[-1]) for label in changed):
+        return []
+    return changed if git_ignored_labels(before.project, changed) == set(changed) else []
 
 
 @dataclass(frozen=True)
@@ -413,7 +419,6 @@ class _Scan:
 
     def __post_init__(self) -> None:
         project_real = os.path.realpath(self.project)
-        ignored = git_ignored(self.project)
         roots: list[tuple[str, Path]] = []
         if (self.project / "Assets").is_dir():
             roots.append((f"{PROJECT_LABEL}/Assets", self.project / "Assets"))
@@ -465,12 +470,7 @@ class _Scan:
                 for name in sorted(item for item in filenames if not _ignored(item)):
                     path = Path(dirpath) / name
                     relative = f"{relative_dir}/{name}" if relative_dir else name
-                    precompiled, compiled = _precompiled(relative), _compiled(name)
-                    # A file git ignores is build output (a generated link.xml, say) that may come and go while Unity runs; code and
-                    # precompiled files stay in the key even when ignored, as they compile with the run.
-                    if not (precompiled or compiled) and ignored.covers(path):
-                        continue
-                    self.files.append(_File(f"{label}/{relative}", path, folder, precompiled, compiled))
+                    self.files.append(_File(f"{label}/{relative}", path, folder, _precompiled(relative), _compiled(name)))
                     if name.endswith(".asmdef"):
                         if folder in self._definitions:
                             raise GraphError(f"{label}/{relative_dir}: holds more than one assembly definition")

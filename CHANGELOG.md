@@ -6,7 +6,7 @@ Core (the `valtrion` Python package) and the Unity package `com.goryned.valtrion
 
 - **Upgrade note.** `compat.json` is unchanged: Core 0.23.2 pairs with Unity packages 0.17.x, 0.18.x and 0.19.x like 0.23.1. Update with `pipx upgrade valtrion` (and `valtrion hosts sync` on SSH hosts).
 
-- **The `unity run` result cache leaves files git ignores out of the key (#167).** Build output under `Assets` or `Packages` that git ignores (a generated `link.xml` written during the run and removed after it) no longer changes the key and stops a result from being stored; ignored code stays in the key, and a project outside git keeps every file.
+- **A build file that changes while Unity runs no longer stops a result from being stored (#167).** When the only inputs that changed during the run are files git ignores and does not track and none is code (a generated `link.xml` written and removed by a build step), the result is stored under the key of the state the run started from. Ignored files stay in the key, so an ignored asset that tests read still counts.
 - **`cache: not stored` says when the run was the first Valtrion saw with the working copy's `Library`** (new or rebuilt), when the Editor often re-saves assets; the next identical run usually stores.
 
 ## 0.23.1 (2026-11-16)

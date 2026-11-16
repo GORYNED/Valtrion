@@ -1,60 +1,80 @@
-"""The result cache leaves git-ignored build files out of the key, and says when a run that was not stored was the first one Valtrion
-saw with the working copy's Library."""
+"""Git-ignored build files that change while Unity runs do not stop a result from being stored (it is stored under the key of the state the
+run started from; ignored files stay in the key), and `cache: not stored` says when a run was the first Valtrion saw with the copy's Library."""
 
 import os
+import shutil
 import subprocess
+import time
+import unittest
 from pathlib import Path
 from unittest import mock
 
 from valtrion import unitycache, unityrun
 
-from .test_unity_cache import CacheTestCase, write
+from .test_unity_cache import PASSING, CacheTestCase, write
 
 
 def git(folder: Path, *arguments: str) -> None:
     subprocess.run(["git", "-c", "init.defaultBranch=main", *arguments], cwd=folder, check=True, capture_output=True)
 
 
-class IgnoredFileTests(CacheTestCase):
+@unittest.skipUnless(shutil.which("git"), "needs git")
+class BuildOutputTests(CacheTestCase):
     def setUp(self):
         super().setUp()
         git(self.project, "init", "-q")
         (self.project / ".gitignore").write_text("Assets/Generated/\nAssets/link.xml\nAssets/link.xml.meta\nAssets/Gen.cs\n", encoding="utf-8")
+        write(self.results, PASSING)
+        self.root = unitycache.cache_root(self.home)
 
-    def key(self):  # every file of the project counts in a run without -assemblyNames
-        found = self.plan("-testFilter", "x", assemblies=None)
-        self.assertIsNotNone(found.key, found.reason)
-        return found
+    def plan(self, *extra, **options):
+        return super().plan("-testFilter", "x", *extra, assemblies=None, **options)
 
-    def test_an_ignored_build_file_that_comes_and_goes_does_not_change_the_key(self):
-        before = self.key()
-        write(self.project / "Assets" / "link.xml", "<linker/>\n")
-        write(self.project / "Assets" / "link.xml.meta", "guid: 0\n")
+    def test_ignored_files_stay_in_the_key(self):
+        before = self.plan()
         write(self.project / "Assets" / "Generated" / "Data.asset", "a: 1\n")
-        after = self.key()
-        self.assertEqual(before.key, after.key)
-        self.assertNotIn("<project>/Assets/link.xml", after.components["files"])
+        self.assertNotEqual(before.key, self.plan().key)  # an ignored asset the tests may read is an input
 
-    def test_a_tracked_or_untracked_but_not_ignored_asset_still_counts(self):
-        before = self.key()
+    def test_a_build_file_written_during_the_run_is_stored_under_the_starting_key(self):
+        before = self.plan()
+        write(self.project / "Assets" / "link.xml", "<linker/>\n")  # what a build step writes while Unity runs
+        write(self.project / "Assets" / "link.xml.meta", "guid: 0\n")
+        line = unityrun.keep_result(before, self.root, True)
+        self.assertIn(f"stored PASS under key {before.key}", line)
+        self.assertIn("files git ignores changed during the run", line)
+        self.assertIn("<project>/Assets/link.xml", line)
+
+    def test_a_build_file_removed_during_the_run_is_stored_too(self):
+        write(self.project / "Assets" / "link.xml", "<linker/>\n")
+        before = self.plan()
+        (self.project / "Assets" / "link.xml").unlink()
+        self.assertIn("stored PASS", unityrun.keep_result(before, self.root, True))
+
+    def test_a_change_that_is_not_ignored_is_not_stored(self):
+        before = self.plan()
+        write(self.project / "Assets" / "link.xml", "<linker/>\n")
         write(self.project / "Assets" / "Data.asset", "a: 1\n")
-        self.assertNotEqual(before.key, self.key().key)
+        line = unityrun.keep_result(before, self.root, True)
+        self.assertIn("not stored", line)
+        self.assertIn("Data.asset", line)
 
-    def test_ignored_code_stays_in_the_key(self):
-        before = self.key()
+    def test_ignored_code_that_changed_is_not_tolerated(self):
+        before = self.plan()
         write(self.project / "Assets" / "Gen.cs", "class Gen {}\n")
-        after = self.key()
-        self.assertIn("<project>/Assets/Gen.cs", after.components["files"])
-        self.assertNotEqual(before.key, after.key)
+        self.assertIn("not stored", unityrun.keep_result(before, self.root, True))
 
-    def test_without_git_nothing_is_left_out(self):
+    def test_without_git_nothing_is_tolerated(self):
+        before = self.plan()
         write(self.project / "Assets" / "link.xml", "<linker/>\n")
         with mock.patch.object(unitycache.subprocess, "run", side_effect=OSError("no git")):
-            self.assertIn("<project>/Assets/link.xml", self.key().components["files"])
+            self.assertIn("not stored", unityrun.keep_result(before, self.root, True))
 
-    def test_a_folder_outside_git_ignores_nothing(self):
-        found = unitycache.git_ignored(self.base / "editor")  # the temporary folder is not a git working copy
-        self.assertEqual((frozenset(), ()), (found.files, found.folders))
+    def test_a_tracked_file_that_matches_an_ignore_rule_is_not_build_output(self):
+        write(self.project / "Assets" / "link.xml", "<linker/>\n")
+        git(self.project, "add", "-f", "Assets/link.xml")
+        before = self.plan()
+        write(self.project / "Assets" / "link.xml", "<linker changed='1'/>\n")
+        self.assertIn("not stored", unityrun.keep_result(before, self.root, True))
 
 
 class FirstRunTests(CacheTestCase):
@@ -71,10 +91,9 @@ class FirstRunTests(CacheTestCase):
 
     def test_the_not_stored_line_says_so_once(self):
         (self.project / "Library").mkdir()
-        results = self.results
-        write(results, unitycache_passing())
-        plan = self.plan()
+        write(self.results, PASSING)
         settings = self.project / "ProjectSettings" / "ProjectSettings.asset"
+        plan = self.plan()
         settings.write_text("changed: 1\n", encoding="utf-8")
         line = unityrun.keep_result(plan, self.root(), True)
         self.assertIn("not stored", line)
@@ -85,15 +104,13 @@ class FirstRunTests(CacheTestCase):
         self.assertIn("not stored", line)
         self.assertNotIn("first run Valtrion saw", line)
 
-    def test_a_stored_run_records_the_library(self):
+    def test_a_stored_run_records_the_library_and_old_records_are_pruned(self):
         (self.project / "Library").mkdir()
-        write(self.results, unitycache_passing())
-        line = unityrun.keep_result(self.plan(), self.root(), True)
-        self.assertIn("stored PASS", line)
+        old = self.root() / unitycache.LIBRARIES / "gone.txt"
+        write(old, "x\n")
+        past = time.time() - (unitycache.LIBRARY_KEEP_DAYS + 1) * 86400
+        os.utime(old, (past, past))
+        write(self.results, PASSING)
+        self.assertIn("stored PASS", unityrun.keep_result(self.plan(), self.root(), True))
         self.assertFalse(unitycache.first_with_library(self.root(), self.project))
-        self.assertTrue(os.path.isdir(self.root() / unitycache.LIBRARIES))
-
-
-def unitycache_passing() -> str:
-    from .test_unity_cache import PASSING
-    return PASSING
+        self.assertFalse(old.exists())
