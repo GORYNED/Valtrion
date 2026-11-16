@@ -11,7 +11,8 @@ of `Packages/` and in the `file:` packages of the manifest; a file belongs to th
 `.asmref`. Whatever cannot be determined gives no key, and the run is not cached (fail closed).
 
 The store holds one entry per key, `<valtrion home>/unity-result-cache/<key>.json`, shared by every working copy on the host. Only a
-run whose result file is a `test-run` with result `Passed` and `failed="0"` is stored; the trust rules on reading are those of
+run whose result file is a `test-run` with result `Passed` or `Skipped` (ignored tests), `failed="0"`, no inconclusive test and a
+passed test is stored; the trust rules on reading are those of
 `resultcache` (a regular file of this user, no link or junction, a size limit, the stored text must match its recorded hash).
 """
 
@@ -477,10 +478,17 @@ def failure(text: str) -> str | None:
     tag, attributes = root[0]
     if tag != "test-run":
         return f"the result file is a <{tag}>, not a <test-run>"
-    if attributes.get("result") != "Passed":
-        return f"the test run is {attributes.get('result')!r}, not 'Passed'"
+    # NUnit reports a run whose only non-passing tests are ignored as `Skipped:Ignored`: that is a pass when nothing failed and some test passed.
+    result = attributes.get("result") or ""
+    if result.split(":", 1)[0] not in ("Passed", "Skipped"):
+        return f"the test run is {result!r}, not 'Passed'"
     if attributes.get("failed") != "0":
         return f"the test run has failed={attributes.get('failed')!r}"
+    if attributes.get("inconclusive", "0") != "0":
+        return f"the test run has inconclusive={attributes.get('inconclusive')!r}"
+    passed = attributes.get("passed", "")
+    if not passed.isdigit() or int(passed) < 1:
+        return f"the test run has passed={passed!r}: no test passed"
     return None
 
 

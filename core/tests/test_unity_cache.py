@@ -302,6 +302,12 @@ class KeyTests(CacheTestCase):
         self.assertIsNone(unitycache.failure(PASSING))
         self.assertIn("Failed", unitycache.failure(PASSING.replace('result="Passed"', 'result="Failed"')))
         self.assertIn("failed=", unitycache.failure(PASSING.replace('failed="0"', 'failed="1"')))
+        # A real Editor reports a run with one ignored test as `Skipped:Ignored`: a pass while nothing failed and some test passed.
+        ignored = PASSING.replace('result="Passed"', 'result="Skipped:Ignored"').replace('passed="3"', 'passed="2"')
+        self.assertIsNone(unitycache.failure(ignored))
+        self.assertIn("no test passed", unitycache.failure(ignored.replace('passed="2"', 'passed="0"')))
+        self.assertIn("inconclusive", unitycache.failure(PASSING.replace('failed="0"', 'failed="0" inconclusive="1"')))
+        self.assertIn("Inconclusive", unitycache.failure(PASSING.replace('result="Passed"', 'result="Inconclusive"')))
         self.assertIn("test-run", unitycache.failure("<test-suite/>"))
         self.assertIn("XML", unitycache.failure("<test-run"))
         self.assertIn("document type", unitycache.failure('<!DOCTYPE x [<!ENTITY a "b">]><test-run result="Passed" failed="0"/>'))
