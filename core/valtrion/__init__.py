@@ -1,3 +1,3 @@
 """Valtrion device validation host CLI. Python 3 standard library only."""
 
-__version__ = "0.23.2"
+__version__ = "0.24.0"
