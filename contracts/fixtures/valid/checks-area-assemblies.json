@@ -4,13 +4,13 @@
   "runners": { "unity-editmode": "run-tests --mode editmode --assemblies {assemblies}", "unity-playmode": "run-tests --mode playmode --assemblies {assemblies}" },
   "areas": [
     { "glob": "Assets/**/*.cs", "kind": "managed",
-      "assemblies": { "kind": "narrowed", "runner": "unity-editmode", "playmodeRunner": "unity-playmode", "level": "L2" } },
+      "assemblies": { "kind": "narrowed", "runner": "unity-editmode", "playmodeRunner": "unity-playmode", "level": "affected" } },
     { "glob": "**/*", "kind": "light" }
   ],
   "kinds": {
-    "light": { "L0": ["l0"] },
-    "managed": { "L2": ["editmode:Example.Tests,Example.Other.Tests"] },
-    "narrowed": { "L0": ["l0"], "L3": ["editmode:Example.Tests,Example.Other.Tests"] }
+    "light": { "structure": ["structure"] },
+    "managed": { "affected": ["editmode:Example.Tests,Example.Other.Tests"] },
+    "narrowed": { "structure": ["structure"], "full": ["editmode:Example.Tests,Example.Other.Tests"] }
   },
   "unclassified": "widest"
 }

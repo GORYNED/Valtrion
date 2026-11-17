@@ -21,19 +21,19 @@ class ModeCase(RepoCase):
 
 class ModeTests(ModeCase):
     def test_each_mode_selects_up_to_its_level(self):
-        for mode, level in (("fast", "L1"), ("affected", "L2")):
+        for mode, level in (("fast", "fast"), ("affected", "affected")):
             code, payload, _ = self.select("--mode", mode)
             self.assertEqual((0, level, mode), (code, payload["level"], payload["mode"]))
         code, payload, _ = self.select("--mode", "full", "--reason", "data-migration", kind="scheduled")
-        self.assertEqual((0, "L3", "full"), (code, payload["level"], payload["mode"]))
+        self.assertEqual((0, "full", "full"), (code, payload["level"], payload["mode"]))
         self.assertEqual(["player:win64"], keys(payload, "playerTests"))
         code, payload, _ = self.select("--mode", "release")
-        self.assertEqual((0, "L4", "release"), (code, payload["level"], payload["mode"]))
+        self.assertEqual((0, "release", "release"), (code, payload["level"], payload["mode"]))
         self.assertEqual(["example.perf.open-playback"], keys(payload, "devicePlans"))
 
     def test_the_default_is_the_affected_checks(self):
         code, payload, _ = self.select()
-        self.assertEqual((0, "L2", "affected", None), (code, payload["level"], payload["mode"], payload["fullSet"]))
+        self.assertEqual((0, "affected", "affected", None), (code, payload["level"], payload["mode"], payload["fullSet"]))
         self.assertEqual([], payload["devicePlans"])
 
     def test_fast_leaves_out_the_suites_of_level_two(self):
@@ -43,7 +43,7 @@ class ModeTests(ModeCase):
         self.assertEqual(["editmode:Release.Tests"], keys(payload))
 
     def test_mode_and_level_exclude_each_other(self):
-        code, _, err = self.select("--mode", "fast", "--level", "L1")
+        code, _, err = self.select("--mode", "fast", "--level", "fast")
         self.assertEqual(1, code)
         self.assertIn("--mode or --level", err)
 
@@ -73,11 +73,11 @@ class ReasonTests(ModeCase):
         self.assertEqual(1, code)
 
     def test_a_level_above_the_default_needs_a_reason_when_the_map_lists_them(self):
-        for level in ("L3", "L4"):
+        for level in ("full", "release"):
             code, _, err = self.select("--level", level)
             self.assertEqual(1, code)
             self.assertIn("is a full set", err)
-        code, payload, _ = self.select("--level", "L4", "--reason", "release")
+        code, payload, _ = self.select("--level", "release", "--reason", "release")
         self.assertEqual((0, "release", "release"), (code, payload["fullSet"]["reason"], payload["mode"]))
 
     def test_a_reason_without_a_full_set_is_an_error(self):
@@ -87,9 +87,9 @@ class ReasonTests(ModeCase):
 
     def test_a_map_without_the_list_allows_any_level_and_records_the_reason_as_given(self):
         self.checks_path.write_text(json.dumps(copy.deepcopy(MAP)), encoding="utf-8")
-        code, payload, _ = self.select("--level", "L4")
+        code, payload, _ = self.select("--level", "release")
         self.assertEqual((0, None), (code, payload["fullSet"]["reason"]))
-        code, payload, _ = self.select("--level", "L4", "--reason", "anything")
+        code, payload, _ = self.select("--level", "release", "--reason", "anything")
         self.assertEqual("anything", payload["fullSet"]["reason"])
 
 
@@ -97,17 +97,17 @@ class ExplainTests(ModeCase):
     def test_explain_names_the_reason_and_the_checks_by_level(self):
         code, text, _ = run("select", "--checks", str(self.checks_path), "--kind", "release", "--mode", "release", "--reason", "data-migration", "--explain")
         self.assertEqual(0, code)
-        self.assertIn("Level: mode release, L4 is a full set, reason data-migration", text)
-        self.assertIn("  L2: 1 (editmode:Release.Tests)", text)
-        self.assertIn("  L4: 1 (example.perf.open-playback)", text)
+        self.assertIn("Level: mode release, release is a full set, reason data-migration", text)
+        self.assertIn("  affected: 1 (editmode:Release.Tests)", text)
+        self.assertIn("  release: 1 (example.perf.open-playback)", text)
         code, text, _ = run("select", "--checks", str(self.checks_path), "--kind", "release", "--explain")
-        self.assertIn("Level: mode affected, L2: the checks the change affects", text)
-        self.assertNotIn("L4:", text)
+        self.assertIn("Level: mode affected, affected: the checks the change affects", text)
+        self.assertNotIn("  release: ", text)
 
     def test_the_json_has_the_breakdown(self):
         _, payload, _ = self.select("--mode", "release")
-        self.assertEqual(["editmode:Release.Tests"], payload["levelBreakdown"]["L2"])
-        self.assertEqual(["example.perf.open-playback"], payload["levelBreakdown"]["L4"])
+        self.assertEqual(["editmode:Release.Tests"], payload["levelBreakdown"]["affected"])
+        self.assertEqual(["example.perf.open-playback"], payload["levelBreakdown"]["release"])
 
 
 class ConfigTests(RepoCase):

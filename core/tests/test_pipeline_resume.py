@@ -1034,7 +1034,7 @@ class ReportTests(unittest.TestCase):
         from valtrion import report
         from valtrion.select import Check
         result = _result(reusedFrom={"runId": "job-a-3-1", "key": "e" * 64})
-        row = report._result_row(Check("perf.open", "device", "android", "L2"), "android", result)
+        row = report._result_row(Check("perf.open", "device", "android", "affected"), "android", result)
         self.assertIn("reused from run job-a-3-1", row.detail)
 
 

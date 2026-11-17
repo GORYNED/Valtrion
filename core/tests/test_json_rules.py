@@ -23,12 +23,12 @@ MAP["jsonRules"] = [
     {"glob": "libs/lock.json", "root": "packages", "keys": [{"match": "libs.*", "kind": "libs-lock"}]},
 ]
 MAP["kinds"] = {
-    "libs-all": {"L2": ["editmode:Libs.All.Tests@echo {assemblies}"]},
-    "libs-core": {"L0": ["l0:core"]},
-    "libs-ui": {"L0": ["l0:ui"]},
-    "libs-lock": {"L0": ["l0:lock"]},
-    "app": {"L0": ["l0"]},
-    "docs": {"L0": ["l0"]},
+    "libs-all": {"affected": ["editmode:Libs.All.Tests@echo {assemblies}"]},
+    "libs-core": {"structure": ["structure:core"]},
+    "libs-ui": {"structure": ["structure:ui"]},
+    "libs-lock": {"structure": ["structure:lock"]},
+    "app": {"structure": ["structure"]},
+    "docs": {"structure": ["structure"]},
 }
 MANIFEST = {"name": "app", "version": "1", "dependencies": {"libs.core": "1.0.0", "libs.ui": {"version": "2.0.0", "optional": False}, "tools.lint": "3"}}
 LOCK = {"packages": {"libs.core": {"hash": "aa"}, "libs.ui": {"hash": "bb"}}}

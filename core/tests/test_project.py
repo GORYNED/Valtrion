@@ -326,7 +326,7 @@ class ChecksSettingTests(ProjectCase):
     """`checks` in valtrion.json moves the default check map; --checks still wins."""
 
     CHECKS = json.dumps({"schema": "gdv.checks/1", "platforms": {"required": ["ios"], "dev": ["editor"]}, "areas": [{"glob": "**", "kind": "docs"}],
-                         "kinds": {"docs": {"L0": ["l0"]}}, "unclassified": "widest"})
+                         "kinds": {"docs": {"structure": ["structure"]}}, "unclassified": "widest"})
 
     def setUp(self):
         super().setUp()

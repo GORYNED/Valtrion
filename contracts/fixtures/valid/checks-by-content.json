@@ -11,8 +11,8 @@
     ] }
   ],
   "kinds": {
-    "managed": { "L2": ["editmode:Example.Tests"] },
-    "native": { "L2": ["editmode:Example.Tests"], "L3": ["player:ios"] }
+    "managed": { "affected": ["editmode:Example.Tests"] },
+    "native": { "affected": ["editmode:Example.Tests"], "full": ["player:ios"] }
   },
   "unclassified": "widest"
 }

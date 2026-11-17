@@ -5,7 +5,7 @@
     { "glob": "Assets/**/*.cs", "kind": "managed", "assemblies": { "kind": "managed" } }
   ],
   "kinds": {
-    "managed": { "L2": ["editmode:Example.Tests"] }
+    "managed": { "affected": ["editmode:Example.Tests"] }
   },
   "unclassified": "widest"
 }

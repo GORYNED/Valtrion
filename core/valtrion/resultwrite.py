@@ -1,6 +1,6 @@
 """`valtrion result write`: a `gdv.result/1` for a check that Valtrion does not run itself.
 
-`select` names L0 checks (`l0`, `l0:name`), Editor suites (`editmode:ASSEMBLY`, `playmode:ASSEMBLY`) and player builds (`player:TARGET`).
+`select` names structure checks (`structure`, `structure:name`), Editor suites (`editmode:ASSEMBLY`, `playmode:ASSEMBLY`) and player builds (`player:TARGET`).
 A project often runs them with its own runner and decides PASS or FAIL itself (skip policy, XML inspection). This command records
 that decision so `valtrion report` can show it: the caller gives the status, Valtrion never interprets it. The document is the
 ordinary `gdv.result/1`, with `plan.id` equal to the check key (how `report` matches a result to a check) and, because no plan file
@@ -26,7 +26,7 @@ PLATFORMS = ("editor", "windows", "macos", "ios", "android")
 _HEX40 = re.compile(r"[0-9a-f]{40}")
 _NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]*")
 #: The checks Valtrion does not run itself. A `device:` plan id is a result of `valtrion run` / `pipeline`, never written by hand.
-_KEY = re.compile(r"(l0(:.+)?|(editmode|playmode|player):.+)")
+_KEY = re.compile(r"(structure(:.+)?|(editmode|playmode|player):.+)")
 #: No device is named in these results, so a claim of physical or emulator evidence cannot be true.
 EVIDENCE = (constants.EVIDENCE_EDITOR, constants.EVIDENCE_HOST)
 
@@ -36,11 +36,11 @@ class WriteRefused(Exception):
 
 
 def defaults_for(key: str) -> tuple[str | None, str]:
-    """(platform, evidence) a check key implies: Editor suites ran in the Editor, `l0` on the host, `player:ios` on that platform."""
+    """(platform, evidence) a check key implies: Editor suites ran in the Editor, `structure` on the host, `player:ios` on that platform."""
     kind, _, target = key.partition(":")
     if kind in ("editmode", "playmode"):
         return "editor", constants.EVIDENCE_EDITOR
-    if kind == "l0":
+    if kind == "structure":
         return "editor", constants.EVIDENCE_HOST
     if kind == "player":
         return (target if target in PLATFORMS else None), constants.EVIDENCE_HOST
@@ -84,7 +84,7 @@ def build_document(
 def write_result(arguments: argparse.Namespace) -> Path:
     key = arguments.key
     if not _KEY.fullmatch(key):
-        raise WriteRefused(f"{key!r} is not an l0, editmode, playmode or player check key; a device check is recorded by `valtrion run` or `valtrion pipeline`")
+        raise WriteRefused(f"{key!r} is not a structure, editmode, playmode or player check key; a device check is recorded by `valtrion run` or `valtrion pipeline`")
     if not _NAME.fullmatch(key) or len(key) > 200:
         raise WriteRefused(f"check key {key!r} is not a valid identifier (letters, digits and ._:-); use the key exactly as `valtrion select --json` lists it")
     if arguments.status != constants.PASS and not (arguments.reason or "").strip():
@@ -145,13 +145,13 @@ def write_result(arguments: argparse.Namespace) -> Path:
 
 def _configure(parser: argparse.ArgumentParser) -> None:
     sub = parser.add_subparsers(dest="action", required=True)
-    write = sub.add_parser("write", help="write a gdv.result/1 for a check Valtrion did not run (L0, Editor suite, player)")
-    write.add_argument("key", help="the check key exactly as `valtrion select --json` lists it (`l0`, `l0:lint`, `editmode:Media.Tests`, `player:ios`)")
+    write = sub.add_parser("write", help="write a gdv.result/1 for a check Valtrion did not run (structure, Editor suite, player)")
+    write.add_argument("key", help="the check key exactly as `valtrion select --json` lists it (`structure`, `structure:lint`, `editmode:Media.Tests`, `player:ios`)")
     write.add_argument("--status", required=True, choices=constants.STATUSES, help="decided by the caller; Valtrion does not interpret skip policies")
     write.add_argument("--reason", help="required for every status but PASS, forbidden for PASS")
     write.add_argument("--out", type=Path, required=True, help="the folder to write into; `valtrion report --results` reads it")
     write.add_argument("--evidence", choices=EVIDENCE, help="default: editor for editmode/playmode, host otherwise; physical and emulator are only for results of a device run")
-    write.add_argument("--platform", choices=PLATFORMS, help="default: editor for editmode/playmode/l0, the target of player:ios|android|windows|macos")
+    write.add_argument("--platform", choices=PLATFORMS, help="default: editor for editmode/playmode/structure, the target of player:ios|android|windows|macos")
     write.add_argument("--repo-dir", type=Path, help="a folder of the repository whose HEAD was checked (default: the current directory)")
     write.add_argument("--sha", help="the full commit; must equal HEAD (default: HEAD)")
     write.add_argument("--dirty", action="store_true", help="mark the result dirty even if git shows a clean tree (never the other way round)")

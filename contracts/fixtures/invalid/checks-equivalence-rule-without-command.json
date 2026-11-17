@@ -3,6 +3,6 @@
   "platforms": { "required": ["ios"] },
   "areas": [{ "glob": "Assets/Data/**", "kind": "data" }],
   "equivalenceRules": [{ "glob": "Assets/Data/**/*.asset", "kind": "data", "command": [] }],
-  "kinds": { "data": { "L0": ["l0"] } },
+  "kinds": { "data": { "structure": ["structure"] } },
   "unclassified": "widest"
 }

@@ -17,8 +17,8 @@ UNITY_SLOTS = ("editor", "player", "device")
 _DOC_EXTENSIONS = ("md", "txt", "png", "jpg", "jpeg", "gif", "svg", "pdf")
 _SCRIPT_EXTENSIONS = ("py", "sh", "ps1", "cmd", "bat", "md", "txt", "json", "yml", "yaml", "toml", "ini", "cfg")
 
-_HEAVY = {"L0": ["l0"], "L2": ["bind:editor"], "L3": ["bind:player"], "L4": ["bind:device"]}
-_EDITOR = {"L0": ["l0"], "L2": ["bind:editor"]}
+_HEAVY = {"structure": ["structure"], "affected": ["bind:editor"], "full": ["bind:player"], "release": ["bind:device"]}
+_EDITOR = {"structure": ["structure"], "affected": ["bind:editor"]}
 
 NATIVE_EXTENSIONS = ("so", "a", "aar", "jar", "dylib", "bundle", "xcframework", "framework", "mm", "m", "h", "c", "cc", "cpp", "hpp", "swift", "java",
                       "kt", "gradle", "plist", "entitlements", "xcprivacy", "aidl", "proguard", "dll")
@@ -44,7 +44,7 @@ def _dependency_rule(glob: str) -> dict[str, Any]:
 
 def _unity_1() -> dict[str, Any]:
     # `docs/` and `tools/` hold text, scripts and pictures, never assets: a Unity project nested under them (a showcase, a sample) must not
-    # fall to L0 because of its folder, so the rules name file types, and an asset or prefab there stays for the project's policy.
+    # fall to structure because of its folder, so the rules name file types, and an asset or prefab there stays for the project's policy.
     areas: list[dict[str, Any]] = [
         *({"glob": f"docs/**/*.{extension}", "kind": "docs"} for extension in _DOC_EXTENSIONS),
         {"glob": "**/*.md", "kind": "docs"},
@@ -79,9 +79,9 @@ def _unity_1() -> dict[str, Any]:
         "jsonRules": [_dependency_rule("**/Packages/manifest.json"), _dependency_rule("**/Packages/packages-lock.json")],
         "contentRules": [{"glob": "**/*.cs", "kind": "comment-only", "lineComment": ["//"], "blockComment": {"start": "/*", "end": "*/"}}],
         "kinds": {
-            "docs": {"L0": ["l0"]},
-            "tooling": {"L0": ["l0"]},
-            "comment-only": {"L0": ["l0"]},
+            "docs": {"structure": ["structure"]},
+            "tooling": {"structure": ["structure"]},
+            "comment-only": {"structure": ["structure"]},
             "asset-meta": copy.deepcopy(_EDITOR),
             "managed-code": copy.deepcopy(_EDITOR),
             "editor-code": copy.deepcopy(_EDITOR),
@@ -89,7 +89,7 @@ def _unity_1() -> dict[str, Any]:
             "assembly-config": copy.deepcopy(_EDITOR),
             "project-settings": copy.deepcopy(_EDITOR),
             "package-managed": copy.deepcopy(_EDITOR),
-            "linking": {"L0": ["l0"], "L2": ["bind:editor"], "L3": ["bind:player"]},
+            "linking": {"structure": ["structure"], "affected": ["bind:editor"], "full": ["bind:player"]},
             "native": copy.deepcopy(_HEAVY),
             "shader": copy.deepcopy(_HEAVY),
             "platform-settings": copy.deepcopy(_HEAVY),

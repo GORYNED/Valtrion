@@ -2,6 +2,6 @@
   "schema": "gdv.checks/1",
   "platforms": { "required": ["ios"] },
   "areas": [{ "glob": "docs/**", "exclude": "docs/drafts/**", "kind": "docs" }],
-  "kinds": { "docs": { "L0": ["l0"] } },
+  "kinds": { "docs": { "structure": ["structure"] } },
   "unclassified": "widest"
 }

@@ -41,16 +41,16 @@ GOLDEN = {
     "docs/img/diagram.png": ["docs"],
     "tools/check/run.json": ["tooling"],
 }
-#: A Unity project nested under `docs/` or `tools/` is never lowered to L0 by its folder: assets and prefabs there are unclassified.
+#: A Unity project nested under `docs/` or `tools/` is never lowered to structure by its folder: assets and prefabs there are unclassified.
 UNCLASSIFIED = ["Assets/Game/Data.asset", "Packages/manifest.json", "Packages/packages-lock.json", "other/x.txt",
                 "docs/Sample/Assets/Scene.unity", "tools/Showcase/Assets/Hero.prefab"]
 #: The levels of every class of `valtrion:unity/1`, by slot: the contract of the preset next to the path table above.
 LEVELS = {
-    "docs": ["L0"], "tooling": ["L0"], "comment-only": ["L0"],
-    "asset-meta": ["L0", "L2"], "managed-code": ["L0", "L2"], "editor-code": ["L0", "L2"], "tests": ["L0", "L2"], "assembly-config": ["L0", "L2"],
-    "project-settings": ["L0", "L2"], "package-managed": ["L0", "L2"],
-    "linking": ["L0", "L2", "L3"],
-    "native": ["L0", "L2", "L3", "L4"], "shader": ["L0", "L2", "L3", "L4"], "platform-settings": ["L0", "L2", "L3", "L4"], "package-platform": ["L0", "L2", "L3", "L4"],
+    "docs": ["structure"], "tooling": ["structure"], "comment-only": ["structure"],
+    "asset-meta": ["structure", "affected"], "managed-code": ["structure", "affected"], "editor-code": ["structure", "affected"], "tests": ["structure", "affected"], "assembly-config": ["structure", "affected"],
+    "project-settings": ["structure", "affected"], "package-managed": ["structure", "affected"],
+    "linking": ["structure", "affected", "full"],
+    "native": ["structure", "affected", "full", "release"], "shader": ["structure", "affected", "full", "release"], "platform-settings": ["structure", "affected", "full", "release"], "package-platform": ["structure", "affected", "full", "release"],
 }
 
 
@@ -75,7 +75,7 @@ class PresetCase(RepoCase):
         git(self.root, "checkout", "-q", "-B", "work")
 
     def select_json(self, *arguments):
-        code, out, err = run("select", "--level", "L4", "--checks", str(self.checks_path), "--base-ref", "main", "--json", *arguments)
+        code, out, err = run("select", "--level", "release", "--checks", str(self.checks_path), "--base-ref", "main", "--json", *arguments)
         self.assertIn(code, (0, 1), err)
         payload = json.loads(out)
         # The test rewrites checks.json itself; leave that path out of what is compared.
@@ -96,43 +96,43 @@ class ExpandTests(unittest.TestCase):
         data = copy.deepcopy(MAP)
         data["areas"] = [{"glob": "game/**", "kind": "game"}]
         data["jsonRules"] = [{"glob": "Packages/manifest.json", "root": "dependencies", "keys": [{"match": "*", "kind": "game"}]}]
-        data["kinds"] = {"game": {"L0": ["l0"]}, "docs": {"L0": ["l0"], "L2": ["editmode:Doc.Tests"]}}
+        data["kinds"] = {"game": {"structure": ["structure"]}, "docs": {"structure": ["structure"], "affected": ["editmode:Doc.Tests"]}}
         effective, info = presets.expand(data)
         self.assertEqual({"areas": 1, "jsonRules": 1, "contentRules": 0}, info["projectCounts"])
         self.assertEqual({"glob": "game/**", "kind": "game"}, effective["areas"][0])
         self.assertEqual("Packages/manifest.json", effective["jsonRules"][0]["glob"])
         self.assertEqual("**/Packages/manifest.json", effective["jsonRules"][1]["glob"])
-        self.assertEqual(["editmode:Doc.Tests"], effective["kinds"]["docs"]["L2"])
-        self.assertEqual(["l0"], effective["kinds"]["tooling"]["L0"])
-        self.assertEqual(data["kinds"]["docs"], {"L0": ["l0"], "L2": ["editmode:Doc.Tests"]}, "the project's own data is not changed")
+        self.assertEqual(["editmode:Doc.Tests"], effective["kinds"]["docs"]["affected"])
+        self.assertEqual(["structure"], effective["kinds"]["tooling"]["structure"])
+        self.assertEqual(data["kinds"]["docs"], {"structure": ["structure"], "affected": ["editmode:Doc.Tests"]}, "the project's own data is not changed")
 
     def test_the_slots_become_the_bound_checks(self):
         effective, _ = presets.expand(copy.deepcopy(MAP))
-        self.assertEqual(BINDINGS["editor"], effective["kinds"]["managed-code"]["L2"])
-        self.assertNotIn("L3", effective["kinds"]["managed-code"])
-        self.assertEqual(BINDINGS["player"], effective["kinds"]["native"]["L3"])
-        self.assertEqual(BINDINGS["device"], effective["kinds"]["native"]["L4"])
-        self.assertEqual({"L0": ["l0"], "L2": BINDINGS["editor"], "L3": BINDINGS["player"]}, effective["kinds"]["linking"])
+        self.assertEqual(BINDINGS["editor"], effective["kinds"]["managed-code"]["affected"])
+        self.assertNotIn("full", effective["kinds"]["managed-code"])
+        self.assertEqual(BINDINGS["player"], effective["kinds"]["native"]["full"])
+        self.assertEqual(BINDINGS["device"], effective["kinds"]["native"]["release"])
+        self.assertEqual({"structure": ["structure"], "affected": BINDINGS["editor"], "full": BINDINGS["player"]}, effective["kinds"]["linking"])
 
     def test_the_levels_of_every_class_are_the_contract_and_no_editor_check_is_lost(self):
         effective, _ = presets.expand(copy.deepcopy(MAP))
-        self.assertEqual(LEVELS, {name: sorted(levels) for name, levels in effective["kinds"].items()})
+        self.assertEqual({name: sorted(levels) for name, levels in LEVELS.items()}, {name: sorted(levels) for name, levels in effective["kinds"].items()})
         for name, levels in effective["kinds"].items():
             if name not in ("docs", "tooling", "comment-only"):
-                self.assertEqual(BINDINGS["editor"], levels["L2"], f"{name} keeps the Editor suites")
-        self.assertEqual({"L0": ["l0"]}, {"L0": effective["kinds"]["docs"]["L0"]})
+                self.assertEqual(BINDINGS["editor"], levels["affected"], f"{name} keeps the Editor suites")
+        self.assertEqual({"structure": ["structure"]}, {"structure": effective["kinds"]["docs"]["structure"]})
 
     def test_a_project_kind_that_leaves_out_a_level_is_recorded_as_replaced(self):
         data = copy.deepcopy(MAP)
-        data["kinds"] = {"shader": {"L0": ["l0"], "L2": ["editmode:Game.Tests"]}, "docs": {"L0": ["l0"]}}
+        data["kinds"] = {"shader": {"structure": ["structure"], "affected": ["editmode:Game.Tests"]}, "docs": {"structure": ["structure"]}}
         _, info = presets.expand(data)
-        self.assertEqual({"shader": ["L3", "L4"], "docs": []}, info["replaced"])
+        self.assertEqual({"shader": ["full", "release"], "docs": []}, info["replaced"])
 
     def test_an_empty_binding_is_an_explicit_answer(self):
         data = copy.deepcopy(MAP)
         data["bindings"] = {"editor": [], "player": [], "device": []}
         effective, _ = presets.expand(data)
-        self.assertEqual([], effective["kinds"]["native"]["L4"])
+        self.assertEqual([], effective["kinds"]["native"]["release"])
 
     def test_a_missing_or_unknown_slot_or_preset_is_an_error_that_says_what_to_do(self):
         missing = copy.deepcopy(MAP)
@@ -154,10 +154,10 @@ class ExpandTests(unittest.TestCase):
 
     def test_a_caller_can_never_change_the_preset(self):
         first, _ = presets.expand(copy.deepcopy(MAP))
-        first["kinds"]["native"]["L4"].append("device:plans/x")
+        first["kinds"]["native"]["release"].append("device:plans/x")
         first["areas"].append({"glob": "x", "kind": "docs"})
         second, _ = presets.expand(copy.deepcopy(MAP))
-        self.assertEqual(BINDINGS["device"], second["kinds"]["native"]["L4"])
+        self.assertEqual(BINDINGS["device"], second["kinds"]["native"]["release"])
         self.assertNotIn({"glob": "x", "kind": "docs"}, second["areas"])
 
 
@@ -227,7 +227,7 @@ class SelectionTests(PresetCase):
         self.assertEqual({"Assets/Game/Foo.cs": "comment-only"}, payload["cosmeticPaths"])
         self.assertEqual([], self.heavy(payload))
         self.assertEqual([], payload["editorSuites"])
-        because = [item for item in next(entry for entry in payload["explain"] if entry["check"] == "l0")["because"] if "Assets/Game/Foo.cs" in item["paths"]]
+        because = [item for item in next(entry for entry in payload["explain"] if entry["check"] == "structure")["because"] if "Assets/Game/Foo.cs" in item["paths"]]
         self.assertEqual(1, len(because))
         self.assertEqual(("comment-only", PRESET), (because[0]["kind"], because[0]["from"]))
         self.assertTrue(because[0]["rule"].startswith("contentRules["))
@@ -236,7 +236,7 @@ class SelectionTests(PresetCase):
         for path in ("tools/Showcase/Assets/Hero.prefab", "docs/Sample/Assets/Scene.unity"):
             write(self.root, path, "changed\n")
             self.commit()
-            code, out, _ = run("select", "--level", "L4", "--checks", str(self.checks_path), "--base-ref", "main", "--json")
+            code, out, _ = run("select", "--level", "release", "--checks", str(self.checks_path), "--base-ref", "main", "--json")
             self.assertEqual(1, code, path)
             self.assertIn(path, json.loads(out)["unclassifiedPaths"], path)
             git(self.root, "reset", "-q", "--hard", "main")
@@ -244,7 +244,7 @@ class SelectionTests(PresetCase):
     def test_the_preset_does_not_hide_an_unclassified_path_from_the_policy(self):
         write(self.root, "other/x.txt", "changed\n")
         self.commit()
-        code, out, _ = run("select", "--level", "L4", "--checks", str(self.checks_path), "--base-ref", "main", "--json")
+        code, out, _ = run("select", "--level", "release", "--checks", str(self.checks_path), "--base-ref", "main", "--json")
         self.assertEqual(1, code)
         self.assertIn("other/x.txt", json.loads(out)["unclassifiedPaths"])
 
@@ -254,14 +254,14 @@ class SelectionTests(PresetCase):
         payload = self.select_json("--explain")
         because = next(item for item in payload["explain"] if item["check"] == "player:android")["because"]
         self.assertTrue(all(item["from"] == PRESET for item in because), because)
-        code, out, _ = run("select", "--level", "L4", "--checks", str(self.checks_path), "--base-ref", "main", "--explain")
+        code, out, _ = run("select", "--level", "release", "--checks", str(self.checks_path), "--base-ref", "main", "--explain")
         self.assertIn(f"glob **/Android/** of {PRESET}", out)
 
     def test_a_project_rule_is_named_without_the_preset(self):
         self.write_map(areas=[{"glob": "Assets/Game/**", "kind": "docs"}])
         write(self.root, "Assets/Game/Foo.cs", "changed\n")
         self.commit()
-        because = next(item for item in self.select_json("--explain")["explain"] if item["check"] == "l0")["because"]
+        because = next(item for item in self.select_json("--explain")["explain"] if item["check"] == "structure")["because"]
         source = {(item["kind"], item["glob"]): item.get("from") for item in because if "src" not in item["glob"]}
         self.assertEqual(None, source[("docs", "Assets/Game/**")])
         self.assertEqual(PRESET, source[("managed-code", "**/*.cs")])
@@ -296,16 +296,16 @@ class CheckConfigTests(PresetCase):
         self.assertIn("unknown check type", errors[0])
 
     def test_a_project_kind_that_leaves_out_a_preset_level_warns(self):
-        self.write_map(kinds={"shader": {"L0": ["l0"], "L2": ["editmode:Game.Tests"]}, "docs": {"L0": ["l0"]}})
+        self.write_map(kinds={"shader": {"structure": ["structure"], "affected": ["editmode:Game.Tests"]}, "docs": {"structure": ["structure"]}})
         _, warnings = select.validate_config(self.load())
         found = [item for item in warnings if item.startswith("kinds.shader:")]
         self.assertEqual(1, len(found), warnings)
-        self.assertIn("L3, L4", found[0])
+        self.assertIn("full, release", found[0])
         self.assertEqual([], [item for item in warnings if item.startswith("kinds.docs:")], "a replacement that keeps every level is silent")
 
     def test_bindings_and_overrides_preset_without_extends_warn_that_they_do_nothing(self):
         data = {"schema": "gdv.checks/1", "platforms": {"required": ["ios"]}, "bindings": BINDINGS, "unclassified": "fail",
-                "areas": [{"glob": "src/**", "kind": "docs", "overridesPreset": True}], "kinds": {"docs": {"L0": ["l0"]}}}
+                "areas": [{"glob": "src/**", "kind": "docs", "overridesPreset": True}], "kinds": {"docs": {"structure": ["structure"]}}}
         self.checks_path.write_text(json.dumps(data), encoding="utf-8")
         errors, warnings = select.validate_config(select.load_config(self.checks_path))
         self.assertEqual([], errors)

@@ -9,15 +9,15 @@
     { "glob": "Packages/packages-lock.json", "root": "dependencies", "keys": [
       { "match": "com.example.*", "kind": "native", "byContent": {
         "managed": "whole-set", "platform": "native",
-        "assemblies": { "kind": "narrowed", "runner": "unity-editmode", "playmodeRunner": "unity-playmode", "level": "L2" } } },
+        "assemblies": { "kind": "narrowed", "runner": "unity-editmode", "playmodeRunner": "unity-playmode", "level": "affected" } } },
       { "match": "*", "kind": "native", "allowHeavyFallback": true }
     ] }
   ],
   "kinds": {
-    "managed": { "L2": ["editmode:Example.Tests"] },
-    "whole-set": { "L2": ["editmode:Example.Tests,Example.Other.Tests"] },
-    "narrowed": { "L0": ["l0"], "L3": ["editmode:Example.Tests,Example.Other.Tests"] },
-    "native": { "L2": ["editmode:Example.Tests"], "L3": ["player:ios"] }
+    "managed": { "affected": ["editmode:Example.Tests"] },
+    "whole-set": { "affected": ["editmode:Example.Tests,Example.Other.Tests"] },
+    "narrowed": { "structure": ["structure"], "full": ["editmode:Example.Tests,Example.Other.Tests"] },
+    "native": { "affected": ["editmode:Example.Tests"], "full": ["player:ios"] }
   },
   "unclassified": "widest"
 }

@@ -17,7 +17,7 @@ PRESET_MAP = {
     "extends": "valtrion:unity/1",
     "runners": {"unity-editmode": NAMES_RUNNER},
     "areas": [{"glob": "Assets/Game/Ui/**", "kind": "ui", "overridesPreset": True}],
-    "kinds": {"ui": {"L0": ["l0"], "L2": ["editmode:Game.Ui.Tests@unity-editmode"]}},
+    "kinds": {"ui": {"structure": ["structure"], "affected": ["editmode:Game.Ui.Tests@unity-editmode"]}},
     "bindings": {"editor": ["editmode:Game.Tests,Game.Ui.Tests@unity-editmode"], "player": [], "device": []},
     "unclassified": "fail",
 }
@@ -71,8 +71,8 @@ class EditorWarningTests(RepoCase):
 
     def test_a_literal_runner_of_an_entry_is_warned_about_once(self):
         data = self.without_slots()
-        data["kinds"]["media"]["L2"] = [f"editmode:Media.Tests@{FILTER_RUNNER}"]
-        data["kinds"]["ui"]["L2"] = [f"editmode:Ui.Tests@{FILTER_RUNNER}"]
+        data["kinds"]["media"]["affected"] = [f"editmode:Media.Tests@{FILTER_RUNNER}"]
+        data["kinds"]["ui"]["affected"] = [f"editmode:Ui.Tests@{FILTER_RUNNER}"]
         found = self.matching(self.warnings(data), "-testFilter")
         self.assertEqual(1, len(found), found)
         self.assertTrue(found[0].startswith("kinds."), found[0])
@@ -114,7 +114,7 @@ class EditorWarningTests(RepoCase):
 
     def test_a_project_that_replaces_managed_code_gives_no_warning(self):
         data = copy.deepcopy(PRESET_MAP)
-        data["kinds"]["managed-code"] = {"L0": ["l0"], "L2": ["editmode:Game.Tests@unity-editmode"]}
+        data["kinds"]["managed-code"] = {"structure": ["structure"], "affected": ["editmode:Game.Tests@unity-editmode"]}
         self.assertEqual([], self.matching(self.warnings(data), "bindings.editor"))
 
     def test_an_empty_editor_binding_gives_no_warning(self):
@@ -148,7 +148,7 @@ class EditorWarningTests(RepoCase):
     def test_a_literal_equal_to_a_named_runner_is_not_reported_twice(self):
         data = self.without_slots()
         data["runners"] = {"unity-editmode": FILTER_RUNNER}
-        data["kinds"]["ui"]["L2"] = [f"editmode:Ui.Tests@{FILTER_RUNNER}"]
+        data["kinds"]["ui"]["affected"] = [f"editmode:Ui.Tests@{FILTER_RUNNER}"]
         self.assertEqual(1, len(self.matching(self.warnings(data), "-testFilter gets the assembly list")))
 
     def test_a_map_without_extends_gives_no_binding_warning(self):

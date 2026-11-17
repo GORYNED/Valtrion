@@ -41,8 +41,8 @@ class ConfigWarningTests(RepoCase):
         self.assertEqual(1, len(found), warnings)
         self.assertIn("jsonRules[0]", found[0])
         self.assertIn(f"areas[{AREAS}]", found[0])
-        self.assertIn("L3 player:win64", found[0])
-        self.assertIn("L4 device:plans/open-playback", found[0])
+        self.assertIn("full player:win64", found[0])
+        self.assertIn("release device:plans/open-playback", found[0])
 
     def test_the_other_direction_is_found_too(self):
         warnings = self.warnings(jsonRules=[LOCK_RULE], extra_areas=[{"glob": "Packages/**", "kind": "docs"}])
@@ -78,8 +78,8 @@ class ConfigWarningTests(RepoCase):
         found = self.matching(self.warnings(jsonRules=[heavy, LOCK_RULE]), "the fallback key '*'")
         self.assertEqual(1, len(found))
         self.assertIn("jsonRules[0].keys[0]", found[0])
-        self.assertIn("L3 player:win64", found[0])
-        self.assertIn("L4 device:plans/open-playback", found[0])
+        self.assertIn("full player:win64", found[0])
+        self.assertIn("release device:plans/open-playback", found[0])
         allowed = copy.deepcopy(heavy)
         allowed["keys"][0]["allowHeavyFallback"] = True
         self.assertEqual([], self.matching(self.warnings(jsonRules=[allowed, LOCK_RULE]), "the fallback key '*'"))
@@ -90,7 +90,7 @@ class ConfigWarningTests(RepoCase):
         self.assertEqual([], self.matching(self.warnings(jsonRules=[rule, LOCK_RULE]), "the fallback key '*'"))
 
     def test_a_kind_with_l4_checks_that_only_dependency_keys_reach_warns(self):
-        infra = {"infra": {"L0": ["l0"], "L4": ["device:plans/open-playback"]}}
+        infra = {"infra": {"structure": ["structure"], "release": ["device:plans/open-playback"]}}
         rule = {"glob": "Packages/manifest.json", "root": "dependencies", "keys": [
             {"match": "core.*", "kind": "infra"}, {"match": "*", "kind": "docs"}]}
         found = self.matching(self.warnings(jsonRules=[rule, LOCK_RULE], extra_kinds=infra), "only dependency keys reach it")
@@ -99,12 +99,12 @@ class ConfigWarningTests(RepoCase):
         self.assertIn("Packages/manifest.json key 'core.*'", found[0])
 
     def test_a_kind_that_an_area_also_reaches_or_without_l4_does_not_warn(self):
-        infra = {"infra": {"L0": ["l0"], "L4": ["device:plans/open-playback"]}}
+        infra = {"infra": {"structure": ["structure"], "release": ["device:plans/open-playback"]}}
         rule = {"glob": "Packages/manifest.json", "root": "dependencies", "keys": [
             {"match": "core.*", "kind": "infra"}, {"match": "*", "kind": "docs"}]}
         reached = self.warnings(jsonRules=[rule, LOCK_RULE], extra_kinds=infra, extra_areas=[{"glob": "tools/**", "kind": "infra"}])
         self.assertEqual([], self.matching(reached, "only dependency keys reach it"))
-        light = {"infra": {"L0": ["l0"], "L2": ["editmode:Ui.Tests"]}}
+        light = {"infra": {"structure": ["structure"], "affected": ["editmode:Ui.Tests"]}}
         self.assertEqual([], self.matching(self.warnings(jsonRules=[rule, LOCK_RULE], extra_kinds=light), "only dependency keys reach it"))
 
     def test_an_invalid_map_gives_errors_and_none_of_the_new_warnings_and_no_exception(self):
@@ -136,7 +136,7 @@ class ConfigWarningTests(RepoCase):
         self.assertIn("kind 'media'", found[0])
 
     def test_more_than_three_dependency_keys_are_shortened(self):
-        infra = {"infra": {"L0": ["l0"], "L4": ["device:plans/open-playback"]}}
+        infra = {"infra": {"structure": ["structure"], "release": ["device:plans/open-playback"]}}
         keys = [{"match": f"lib{number}.*", "kind": "infra"} for number in range(5)] + [{"match": "*", "kind": "docs"}]
         rule = {"glob": "Packages/manifest.json", "root": "dependencies", "keys": keys}
         found = self.matching(self.warnings(jsonRules=[rule, LOCK_RULE], extra_kinds=infra), "only dependency keys reach it")
@@ -144,7 +144,7 @@ class ConfigWarningTests(RepoCase):
         self.assertIn("+2 more", found[0])
 
     def test_the_l4_warning_stays_when_a_heavy_fallback_is_allowed(self):
-        infra = {"infra": {"L0": ["l0"], "L3": ["player:win64"], "L4": ["device:plans/open-playback"]}}
+        infra = {"infra": {"structure": ["structure"], "full": ["player:win64"], "release": ["device:plans/open-playback"]}}
         rule = {"glob": "Packages/manifest.json", "root": "dependencies", "keys": [{"match": "*", "kind": "infra", "allowHeavyFallback": True}]}
         warnings = self.warnings(jsonRules=[rule, LOCK_RULE], extra_kinds=infra)
         self.assertEqual([], self.matching(warnings, "the fallback key '*'"))

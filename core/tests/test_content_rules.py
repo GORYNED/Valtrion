@@ -22,9 +22,9 @@ MAP["contentRules"] = [
     {"glob": "src/**/*.sh", "kind": "cosmetic", "lineComment": ["#"], "codePrefixes": ["#!"]},
 ]
 MAP["kinds"] = {
-    "code": {"L2": ["editmode:Code.Tests@echo {assemblies}"]},
-    "cosmetic": {"L0": ["l0"]},
-    "docs": {"L0": ["l0"]},
+    "code": {"affected": ["editmode:Code.Tests@echo {assemblies}"]},
+    "cosmetic": {"structure": ["structure"]},
+    "docs": {"structure": ["structure"]},
 }
 LINE = ["//"]
 BLOCK = {"start": "/*", "end": "*/"}

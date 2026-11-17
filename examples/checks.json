@@ -12,16 +12,16 @@
   ],
   "kinds": {
     "runtime": {
-      "L0": ["l0"],
-      "L2": ["editmode:Project.Runtime.Tests@unity-editmode"],
-      "L3": ["player:ios"]
+      "structure": ["structure"],
+      "affected": ["editmode:Project.Runtime.Tests@unity-editmode"],
+      "full": ["player:ios"]
     },
     "playback-perf": {
-      "L0": ["l0"],
-      "L2": ["editmode:Project.Playback.Tests@unity-editmode"],
-      "L4": ["device:plans/perf.open-playback"]
+      "structure": ["structure"],
+      "affected": ["editmode:Project.Playback.Tests@unity-editmode"],
+      "release": ["device:plans/perf.open-playback"]
     },
-    "docs": { "L0": ["l0"] }
+    "docs": { "structure": ["structure"] }
   },
   "unclassified": "widest"
 }

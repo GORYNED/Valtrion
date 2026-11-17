@@ -10,9 +10,9 @@
     { "glob": "scripts/**/*.sh", "kind": "cosmetic", "lineComment": ["#"], "codePrefixes": ["#!"] }
   ],
   "kinds": {
-    "runtime": { "L2": ["editmode:Project.Runtime.Tests"] },
-    "cosmetic": { "L0": ["l0"] },
-    "docs": { "L0": ["l0"] }
+    "runtime": { "affected": ["editmode:Project.Runtime.Tests"] },
+    "cosmetic": { "structure": ["structure"] },
+    "docs": { "structure": ["structure"] }
   },
   "unclassified": "widest"
 }

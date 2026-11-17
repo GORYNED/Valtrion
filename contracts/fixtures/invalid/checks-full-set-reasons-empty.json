@@ -6,7 +6,7 @@
     { "glob": "**/*.cs", "kind": "managed" }
   ],
   "kinds": {
-    "managed": { "L2": ["editmode:Example.Tests"] }
+    "managed": { "affected": ["editmode:Example.Tests"] }
   },
   "unclassified": "widest"
 }

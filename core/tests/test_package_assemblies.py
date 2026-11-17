@@ -38,10 +38,10 @@ def checks_map(**assemblies):
             {"match": NAME, "kind": "heavy", "byContent": {"managed": "whole", "platform": "heavy", "assemblies": member}},
             {"match": "com.example.dep", "kind": "light"}]}],
         "kinds": {
-            "light": {"L0": ["l0"]},
-            "whole": {"L0": ["l0"], "L2": [WHOLE_EDIT, "playmode:P.Tests@play"]},
-            "narrowed": {"L0": ["l0"], "L3": [WHOLE_EDIT, "playmode:P.Tests@play"]},
-            "heavy": {"L0": ["l0"], "L2": [WHOLE_EDIT], "L3": ["player:ios"]},
+            "light": {"structure": ["structure"]},
+            "whole": {"structure": ["structure"], "affected": [WHOLE_EDIT, "playmode:P.Tests@play"]},
+            "narrowed": {"structure": ["structure"], "full": [WHOLE_EDIT, "playmode:P.Tests@play"]},
+            "heavy": {"structure": ["structure"], "affected": [WHOLE_EDIT], "full": ["player:ios"]},
         },
     }
 
@@ -122,7 +122,7 @@ class AssemblyCase(PackageCase):
 
 class NarrowingTests(AssemblyCase):
     def test_a_change_selects_the_test_assemblies_that_reach_it_by_name_by_guid_and_through_other_assemblies(self):
-        payload, record = self.narrowed({"Runtime/Foo.cs": "public class Foo { int a; }\n"}, (), "--level", "L2")
+        payload, record = self.narrowed({"Runtime/Foo.cs": "public class Foo { int a; }\n"}, (), "--level", "affected")
         self.assertEqual("managed", record["verdict"])
         self.assertEqual("narrowed", record["assemblies"]["status"], record["assemblies"])
         self.assertEqual(["narrowed"], self.kinds(payload))
@@ -136,7 +136,7 @@ class NarrowingTests(AssemblyCase):
         new = self.package_commit({"Runtime/Foo.cs": "public class Foo { int a; }\n"})
         self.pin(new)
         self.commit()
-        payload = self.select_json("--level", "L2", "--explain")
+        payload = self.select_json("--level", "affected", "--explain")
         tests = {item["assembly"]: item for item in self.record(payload)["assemblies"]["tests"]}
         self.assertEqual(["U.Tests", "App.Ui", "Game.Extras", "Game"], tests["U.Tests"]["via"])
         self.assertEqual(["B.Tests", "Game"], tests["B.Tests"]["via"])
@@ -145,56 +145,56 @@ class NarrowingTests(AssemblyCase):
         entry = next(item for item in because if item["rule"] == "byContent.assemblies")
         self.assertEqual(["U.Tests", "App.Ui", "Game.Extras", "Game"], entry["via"])
         self.assertEqual("Game", entry["changedAssembly"])
-        code, out, _ = run("select", "--checks", str(self.checks_path), "--base-ref", "main", "--level", "L2", "--explain")
+        code, out, _ = run("select", "--checks", str(self.checks_path), "--base-ref", "main", "--level", "affected", "--explain")
         self.assertEqual(0, code)
         self.assertIn("U.Tests -> App.Ui -> Game.Extras -> Game", out)
-        self.assertIn("test assemblies by reference (L2): editmode:A.Tests", out)
+        self.assertIn("test assemblies by reference (affected): editmode:A.Tests", out)
 
     def test_a_change_inside_one_assembly_of_the_package_leaves_out_the_tests_of_the_others(self):
-        payload, record = self.narrowed({"Extras/E.cs": "public class E { int a; }\n"}, (), "--level", "L2")
+        payload, record = self.narrowed({"Extras/E.cs": "public class E { int a; }\n"}, (), "--level", "affected")
         self.assertEqual(["editmode:U.Tests"], self.suites(payload))
         self.assertEqual([{"assembly": "Game.Extras", "files": ["Extras/E.cs"]}], record["assemblies"]["changed"])
 
     def test_an_editor_assembly_of_the_package_that_nothing_references_selects_nothing(self):
-        payload, record = self.narrowed({"Editor/Tool.cs": "public class Tool { int a; }\n"}, (), "--level", "L2")
+        payload, record = self.narrowed({"Editor/Tool.cs": "public class Tool { int a; }\n"}, (), "--level", "affected")
         self.assertEqual("narrowed", record["assemblies"]["status"])
         self.assertEqual([], self.suites(payload))
         self.assertEqual(["narrowed"], self.kinds(payload))
 
     def test_a_document_and_the_meta_file_of_a_folder_belong_to_no_assembly_and_change_nothing(self):
-        payload, record = self.narrowed({"CHANGELOG.md": "more\n", "Documentation~/index.md": "more\n", "Shared.meta": "folderAsset: yes\n"}, (), "--level", "L2")
+        payload, record = self.narrowed({"CHANGELOG.md": "more\n", "Documentation~/index.md": "more\n", "Shared.meta": "folderAsset: yes\n"}, (), "--level", "affected")
         self.assertEqual("narrowed", record["assemblies"]["status"], record["assemblies"])
         self.assertEqual([], self.suites(payload))
 
     def test_an_asmref_folder_counts_for_the_assembly_it_names(self):
-        payload, record = self.narrowed({"Shared/Part.cs": "public class Part { int a; }\n"}, (), "--level", "L2")
+        payload, record = self.narrowed({"Shared/Part.cs": "public class Part { int a; }\n"}, (), "--level", "affected")
         self.assertEqual([{"assembly": "Game", "files": ["Shared/Part.cs"]}], record["assemblies"]["changed"])
         self.assertEqual(["editmode:A.Tests", "editmode:B.Tests", "editmode:U.Tests", "playmode:P.Tests"], self.suites(payload))
 
     def test_an_asmref_by_guid_and_a_changed_asmref_count_too(self):
-        payload, record = self.narrowed({"Shared/Game.asmref": json.dumps({"reference": f"GUID:{EXTRAS_GUID}"})}, (), "--level", "L2")
+        payload, record = self.narrowed({"Shared/Game.asmref": json.dumps({"reference": f"GUID:{EXTRAS_GUID}"})}, (), "--level", "affected")
         self.assertEqual({"Game", "Game.Extras"}, {item["assembly"] for item in record["assemblies"]["changed"]})
         self.assertEqual(["editmode:A.Tests", "editmode:B.Tests", "editmode:U.Tests", "playmode:P.Tests"], self.suites(payload))
 
     def test_a_renamed_assembly_still_reaches_what_references_the_old_name(self):
-        payload, record = self.narrowed({"Runtime/Game.asmdef": json.dumps({"name": "Game2", "references": [], "includePlatforms": [], "defineConstraints": []})}, (), "--level", "L2")
+        payload, record = self.narrowed({"Runtime/Game.asmdef": json.dumps({"name": "Game2", "references": [], "includePlatforms": [], "defineConstraints": []})}, (), "--level", "affected")
         self.assertEqual("narrowed", record["assemblies"]["status"], record["assemblies"])
         self.assertEqual({"Game", "Game2"}, {item["assembly"] for item in record["assemblies"]["changed"]})
         self.assertIn("editmode:A.Tests", self.suites(payload))
 
     def test_an_editor_assembly_of_the_package_whose_definition_changed_reaches_only_what_references_it(self):
-        payload, _ = self.narrowed({"Editor/Game.Editor.asmdef": asm("Game.Editor", ["Game.Extras"], editor=True)}, (), "--level", "L2")
+        payload, _ = self.narrowed({"Editor/Game.Editor.asmdef": asm("Game.Editor", ["Game.Extras"], editor=True)}, (), "--level", "affected")
         self.assertEqual([], self.suites(payload))  # the editor assembly changed; nothing references it
 
     def test_a_test_assembly_of_the_package_is_selected_only_when_the_project_lists_the_package_in_testables(self):
         files = {"Tests/Editor/Game.Tests.asmdef": asm("Game.Tests", ["Game"], test=True, editor=True)}
-        payload, record = self.narrowed(files, (), "--level", "L2")
+        payload, record = self.narrowed(files, (), "--level", "affected")
         self.assertEqual("narrowed", record["assemblies"]["status"], record["assemblies"])
         self.assertNotIn("editmode:Game.Tests", self.suites(payload))
         git(self.package, "reset", "-q", "--hard", self.old)
         self.pin(self.old)
         self.testables = (NAME,)
-        payload, record = self.narrowed(files, (), "--level", "L2")
+        payload, record = self.narrowed(files, (), "--level", "affected")
         self.assertIn("editmode:Game.Tests", self.suites(payload))
 
     def test_an_assembly_that_takes_a_define_from_the_version_of_the_package_is_changed_with_every_pin(self):
@@ -206,7 +206,7 @@ class NarrowingTests(AssemblyCase):
         git(self.root, "add", "-A")
         git(self.root, "commit", "-q", "-m", "versioned")
         git(self.root, "checkout", "-q", "-B", "work")
-        payload, _ = self.narrowed({"CHANGELOG.md": "more\n"}, (), "--level", "L2")
+        payload, _ = self.narrowed({"CHANGELOG.md": "more\n"}, (), "--level", "affected")
         self.assertEqual(["editmode:V.Tests"], self.suites(payload))
 
     def test_a_working_tree_assembly_counts_only_with_include_worktree(self):
@@ -215,8 +215,8 @@ class NarrowingTests(AssemblyCase):
         self.commit()
         write(self.root, "Assets/Tests/W/W.Tests.asmdef", asm("W.Tests", ["Game"], test=True, editor=True))
         write(self.root, "Assets/Tests/W/W.Tests.asmdef.meta", meta("d" * 32))
-        self.assertNotIn("editmode:W.Tests", self.suites(self.select_json("--level", "L2")))
-        self.assertIn("editmode:W.Tests", self.suites(self.select_json("--level", "L2", "--include-worktree")))
+        self.assertNotIn("editmode:W.Tests", self.suites(self.select_json("--level", "affected")))
+        self.assertIn("editmode:W.Tests", self.suites(self.select_json("--level", "affected", "--include-worktree")))
 
 
 class DependentTests(AssemblyCase):
@@ -243,24 +243,24 @@ class DependentTests(AssemblyCase):
         git(self.root, "checkout", "-q", "-B", "work")
 
     def test_a_test_assembly_that_reaches_the_change_through_another_package_is_selected(self):
-        payload, record = self.narrowed({"Runtime/Foo.cs": "public class Foo { int a; }\n"}, (), "--level", "L2")
+        payload, record = self.narrowed({"Runtime/Foo.cs": "public class Foo { int a; }\n"}, (), "--level", "affected")
         self.assertEqual("narrowed", record["assemblies"]["status"], record["assemblies"])
         tests = {item["assembly"]: item for item in record["assemblies"]["tests"]}
         self.assertEqual(["D.Tests", "Game.Dep", "Game"], tests["D.Tests"]["via"])
         self.assertEqual(["editmode:A.Tests", "editmode:B.Tests", "editmode:D.Tests", "editmode:U.Tests", "playmode:P.Tests"], self.suites(payload))
 
     def test_a_change_in_an_assembly_the_other_package_does_not_reference_leaves_its_tests_out(self):
-        payload, _ = self.narrowed({"Extras/E.cs": "public class E { int a; }\n"}, (), "--level", "L2")
+        payload, _ = self.narrowed({"Extras/E.cs": "public class E { int a; }\n"}, (), "--level", "affected")
         self.assertEqual(["editmode:U.Tests"], self.suites(payload))
 
     def test_the_tests_of_the_other_package_follow_testables(self):
         files = {"Runtime/Foo.cs": "public class Foo { int a; }\n"}
-        payload, _ = self.narrowed(files, (), "--level", "L2")
+        payload, _ = self.narrowed(files, (), "--level", "affected")
         self.assertNotIn("editmode:Game.Dep.Tests", self.suites(payload))
         git(self.package, "reset", "-q", "--hard", self.old)
         self.testables = (DEP,)
         self.pin(self.old)
-        payload, _ = self.narrowed(files, (), "--level", "L2")
+        payload, _ = self.narrowed(files, (), "--level", "affected")
         self.assertIn("editmode:Game.Dep.Tests", self.suites(payload))
 
     def test_a_package_that_is_not_a_git_dependency_cannot_be_read(self):
@@ -272,29 +272,29 @@ class DependentTests(AssemblyCase):
 class LevelTests(AssemblyCase):
     def test_the_whole_set_stays_at_the_levels_the_map_keeps_it(self):
         files = {"Extras/E.cs": "public class E { int a; }\n"}
-        payload, _ = self.narrowed(files, (), "--level", "L2")
+        payload, _ = self.narrowed(files, (), "--level", "affected")
         self.assertEqual(["editmode:U.Tests"], self.suites(payload))
         self.assertEqual(["editmode:A.Tests", "editmode:B.Tests", "editmode:C.Tests", "editmode:U.Tests", "playmode:P.Tests"],
-                         self.suites(self.select_json("--level", "L3")))
+                         self.suites(self.select_json("--level", "full")))
 
     def test_below_the_level_of_the_member_nothing_is_added(self):
-        payload, _ = self.narrowed({"Runtime/Foo.cs": "public class Foo { int a; }\n"}, (), "--level", "L1")
+        payload, _ = self.narrowed({"Runtime/Foo.cs": "public class Foo { int a; }\n"}, (), "--level", "fast")
         self.assertEqual([], self.suites(payload))
 
     def test_the_level_of_the_member_places_the_narrowed_suites(self):
-        self.write_checks(checks_map(level="L3"))
+        self.write_checks(checks_map(level="full"))
         self.commit()
         payload, _ = self.narrowed({"Extras/E.cs": "public class E { int a; }\n"})
-        self.assertEqual({"L3"}, {item["level"] for item in payload["editorSuites"] if item["key"] == "editmode:U.Tests"} - {"L2"} or {"L3"})
-        self.assertEqual([], self.suites(self.select_json("--level", "L2")))
-        self.assertEqual(["editmode:U.Tests"], [key for key in self.suites(self.select_json("--level", "L3")) if key == "editmode:U.Tests"])
+        self.assertEqual({"full"}, {item["level"] for item in payload["editorSuites"] if item["key"] == "editmode:U.Tests"} - {"affected"} or {"full"})
+        self.assertEqual([], self.suites(self.select_json("--level", "affected")))
+        self.assertEqual(["editmode:U.Tests"], [key for key in self.suites(self.select_json("--level", "full")) if key == "editmode:U.Tests"])
 
 
 class FallbackTests(AssemblyCase):
     """Whatever the graph cannot say keeps `managed` (the verdict was read); an unresolved diff and a `platform` verdict keep what they kept."""
 
     def unresolved(self, files, reason, **options):
-        payload, record = self.narrowed(files, (), "--level", "L2", **options)
+        payload, record = self.narrowed(files, (), "--level", "affected", **options)
         self.assertEqual("managed", record["verdict"], record)
         self.assertEqual("unresolved", record["assemblies"]["status"], record["assemblies"])
         self.assertIn(reason, record["assemblies"]["reason"])
@@ -338,7 +338,7 @@ class FallbackTests(AssemblyCase):
         git(self.root, "add", "-A")
         git(self.root, "commit", "-q", "-m", "other package")
         git(self.root, "checkout", "-q", "-B", "work")
-        payload, record = self.narrowed({"Runtime/Foo.cs": "public class Foo { int a; }\n"}, (), "--level", "L2")
+        payload, record = self.narrowed({"Runtime/Foo.cs": "public class Foo { int a; }\n"}, (), "--level", "affected")
         self.assertEqual("narrowed", record["assemblies"]["status"])
         self.assertNotIn("editmode:N.Tests", self.suites(payload))
 
@@ -363,13 +363,13 @@ class FallbackTests(AssemblyCase):
         new = self.package_commit({"Runtime/Foo.cs": "public class Foo { int a; }\n"})
         self.pin(new)
         self.commit()
-        offline = self.select_json("--level", "L2", "--offline")
+        offline = self.select_json("--level", "affected", "--offline")
         self.assertEqual("unresolved", self.record(offline)["verdict"])
         self.assertNotIn("assemblies", self.record(offline))
         self.assertEqual(["heavy"], self.kinds(offline))
         git(self.package, "reset", "-q", "--hard", self.old)
         self.pin(self.old)
-        payload = self.verdict({"Runtime/Foo.cs": "#if UNITY_IOS\nclass A { }\n#endif\n"}, (), "--level", "L2")
+        payload = self.verdict({"Runtime/Foo.cs": "#if UNITY_IOS\nclass A { }\n#endif\n"}, (), "--level", "affected")
         self.assertEqual("platform", self.record(payload)["verdict"])
         self.assertNotIn("assemblies", self.record(payload))
         self.assertEqual(["heavy"], self.kinds(payload))
