@@ -29,13 +29,13 @@ CHECKS = {
     ],
     "kinds": {
         "media": {
-            "L0": ["l0"],
-            "L2": [f"editmode:Media.Tests,Media.More.Tests@{RUNNER}", f"playmode:Media.Play.Tests@{RUNNER}"],
-            "L3": ["player:win64"],
-            "L4": ["device:plans/open-playback"],
+            "structure": ["structure"],
+            "affected": [f"editmode:Media.Tests,Media.More.Tests@{RUNNER}", f"playmode:Media.Play.Tests@{RUNNER}"],
+            "full": ["player:win64"],
+            "release": ["device:plans/open-playback"],
         },
-        "ui": {"L1": ["l0:lint"], "L2": [f"editmode:Ui.Tests@{RUNNER}", f"editmode:Media.Tests@{RUNNER}"]},
-        "docs": {"L0": ["l0"]},
+        "ui": {"fast": ["structure:lint"], "affected": [f"editmode:Ui.Tests@{RUNNER}", f"editmode:Media.Tests@{RUNNER}"]},
+        "docs": {"structure": ["structure"]},
     },
     "unclassified": "widest",
 }
@@ -90,7 +90,7 @@ class RepoCase(unittest.TestCase):
     def config(self) -> select.Config:
         return select.load_config(self.checks_path)
 
-    def selection(self, level: str = "L4", include_worktree: bool = False) -> select.Selection:
+    def selection(self, level: str = "release", include_worktree: bool = False) -> select.Selection:
         paths, merge_base = select.changed_paths(self.root, "main", include_worktree)
         return select.select(self.config(), paths, level, base_ref="main", merge_base=merge_base, include_worktree=include_worktree)
 
@@ -117,14 +117,14 @@ class GlobTests(unittest.TestCase):
 
 class SpecTests(unittest.TestCase):
     def test_valid_entries(self):
-        spec = select.parse_spec("l0")
-        self.assertEqual(("l0", "", None), (spec.type, spec.target, spec.runner))
+        spec = select.parse_spec("structure")
+        self.assertEqual(("structure", "", None), (spec.type, spec.target, spec.runner))
         spec = select.parse_spec("editmode:A.Tests, B.Tests@python r.py --assemblies {assemblies}")
         self.assertEqual(("editmode", "A.Tests,B.Tests", "python r.py --assemblies {assemblies}"), (spec.type, spec.target, spec.runner))
         self.assertEqual("plans/x", select.parse_spec("device:plans/x").target)
 
     def test_invalid_entries(self):
-        for raw in ("unknown:x", "editmode", "editmode:", "editmode:bad name", "device:../x", "device:/x", "player:x@runner", "l0@x", "editmode:A@"):
+        for raw in ("unknown:x", "editmode", "editmode:", "editmode:bad name", "device:../x", "device:/x", "player:x@runner", "structure@x", "editmode:A@"):
             with self.subTest(raw), self.assertRaises(ValueError):
                 select.parse_spec(raw)
 
@@ -135,11 +135,11 @@ class SelectionTests(RepoCase):
         write(self.root, "src/ui/b.cs", "changed\n")
         self.commit()
         expected = {
-            "L0": ["l0"],
-            "L1": ["l0", "l0:lint"],
-            "L2": ["editmode:Media.More.Tests", "editmode:Media.Tests", "editmode:Ui.Tests", "l0", "l0:lint", "playmode:Media.Play.Tests"],
-            "L3": ["editmode:Media.More.Tests", "editmode:Media.Tests", "editmode:Ui.Tests", "l0", "l0:lint", "playmode:Media.Play.Tests", "player:win64"],
-            "L4": ["editmode:Media.More.Tests", "editmode:Media.Tests", "editmode:Ui.Tests", "l0", "l0:lint", PLAN_KEY, "playmode:Media.Play.Tests", "player:win64"],
+            "structure": ["structure"],
+            "fast": ["structure", "structure:lint"],
+            "affected": ["editmode:Media.More.Tests", "editmode:Media.Tests", "editmode:Ui.Tests", "structure", "structure:lint", "playmode:Media.Play.Tests"],
+            "full": ["editmode:Media.More.Tests", "editmode:Media.Tests", "editmode:Ui.Tests", "structure", "structure:lint", "playmode:Media.Play.Tests", "player:win64"],
+            "release": ["editmode:Media.More.Tests", "editmode:Media.Tests", "editmode:Ui.Tests", "structure", "structure:lint", PLAN_KEY, "playmode:Media.Play.Tests", "player:win64"],
         }
         for level, keys in expected.items():
             with self.subTest(level):
@@ -150,16 +150,16 @@ class SelectionTests(RepoCase):
         write(self.root, "src/ui/b.cs", "changed\n")
         self.commit()
         checks = {check.key: check for check in self.selection().checks}
-        self.assertEqual("L2", checks["editmode:Media.Tests"].level)
+        self.assertEqual("affected", checks["editmode:Media.Tests"].level)
         self.assertEqual({"media", "ui"}, checks["editmode:Media.Tests"].kinds)
         self.assertEqual({"media"}, checks["player:win64"].kinds)
-        self.assertEqual("L4", checks[PLAN_KEY].level)
+        self.assertEqual("release", checks[PLAN_KEY].level)
 
     def test_unrelated_kinds_are_not_selected(self):
         write(self.root, "docs/readme.md", "changed\n")
         self.commit()
         selection = self.selection()
-        self.assertEqual(["l0"], [check.key for check in selection.checks])
+        self.assertEqual(["structure"], [check.key for check in selection.checks])
         self.assertFalse(selection.widest)
         self.assertEqual(["docs"], selection.kinds)
 
@@ -177,7 +177,7 @@ class SelectionTests(RepoCase):
         self.assertEqual(["docs", "media", "ui"], selection.kinds)
         self.assertIn(PLAN_KEY, [check.key for check in selection.checks])
         self.assertIn("editmode:Ui.Tests", [check.key for check in selection.checks])
-        self.assertEqual([], [check.key for check in self.selection("L1").checks if check.type == "device"])
+        self.assertEqual([], [check.key for check in self.selection("fast").checks if check.type == "device"])
 
     def test_unclassified_path_with_the_fail_policy_selects_nothing(self):
         self.checks_path.write_text(json.dumps({**CHECKS, "unclassified": "fail"}), encoding="utf-8")
@@ -187,7 +187,7 @@ class SelectionTests(RepoCase):
         selection = self.selection()
         self.assertTrue(selection.failed)
         self.assertEqual([], selection.checks)
-        code, _, err = run("select", "--level", "L4", "--base-ref", "main", "--checks", str(self.checks_path))
+        code, _, err = run("select", "--level", "release", "--base-ref", "main", "--checks", str(self.checks_path))
         self.assertEqual(1, code)
         self.assertIn("other/x.txt", err + _)
 
@@ -204,7 +204,7 @@ class SelectionTests(RepoCase):
         selection = self.selection()
         self.assertEqual([], selection.paths)
         self.assertEqual([], selection.checks)
-        code, out, _ = run("select", "--level", "L4", "--base-ref", "main", "--checks", str(self.checks_path))
+        code, out, _ = run("select", "--level", "release", "--base-ref", "main", "--checks", str(self.checks_path))
         self.assertEqual(0, code)
         self.assertIn("Nothing selected", out)
 
@@ -236,17 +236,17 @@ class SelectionTests(RepoCase):
         write(self.root, "src/media/a.cs", "changed\n")
         write(self.root, "src/ui/b.cs", "changed\n")
         self.commit()
-        commands = self.selection("L2").editor_commands()
+        commands = self.selection("affected").editor_commands()
         self.assertEqual(1, len(commands))
         self.assertEqual(
             "python tools/run-tests.py --assemblies Media.More.Tests,Media.Play.Tests,Media.Tests,Ui.Tests", commands[0]["command"]
         )
 
     def test_a_suite_without_a_runner_has_no_command(self):
-        self.checks_path.write_text(json.dumps({**CHECKS, "kinds": {**CHECKS["kinds"], "docs": {"L2": ["editmode:Docs.Tests"]}}}), encoding="utf-8")
+        self.checks_path.write_text(json.dumps({**CHECKS, "kinds": {**CHECKS["kinds"], "docs": {"affected": ["editmode:Docs.Tests"]}}}), encoding="utf-8")
         write(self.root, "docs/readme.md", "changed\n")
         self.commit()
-        commands = self.selection("L2").editor_commands()
+        commands = self.selection("affected").editor_commands()
         self.assertEqual([None], [entry["command"] for entry in commands])
         self.assertEqual(["Docs.Tests"], commands[0]["assemblies"])
 
@@ -272,20 +272,20 @@ class SelectionTests(RepoCase):
         self.commit()
         outputs = {json.dumps(self.selection().to_json()) for _ in range(3)}
         self.assertEqual(1, len(outputs))
-        first = run("select", "--level", "L4", "--base-ref", "main", "--checks", str(self.checks_path), "--json")
-        second = run("select", "--level", "L4", "--base-ref", "main", "--checks", str(self.checks_path), "--json")
+        first = run("select", "--level", "release", "--base-ref", "main", "--checks", str(self.checks_path), "--json")
+        second = run("select", "--level", "release", "--base-ref", "main", "--checks", str(self.checks_path), "--json")
         self.assertEqual(first, second)
 
     def test_cli_json_and_text(self):
         write(self.root, "src/media/a.cs", "changed\n")
         self.commit()
-        code, out, _ = run("select", "--base-ref", "main", "--checks", str(self.checks_path), "--level", "L2", "--json")
+        code, out, _ = run("select", "--base-ref", "main", "--checks", str(self.checks_path), "--level", "affected", "--json")
         self.assertEqual(0, code)
         payload = json.loads(out)
-        self.assertEqual("L2", payload["level"])
+        self.assertEqual("affected", payload["level"])
         self.assertEqual([], payload["devicePlans"])
         self.assertEqual(["Media.More.Tests", "Media.Play.Tests", "Media.Tests"], payload["editorCommands"][0]["assemblies"])
-        code, out, _ = run("select", "--level", "L4", "--base-ref", "main", "--checks", str(self.checks_path))
+        code, out, _ = run("select", "--level", "release", "--base-ref", "main", "--checks", str(self.checks_path))
         self.assertEqual(0, code)
         self.assertIn("Editor suites:", out)
         self.assertIn("Device plans", out)
@@ -301,7 +301,7 @@ class SelectionTests(RepoCase):
         self.assertEqual(2, code)
         self.assertIn("BLOCKED", err)
         self.checks_path.write_text(json.dumps({**CHECKS, "unclassified": "maybe"}), encoding="utf-8")
-        code, _, err = run("select", "--level", "L4", "--base-ref", "main", "--checks", str(self.checks_path))
+        code, _, err = run("select", "--level", "release", "--base-ref", "main", "--checks", str(self.checks_path))
         self.assertEqual(1, code)
         self.assertIn("unclassified", err)
 
@@ -309,7 +309,7 @@ class SelectionTests(RepoCase):
         write(self.root, "src/media/a.cs", "changed\n")
         self.commit()
         (self.root / "validation" / "device" / "plans" / "open-playback.plan.json").write_text("{}", encoding="utf-8")
-        code, _, err = run("select", "--level", "L4", "--base-ref", "main", "--checks", str(self.checks_path))
+        code, _, err = run("select", "--level", "release", "--base-ref", "main", "--checks", str(self.checks_path))
         self.assertEqual(1, code)
         self.assertIn("open-playback", err)
 
@@ -330,14 +330,14 @@ class CheckConfigTests(RepoCase):
 
     def test_missing_plan_bad_entry_and_duplicate_plan_ids(self):
         bad = copy.deepcopy(CHECKS)
-        bad["kinds"]["docs"]["L4"] = ["device:plans/missing", "bogus:thing"]
+        bad["kinds"]["docs"]["release"] = ["device:plans/missing", "bogus:thing"]
         self.checks_path.write_text(json.dumps(bad), encoding="utf-8")
         code, _, err = run("check-config", "--checks", str(self.checks_path))
         self.assertEqual(1, code)
         self.assertIn("missing", err)
         self.assertIn("bogus", err)
         write(self.root, "validation/device/plans/copy.plan.json", (self.root / "validation/device/plans/open-playback.plan.json").read_text(encoding="utf-8"))
-        bad["kinds"]["docs"]["L4"] = ["device:plans/copy"]
+        bad["kinds"]["docs"]["release"] = ["device:plans/copy"]
         self.checks_path.write_text(json.dumps(bad), encoding="utf-8")
         code, _, err = run("check-config", "--checks", str(self.checks_path))
         self.assertEqual(1, code)
@@ -351,7 +351,7 @@ class CheckConfigTests(RepoCase):
 
     def test_unused_kind_is_only_a_warning(self):
         extra = copy.deepcopy(CHECKS)
-        extra["kinds"]["spare"] = {"L2": ["l0"]}
+        extra["kinds"]["spare"] = {"affected": ["structure"]}
         self.checks_path.write_text(json.dumps(extra), encoding="utf-8")
         code, _, err = run("check-config", "--checks", str(self.checks_path))
         self.assertEqual(0, code)
@@ -387,33 +387,33 @@ class MapEdgeTests(unittest.TestCase):
     def test_area_naming_a_missing_kind_is_an_error_not_an_empty_selection(self):
         config = self.config(areas=[{"glob": "a/**", "kind": "ghost"}])
         with self.assertRaises(select.ConfigError):
-            select.select(config, ["a/b.cs"], "L2")
+            select.select(config, ["a/b.cs"], "affected")
 
     def test_lowest_level_wins_across_kinds(self):
         config = self.config(
             areas=[{"glob": "a/**", "kind": "a"}, {"glob": "b/**", "kind": "b"}],
-            kinds={"a": {"L3": ["player:ios"]}, "b": {"L1": ["player:ios"]}},
+            kinds={"a": {"full": ["player:ios"]}, "b": {"fast": ["player:ios"]}},
         )
-        selection = select.select(config, ["a/x", "b/x"], "L4")
-        self.assertEqual("L1", selection.checks[0].level)
+        selection = select.select(config, ["a/x", "b/x"], "release")
+        self.assertEqual("fast", selection.checks[0].level)
 
     def test_two_runners_for_one_suite_conflict(self):
         config = self.config(
             areas=[{"glob": "a/**", "kind": "a"}, {"glob": "b/**", "kind": "b"}],
-            kinds={"a": {"L2": ["editmode:X@run one {assemblies}"]}, "b": {"L2": ["editmode:X@run two {assemblies}"]}},
+            kinds={"a": {"affected": ["editmode:X@run one {assemblies}"]}, "b": {"affected": ["editmode:X@run two {assemblies}"]}},
         )
         with self.assertRaises(select.ConfigError):
-            select.select(config, ["a/x", "b/x"], "L2")
+            select.select(config, ["a/x", "b/x"], "affected")
 
     def test_bad_entry_is_a_clean_failure(self):
         folder = tempfile.TemporaryDirectory()
         self.addCleanup(folder.cleanup)
         path = Path(folder.name) / "checks.json"
-        path.write_text(json.dumps({**CHECKS, "kinds": {**CHECKS["kinds"], "docs": {"L0": ["bogus"]}}}), encoding="utf-8")
+        path.write_text(json.dumps({**CHECKS, "kinds": {**CHECKS["kinds"], "docs": {"structure": ["bogus"]}}}), encoding="utf-8")
         config = select.load_config(path)
         with self.assertRaises(ValueError):
-            select.select(config, ["docs/a.md"], "L0")
-        self.assertEqual(1, select.run_guarded("select", lambda: select.select(config, ["docs/a.md"], "L0") and 0))
+            select.select(config, ["docs/a.md"], "structure")
+        self.assertEqual(1, select.run_guarded("select", lambda: select.select(config, ["docs/a.md"], "structure") and 0))
 
     def test_plan_without_evidence_needs_a_physical_device(self):
         plan = select.DevicePlan(Path("p.json"), "p", ("ios",), (), (), None)
@@ -454,7 +454,7 @@ class ReportTests(RepoCase):
         path.write_text(json.dumps(document), encoding="utf-8")
         return path
 
-    def report(self, *extra: str, level: str = "L4") -> tuple[int, str, str]:
+    def report(self, *extra: str, level: str = "release") -> tuple[int, str, str]:
         return run("report", "--base-ref", "main", "--checks", str(self.checks_path), "--results", str(self.results), "--level", level, *extra)
 
     def test_selected_checks_without_results_are_listed_as_not_run(self):
@@ -477,7 +477,7 @@ class ReportTests(RepoCase):
 
     def test_everything_passing_exits_zero(self):
         # only the device plan is selected for a result-bearing check; drop the other checks from the map
-        only_plan = {**CHECKS, "kinds": {"media": {"L4": ["device:plans/open-playback"]}, "ui": {}, "docs": {}}}
+        only_plan = {**CHECKS, "kinds": {"media": {"release": ["device:plans/open-playback"]}, "ui": {}, "docs": {}}}
         self.checks_path.write_text(json.dumps(only_plan), encoding="utf-8")
         self.result("pass.json")
         code, out, _ = self.report()
@@ -583,7 +583,7 @@ class ReportTests(RepoCase):
         self.assertIn(f"| `{PLAN_KEY}` | ios | NOT_VERIFIED |", out)
 
     def test_required_platform_without_a_passing_device_row_is_not_verified(self):
-        only_editor = {**CHECKS, "kinds": {"media": {"L2": [f"editmode:Media.Tests@{RUNNER}"]}, "ui": {}, "docs": {}}}
+        only_editor = {**CHECKS, "kinds": {"media": {"affected": [f"editmode:Media.Tests@{RUNNER}"]}, "ui": {}, "docs": {}}}
         self.checks_path.write_text(json.dumps(only_editor), encoding="utf-8")
         self.result("suite.json", **{"plan.id": "editmode:Media.Tests", "target.platform": "editor", "target.evidence": "editor"})
         code, out, _ = self.report()
@@ -591,7 +591,7 @@ class ReportTests(RepoCase):
         self.assertIn("not verified on ios: no passing device or player check", out)
 
     def test_unsupported_result_schema_makes_the_report_untrustworthy(self):
-        only_plan = {**CHECKS, "kinds": {"media": {"L4": ["device:plans/open-playback"]}, "ui": {}, "docs": {}}}
+        only_plan = {**CHECKS, "kinds": {"media": {"release": ["device:plans/open-playback"]}, "ui": {}, "docs": {}}}
         self.checks_path.write_text(json.dumps(only_plan), encoding="utf-8")
         self.result("pass.json")
         (self.results / "newer.json").write_text('{"schema": "gdv.result/2"}', encoding="utf-8")

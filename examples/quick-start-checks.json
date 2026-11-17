@@ -3,7 +3,7 @@
   "platforms": { "required": ["editor"] },
   "areas": [ { "glob": "**", "kind": "project" } ],
   "kinds": {
-    "project": { "L2": ["playmode:Valtrion.SmokeTests"] }
+    "project": { "affected": ["playmode:Valtrion.SmokeTests"] }
   },
   "unclassified": "fail"
 }

@@ -50,7 +50,7 @@ class CheckConfigTests(RepoCase):
     def test_the_placeholder_is_known_and_counts_as_filtering(self):
         data = self.base()
         data["runners"] = {"prefixes": PREFIX_RUNNER}
-        data["kinds"]["ui"]["L2"] = ["editmode:Game.Ui.Tests.Hud@prefixes"]
+        data["kinds"]["ui"]["affected"] = ["editmode:Game.Ui.Tests.Hud@prefixes"]
         errors, warnings = self.warnings_and_errors(data)
         self.assertEqual([], errors)
         self.assertEqual([], [item for item in warnings if "placeholder" in item or "-testFilter" in item], warnings)
@@ -78,9 +78,9 @@ class CheckConfigTests(RepoCase):
     def test_select_puts_the_anchored_prefixes_into_the_united_command(self):
         data = self.base()
         data["runners"] = {"prefixes": PREFIX_RUNNER}
-        data["kinds"]["ui"]["L2"] = ["editmode:Game.Ui.Tests.Hud@prefixes", "editmode:Game.Ui.Tests.Menu@prefixes"]
+        data["kinds"]["ui"]["affected"] = ["editmode:Game.Ui.Tests.Hud@prefixes", "editmode:Game.Ui.Tests.Menu@prefixes"]
         config = select.Config(self.checks_path, data)
-        (command,) = select.select(config, [], "L2", named_kinds=["ui"]).editor_commands()
+        (command,) = select.select(config, [], "affected", named_kinds=["ui"]).editor_commands()
         self.assertTrue(command["command"].endswith(r'-testFilter "\AGame\.Ui\.Tests\.Hud;\AGame\.Ui\.Tests\.Menu"'), command["command"])
 
 

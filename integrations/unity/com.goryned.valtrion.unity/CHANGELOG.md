@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.20.0 (2026-11-17)
+
+- Compatible Core versions are listed in `compat.json`: package 0.20.0 works with Core 0.24.0 up to, not including, 0.25. Packages 0.17.x to 0.19.x are paired with Core below 0.24 and cannot read the renamed levels. The package was not run in a real Editor for this change; update the package tag in `Packages/manifest.json` to `unity-v0.20.0`.
+
+- **`checks.json`: the levels `L0` to `L4` are named `structure`, `fast`, `affected`, `full` and `release` (breaking).** The map reader and writer use the new keys in `kinds.*` (C# properties `Structure`, `Fast`, `Affected`, `Full`, `Release`) and the new values of an area's and `byContent`'s `assemblies.level` (`fast` to `release`, `affected` when absent). A map with the old keys is no longer read: rename them, together with the check type `l0` (now `structure`), as in the Core change of the same name. The package was not run in a real Editor for this change.
+
 ## 0.19.0 (2026-11-16)
 
 - Compatible Core versions are listed in `compat.json`: package 0.19.0 works with Core 0.8.0 up to, not including, 0.24. Packages 0.17.x and 0.18.x are paired with Core below 0.24 too, but cannot read an area's `assemblies`. The Editor tests of the package (294: 293 passed, 1 ignored, the new area fixtures included) pass with the change below; update the package tag in `Packages/manifest.json` to `unity-v0.19.0`.

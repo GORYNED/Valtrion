@@ -39,10 +39,10 @@ def checks_map(member=None, areas=None):
         "schema": "gdv.checks/1", "platforms": {"required": ["ios"], "dev": ["editor"]}, "unclassified": "widest", "runners": dict(RUNNERS),
         "areas": [*(areas or []), area, {"glob": "validation/**", "kind": "light"}, {"glob": "Packages/**", "kind": "light"}],
         "kinds": {
-            "light": {"L0": ["l0"]},
-            "code": {"L0": ["l0"], "L2": [WHOLE_EDIT, "playmode:Game.Play.Tests@play"]},
-            "narrowed": {"L0": ["l0"], "L3": [WHOLE_EDIT, "playmode:Game.Play.Tests@play"]},
-            "extra": {"L0": ["l0:extra"]},
+            "light": {"structure": ["structure"]},
+            "code": {"structure": ["structure"], "affected": [WHOLE_EDIT, "playmode:Game.Play.Tests@play"]},
+            "narrowed": {"structure": ["structure"], "full": [WHOLE_EDIT, "playmode:Game.Play.Tests@play"]},
+            "extra": {"structure": ["structure:extra"]},
         },
     }
 
@@ -121,7 +121,7 @@ class ProjectCase(unittest.TestCase):
         self.checks_path.write_text(json.dumps(data), encoding="utf-8")
 
     def select_json(self, *arguments):
-        code, out, err = run("select", "--checks", str(self.checks_path), "--base-ref", "main", "--json", "--level", "L2", *arguments)
+        code, out, err = run("select", "--checks", str(self.checks_path), "--base-ref", "main", "--json", "--level", "affected", *arguments)
         self.assertEqual(0, code, err)
         return json.loads(out)
 
@@ -196,14 +196,14 @@ class NarrowingTests(ProjectCase):
     def test_the_whole_set_stays_at_the_level_the_narrowed_kind_keeps_it(self):
         self.commit({"Assets/Other/Other.cs": "public class Other { int a; }\n"})
         self.assertEqual(["editmode:Game.Other.Tests"], self.suites(self.select_json()))
-        self.assertEqual(WHOLE, self.suites(self.select_json("--level", "L3")))
-        self.assertEqual([], self.suites(self.select_json("--level", "L1")))
+        self.assertEqual(WHOLE, self.suites(self.select_json("--level", "full")))
+        self.assertEqual([], self.suites(self.select_json("--level", "fast")))
 
     def test_another_matching_area_still_adds_its_kind(self):
         self.write_checks(checks_map(areas=[{"glob": "Assets/Core/**", "kind": "extra"}]))
         payload = self.changed({"Assets/Core/Core.cs": "public class Core { int a; }\n"})
         self.assertEqual(["extra", "narrowed"], self.kinds(payload))
-        self.assertIn("l0:extra", [item["key"] for item in payload["l0"]])
+        self.assertIn("structure:extra", [item["key"] for item in payload["structure"]])
 
     def test_a_definition_in_a_folder_unity_does_not_import_is_not_in_the_graph(self):
         self.base({"Assets/Samples~/Game.Core.asmdef": asm("Game.Core"), "Assets/.hidden/Game.Core.asmdef": asm("Game.Core")})
@@ -410,19 +410,19 @@ class ExplainTests(ProjectCase):
         self.assertEqual(["Game.Ui.Tests", "Game.Ui", "Game.Core"], entry["via"])
         self.assertEqual("Game.Core", entry["changedAssembly"])
         self.assertEqual(["Assets/Core/Core.cs"], entry["paths"])
-        l0 = next(item for item in payload["explain"] if item["check"] == "l0")["because"]
+        structure = next(item for item in payload["explain"] if item["check"] == "structure")["because"]
         self.assertIn({"rule": "areas[0]", "assemblies": "narrowed", "kind": "narrowed"},
-                      [{key: item.get(key) for key in ("rule", "assemblies", "kind")} for item in l0])
-        self.assertNotIn("assemblies", next(item for item in l0 if item["rule"] == "areas[2]"))  # an area without the member
-        code, out, _ = run("select", "--checks", str(self.checks_path), "--base-ref", "main", "--level", "L2", "--explain")
+                      [{key: item.get(key) for key in ("rule", "assemblies", "kind")} for item in structure])
+        self.assertNotIn("assemblies", next(item for item in structure if item["rule"] == "areas[2]"))  # an area without the member
+        code, out, _ = run("select", "--checks", str(self.checks_path), "--base-ref", "main", "--level", "affected", "--explain")
         self.assertEqual(0, code)
         self.assertIn("PROJECT ASSEMBLIES (1)", out)
         self.assertIn("areas[0].assemblies glob Assets/**: Game.Ui.Tests -> Game.Ui -> Game.Core", out)
-        self.assertIn("test assemblies by reference (L2): editmode:Game.Core.Tests, playmode:Game.Play.Tests, editmode:Game.Ui.Tests", out)
+        self.assertIn("test assemblies by reference (affected): editmode:Game.Core.Tests, playmode:Game.Play.Tests, editmode:Game.Ui.Tests", out)
 
     def test_an_unresolved_path_says_why_in_the_text(self):
         self.commit({"Assets/Loose/Loose.cs": "public class Loose { int a; }\n"})
-        code, out, _ = run("select", "--checks", str(self.checks_path), "--base-ref", "main", "--level", "L2")
+        code, out, _ = run("select", "--checks", str(self.checks_path), "--base-ref", "main", "--level", "affected")
         self.assertEqual(0, code)
         self.assertIn("Assets/Loose/Loose.cs: areas[0] not narrowed, keeps the area's kind", out)
 
@@ -455,19 +455,19 @@ class ConfigTests(unittest.TestCase):
         self.assertIn("drops the kinds assembly-config, asset-meta, editor-code, managed-code, tests", found[0])
         self.assertNotIn("overridesPreset", found[0])
         data = preset_map()
-        data["kinds"]["managed-code"] = {"L0": ["l0"]}
+        data["kinds"]["managed-code"] = {"structure": ["structure"]}
         _, warnings = self.messages(data)
         self.assertTrue(any("drops the kinds assembly-config, asset-meta, editor-code, tests of" in message for message in warnings), warnings)
 
     def test_a_check_of_the_area_kind_that_the_member_kind_lacks_is_a_warning(self):
         data = checks_map()
-        data["kinds"]["code"]["L3"] = ["player:ios"]
+        data["kinds"]["code"]["full"] = ["player:ios"]
         _, warnings = self.messages(data)
-        self.assertTrue(any("lacks L3 player:ios" in message for message in warnings), warnings)
+        self.assertTrue(any("lacks full player:ios" in message for message in warnings), warnings)
 
     def test_editor_suites_of_the_area_kind_below_the_member_level_are_a_warning(self):
-        _, warnings = self.messages(checks_map({"kind": "narrowed", "runner": "edit", "playmodeRunner": "play", "level": "L3"}))
-        self.assertTrue(any("areas[0].assemblies" in message and "below the member's level L3" in message for message in warnings), warnings)
+        _, warnings = self.messages(checks_map({"kind": "narrowed", "runner": "edit", "playmodeRunner": "play", "level": "full"}))
+        self.assertTrue(any("areas[0].assemblies" in message and "below the member's level full" in message for message in warnings), warnings)
 
     def test_the_schema_knows_the_member(self):
         code, out, _ = run("validate", str(CONTRACTS / "fixtures" / "valid" / "checks-area-assemblies.json"))
@@ -486,7 +486,7 @@ class PresetNarrowingTests(ProjectCase):
 
     def test_a_preset_kind_the_project_replaced_stays(self):
         data = preset_map()
-        data["kinds"]["managed-code"] = {"L0": ["l0"]}
+        data["kinds"]["managed-code"] = {"structure": ["structure"]}
         self.write_checks(data)
         payload = self.changed({"Assets/Other/Other.cs": "public class Other { int a; }\n"})
         self.assertEqual(["managed-code", "narrowed"], self.kinds(payload))

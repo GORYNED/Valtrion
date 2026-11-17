@@ -2,6 +2,13 @@
 
 Core (the `valtrion` Python package) and the Unity package `com.goryned.valtrion.unity` are versioned independently. The Unity changelog is in `integrations/unity/com.goryned.valtrion.unity/CHANGELOG.md`; `compat.json` lists compatible pairs.
 
+## 0.24.0 (2026-11-17)
+
+- **Upgrade note.** Breaking: the levels of `checks.json` are renamed (below). `compat.json` pairs Core 0.24.0 with Unity package 0.20.x only; packages 0.17.x to 0.19.x are paired with Core below 0.24 and cannot read the new keys. Release the package first, rename the levels in every `checks.json`, map generator, test and document of the project, then update with `pipx upgrade valtrion` (and `valtrion hosts sync` on SSH hosts). Packages 0.17.x to 0.19.x stay with Core 0.23.x.
+
+- **The check levels `L0` to `L4` are named `structure`, `fast`, `affected`, `full` and `release`.** This is a breaking change of `gdv.checks/1` and of the `select` output. In `checks.json` the keys of `kinds.*` (and of each `byContent`/area `assemblies.level`, which takes `fast` to `release`) use the new names, and the L0 check type `l0` / `l0:NAME` is now `structure` / `structure:NAME` (also for `valtrion result write`). `select --level` takes the new names (default `affected`, `report --level` default `release`); `--mode` is unchanged and now names the same levels. `select` text and JSON output (`level`, `levelBreakdown`, the `structure` list, `full set` lines) and the Unity package's checks contract use the new names. Rename the keys in your `checks.json`; the old names are rejected.
+- `.gitignore` ignores `/.claude/worktrees`.
+
 ## 0.23.2 (2026-11-16)
 
 - **Upgrade note.** `compat.json` is unchanged: Core 0.23.2 pairs with Unity packages 0.17.x, 0.18.x and 0.19.x like 0.23.1. Update with `pipx upgrade valtrion` (and `valtrion hosts sync` on SSH hosts).

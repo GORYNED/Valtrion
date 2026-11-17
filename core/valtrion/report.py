@@ -174,7 +174,7 @@ def exit_code(rows: list[Row]) -> int:
 
 def not_verified_lines(rows: list[Row], selection: Selection | None = None) -> list[str]:
     lines = []
-    if selection is not None and any(check.type != "l0" for check in selection.checks):
+    if selection is not None and any(check.type != "structure" for check in selection.checks):
         # Unity-backed work was selected: a platform the project requires is verified only by a passing device or player row.
         proven = {
             row.platform
@@ -234,7 +234,7 @@ def format_markdown(selection: Selection, rows: list[Row], sha: str | None, prob
 def _configure_report(parser: argparse.ArgumentParser) -> None:
     _add_common(parser)
     parser.add_argument("--results", type=Path, required=True, help="a folder searched recursively for gdv.result/1 files")
-    parser.add_argument("--level", choices=LEVELS, default="L4", help="highest level the report covers (default: L4)")
+    parser.add_argument("--level", choices=LEVELS, default="release", help="highest level the report covers (default: release)")
     parser.add_argument("--pr", action="store_true", help="print the block with its `## Local verification` heading, ready for a pull request description")
     parser.add_argument("--json", action="store_true", help="print rows and counts as JSON")
     parser.add_argument("--sha", help="the candidate revision results must belong to (default: HEAD)")

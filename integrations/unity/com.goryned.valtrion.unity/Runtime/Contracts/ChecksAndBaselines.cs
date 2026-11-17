@@ -153,7 +153,7 @@ namespace Valtrion.Unity.Contracts
         /// <summary>The runner of Play Mode test assemblies; without it a change that reaches one is not narrowed.</summary>
         public string PlaymodeRunner { get; set; }
 
-        /// <summary>The level (<c>L1</c> to <c>L4</c>) of the narrowed suites; <c>L2</c> when null.</summary>
+        /// <summary>The level (<c>fast</c> to <c>release</c>) of the narrowed suites; <c>affected</c> when null.</summary>
         public string Level { get; set; }
 
         internal static ChecksAssemblies Read(ContractReader reader)
@@ -161,7 +161,7 @@ namespace Valtrion.Unity.Contracts
             var assemblies = new ChecksAssemblies
             {
                 Kind = reader.Identifier("kind"), Runner = reader.Str("runner"), PlaymodeRunner = reader.OptStr("playmodeRunner", 1),
-                Level = reader.OptChoice("level", new[] { "L1", "L2", "L3", "L4" }),
+                Level = reader.OptChoice("level", new[] { "fast", "affected", "full", "release" }),
             };
             reader.Done();
             return assemblies;
@@ -295,28 +295,28 @@ namespace Valtrion.Unity.Contracts
         }
     }
 
-    /// <summary>The checks a kind of change needs at each validation level (L0 to L4); a level that is absent has no checks of its own.</summary>
+    /// <summary>The checks a kind of change needs at each validation level (structure to release); a level that is absent has no checks of its own.</summary>
     public sealed class ChecksLevels
     {
-        public List<string> L0 { get; set; }
+        public List<string> Structure { get; set; }
 
-        public List<string> L1 { get; set; }
+        public List<string> Fast { get; set; }
 
-        public List<string> L2 { get; set; }
+        public List<string> Affected { get; set; }
 
-        public List<string> L3 { get; set; }
+        public List<string> Full { get; set; }
 
-        public List<string> L4 { get; set; }
+        public List<string> Release { get; set; }
 
         internal static ChecksLevels Read(ContractReader reader)
         {
             var levels = new ChecksLevels
             {
-                L0 = reader.OptStrings("L0"),
-                L1 = reader.OptStrings("L1"),
-                L2 = reader.OptStrings("L2"),
-                L3 = reader.OptStrings("L3"),
-                L4 = reader.OptStrings("L4"),
+                Structure = reader.OptStrings("structure"),
+                Fast = reader.OptStrings("fast"),
+                Affected = reader.OptStrings("affected"),
+                Full = reader.OptStrings("full"),
+                Release = reader.OptStrings("release"),
             };
             reader.Done();
             return levels;
@@ -325,11 +325,11 @@ namespace Valtrion.Unity.Contracts
         internal JsonValue Write()
         {
             var node = JsonValue.NewObject();
-            if (L0 != null) node.Set("L0", JsonBuild.Strings(L0));
-            if (L1 != null) node.Set("L1", JsonBuild.Strings(L1));
-            if (L2 != null) node.Set("L2", JsonBuild.Strings(L2));
-            if (L3 != null) node.Set("L3", JsonBuild.Strings(L3));
-            if (L4 != null) node.Set("L4", JsonBuild.Strings(L4));
+            if (Structure != null) node.Set("structure", JsonBuild.Strings(Structure));
+            if (Fast != null) node.Set("fast", JsonBuild.Strings(Fast));
+            if (Affected != null) node.Set("affected", JsonBuild.Strings(Affected));
+            if (Full != null) node.Set("full", JsonBuild.Strings(Full));
+            if (Release != null) node.Set("release", JsonBuild.Strings(Release));
             return node;
         }
     }
@@ -369,7 +369,7 @@ namespace Valtrion.Unity.Contracts
 
         public string Unclassified { get; set; }
 
-        /// <summary>The closed list of reasons a level above L2 (a full set) may be asked for with <c>select --reason</c>; null when the map names none.</summary>
+        /// <summary>The closed list of reasons a level above affected (a full set) may be asked for with <c>select --reason</c>; null when the map names none.</summary>
         public List<string> FullSetReasons { get; set; }
 
         public static ChecksDocument Parse(string json) => FromJson(JsonValue.Parse(json));

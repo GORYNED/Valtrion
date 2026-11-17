@@ -1,4 +1,4 @@
-"""Check selection: the project's `checks.json` applied to the changed paths of a candidate, and the `check-config` L0 helper.
+"""Check selection: the project's `checks.json` applied to the changed paths of a candidate, and the `check-config` helper for structure checks.
 
 `valtrion select` implements a change matrix (validation levels): changed paths are mapped to kinds with the area map,
 the checks of those kinds are united for the level and every lower level, and an unclassified path fails closed. The module has no
@@ -23,13 +23,13 @@ from typing import Any, Collection, Mapping, Sequence
 from . import asmgraph, constants, nowindow, packagediff, presets, project
 from .schema import SchemaError, UnreadableInput, Validator, parse_json, validate_file
 
-LEVELS = ("L0", "L1", "L2", "L3", "L4")
+LEVELS = ("structure", "fast", "affected", "full", "release")
 #: What `valtrion select` selects without `--level`: the checks the change affects. Every level above it is a full set and is asked for
 #: explicitly (with a reason when the map lists them: `fullSetReasons`).
-DEFAULT_LEVEL = "L2"
-#: Named modes over the levels: `fast` (L0 and L1), `affected` (up to L2, the default), `full` (up to L3, only with a reason from the map's
-#: `fullSetReasons`) and `release` (up to L4, only when asked for). `--level` stays for compatibility.
-MODES = {"fast": "L1", "affected": "L2", "full": "L3", "release": "L4"}
+DEFAULT_LEVEL = "affected"
+#: Named modes over the levels: `fast` (structure and fast), `affected` (up to affected, the default), `full` (up to full, only with a reason from the map's
+#: `fullSetReasons`) and `release` (up to release, only when asked for). `--level` stays for compatibility.
+MODES = {"fast": "fast", "affected": "affected", "full": "full", "release": "release"}
 DEFAULT_CHECKS_PATH = Path("validation") / "device" / "checks.json"
 
 
@@ -41,14 +41,14 @@ def default_checks_path(root: Path, start: Path) -> Path:
         raise UnreadableInput(str(error)) from error
     return configured or root / DEFAULT_CHECKS_PATH
 
-L0, EDITMODE, PLAYMODE, PLAYER, DEVICE = "l0", "editmode", "playmode", "player", "device"
+STRUCTURE, EDITMODE, PLAYMODE, PLAYER, DEVICE = "structure", "editmode", "playmode", "player", "device"
 #: Order of the check types in every listing.
-TYPES = (L0, EDITMODE, PLAYMODE, PLAYER, DEVICE)
+TYPES = (STRUCTURE, EDITMODE, PLAYMODE, PLAYER, DEVICE)
 _EDITOR_TYPES = (EDITMODE, PLAYMODE)
 
 _NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 #: The level at which `byContent.assemblies` puts the test assemblies it selects, when the member names none.
-ASSEMBLIES_LEVEL = "L2"
+ASSEMBLIES_LEVEL = "affected"
 _GIT_TIMEOUT_SEC = 60
 
 
@@ -66,7 +66,7 @@ class GitError(Exception):
 
 @dataclass(frozen=True)
 class Spec:
-    """One entry of a kind's level list: `l0`, `editmode:A,B@runner`, `playmode:A`, `player:target` or `device:plans/name`."""
+    """One entry of a kind's level list: `structure`, `editmode:A,B@runner`, `playmode:A`, `player:target` or `device:plans/name`."""
 
     type: str
     target: str
@@ -180,10 +180,10 @@ def parse_spec(raw: str) -> Spec:
     target = target.strip()
     if kind not in TYPES:
         raise ValueError(f"{raw!r}: unknown check type {kind!r} (expected one of {', '.join(TYPES)})")
-    if kind == L0:
+    if kind == STRUCTURE:
         if runner_text is not None:
-            raise ValueError(f"{raw!r}: an l0 check has no runner")
-        return Spec(L0, target, None, raw)
+            raise ValueError(f"{raw!r}: a structure check has no runner")
+        return Spec(STRUCTURE, target, None, raw)
     if not colon or not target:
         raise ValueError(f"{raw!r}: {kind} needs a target after ':'")
     if kind in _EDITOR_TYPES:
@@ -495,9 +495,9 @@ _LOCK_SIBLINGS = {"manifest.json": "packages-lock.json", "packages-lock.json": "
 
 
 def _heavy_specs(config: Config, kind: str) -> list[str]:
-    """The player and device checks (levels L3 and L4) of a kind, as `L3 player:x`."""
+    """The player and device checks (levels full and release) of a kind, as `full player:x`."""
     found = []
-    for level in ("L3", "L4"):
+    for level in ("full", "release"):
         for raw in config.kinds.get(kind, {}).get(level, ()):
             spec = parse_spec(raw)
             if spec.type in (PLAYER, DEVICE):
@@ -508,7 +508,7 @@ def _heavy_specs(config: Config, kind: str) -> list[str]:
 def _over_selection_warnings(config: Config) -> list[str]:
     """Map patterns that pass every check yet select more than the change calls for, found without a diff:
     a dependency file classified by key whose lock file is not; a `*` fallback key whose kind holds player or device checks (unless the key
-    says `allowHeavyFallback`); a kind with L4 checks that only dependency keys reach."""
+    says `allowHeavyFallback`); a kind with release checks that only dependency keys reach."""
     warnings: list[str] = []
     covered = [glob_to_regex(rule["glob"]) for rule in config.json_rules]
     areas = [(index, glob_to_regex(area["glob"]), [glob_to_regex(item) for item in area.get("exclude", ())], area)
@@ -552,10 +552,10 @@ def _over_selection_warnings(config: Config) -> list[str]:
                 users.setdefault(name, []).append(f"{rule['glob']} key {entry['match']!r}")
     direct = {area["kind"] for area in config.areas} | {rule["kind"] for rule in config.content_rules} | {rule["kind"] for rule in config.equivalence_rules}
     for name in sorted(users):
-        if name in direct or not config.kinds.get(name, {}).get("L4"):
+        if name in direct or not config.kinds.get(name, {}).get("release"):
             continue
         shown = ", ".join(users[name][:3]) + (f" +{len(users[name]) - 3} more" if len(users[name]) > 3 else "")
-        warnings.append(f"kind {name!r} has L4 checks and only dependency keys reach it ({shown}): a version change of such an entry selects them "
+        warnings.append(f"kind {name!r} has release checks and only dependency keys reach it ({shown}): a version change of such an entry selects them "
                         "whatever the change contains; make sure a bump of these dependencies can affect the platform")
     return warnings
 
@@ -1504,7 +1504,7 @@ class Selection:
 
     @property
     def mode_name(self) -> str | None:
-        """The mode of the selected level (the one named, else the one that owns the level), None for L0."""
+        """The mode of the selected level (the one named, else the one that owns the level), None for structure."""
         return self.mode or next((name for name, level in MODES.items() if level == self.level), None)
 
     @property
@@ -1677,7 +1677,7 @@ class Selection:
             "projectAssemblies": self.project_assemblies,
             "selectedKinds": self.named_kinds,
             "kindsNamedExplicitly": bool(self.named_kinds),
-            "l0": [_check_json(check) for check in self.of_type(L0)],
+            "structure": [_check_json(check) for check in self.of_type(STRUCTURE)],
             "editorSuites": [_check_json(check) for check in self.of_type(*_EDITOR_TYPES)],
             "editorCommands": self.editor_commands(),
             "playerTests": [_check_json(check) for check in self.of_type(PLAYER)],
@@ -1718,8 +1718,8 @@ def _expand(spec: Spec, config: Config, level: str, kind: str, found: dict[str, 
     elif spec.type == DEVICE:
         plan = load_plan(config, spec.target, validator)
         pairs = [(plan.plan_id, spec.target)]
-    elif spec.type == L0:
-        pairs = [(f"l0:{spec.target}" if spec.target else "l0", spec.target)]
+    elif spec.type == STRUCTURE:
+        pairs = [(f"structure:{spec.target}" if spec.target else "structure", spec.target)]
     else:
         pairs = [(f"{spec.type}:{spec.target}", spec.target)]
     runner, runner_name = config.resolve_runner(spec.runner)
@@ -1752,7 +1752,7 @@ def _narrowed(package_diffs: Mapping[str, Mapping[str, Mapping[str, Any]]] | Non
 def select(
     config: Config,
     paths: Sequence[str],
-    level: str = "L4",
+    level: str = "release",
     *,
     base_ref: str | None = None,
     merge_base: str | None = None,
@@ -1827,8 +1827,8 @@ def _add_common(parser: argparse.ArgumentParser) -> None:
 def _configure_select(parser: argparse.ArgumentParser) -> None:
     _add_common(parser)
     parser.add_argument("--mode", choices=tuple(MODES),
-                        help="named level: fast (up to L1), affected (up to L2, the default: the checks the change affects), full (up to L3; needs --reason from "
-                             "the map's fullSetReasons) or release (up to L4; only when asked for); not with --level")
+                        help="named level: fast (up to fast), affected (up to affected, the default: the checks the change affects), full (up to full; needs --reason from "
+                             "the map's fullSetReasons) or release (up to release; only when asked for); not with --level")
     parser.add_argument("--level", choices=LEVELS, default=None,
                         help=f"highest level to select, cumulative (default: {DEFAULT_LEVEL}, the checks the change affects; a higher level is a full set "
                              "and needs --reason when the map lists fullSetReasons); kept for compatibility, --mode names the same levels")
@@ -2018,10 +2018,10 @@ def format_selection(selection: Selection, explain: bool = False) -> str:
     if not selection.paths and not selection.named_kinds:
         lines.append("no changed paths: nothing to select")
     lines.append("kinds: " + (", ".join(selection.kinds) or "-"))
-    l0 = selection.of_type(L0)
-    if l0:
-        lines.append("L0:")
-        lines.extend(f"  {check.key}" for check in l0)
+    structural = selection.of_type(STRUCTURE)
+    if structural:
+        lines.append("structure:")
+        lines.extend(f"  {check.key}" for check in structural)
     commands = selection.editor_commands()
     if commands:
         lines.append("Editor suites:")

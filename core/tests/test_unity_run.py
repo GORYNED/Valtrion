@@ -795,7 +795,7 @@ class AssemblyNamesTests(UnityRunTestCase):
 
         runner = "valtrion unity run -- -assemblyNames {assemblies}"
         selection = select.Selection.__new__(select.Selection)
-        selection.checks = [select.Check("editmode:B", select.EDITMODE, "B", "L2", runner), select.Check("editmode:A", select.EDITMODE, "A", "L2", runner)]
+        selection.checks = [select.Check("editmode:B", select.EDITMODE, "B", "affected", runner), select.Check("editmode:A", select.EDITMODE, "A", "affected", runner)]
         command = selection.editor_commands()[0]["command"]
         self.assertTrue(command.endswith("-assemblyNames A,B"), command)
 

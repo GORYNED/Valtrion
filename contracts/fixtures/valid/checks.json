@@ -7,8 +7,8 @@
     { "glob": "docs/**", "kind": "docs" }
   ],
   "kinds": {
-    "playback-perf": { "L2": ["editmode:Playback.Tests"], "L4": ["device:plans/perf.open-playback"] },
-    "docs": { "L0": ["l0"] }
+    "playback-perf": { "affected": ["editmode:Playback.Tests"], "release": ["device:plans/perf.open-playback"] },
+    "docs": { "structure": ["structure"] }
   },
   "unclassified": "widest"
 }

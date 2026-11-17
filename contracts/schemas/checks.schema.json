@@ -135,18 +135,18 @@
         "kind": { "$ref": "common.schema.json#/$defs/identifier" },
         "runner": { "type": "string", "minLength": 1 },
         "playmodeRunner": { "type": "string", "minLength": 1 },
-        "level": { "enum": ["L1", "L2", "L3", "L4"] }
+        "level": { "enum": ["fast", "affected", "full", "release"] }
       }
     },
     "levels": {
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "L0": { "$ref": "common.schema.json#/$defs/stringList" },
-        "L1": { "$ref": "common.schema.json#/$defs/stringList" },
-        "L2": { "$ref": "common.schema.json#/$defs/stringList" },
-        "L3": { "$ref": "common.schema.json#/$defs/stringList" },
-        "L4": { "$ref": "common.schema.json#/$defs/stringList" }
+        "structure": { "$ref": "common.schema.json#/$defs/stringList" },
+        "fast": { "$ref": "common.schema.json#/$defs/stringList" },
+        "affected": { "$ref": "common.schema.json#/$defs/stringList" },
+        "full": { "$ref": "common.schema.json#/$defs/stringList" },
+        "release": { "$ref": "common.schema.json#/$defs/stringList" }
       }
     }
   }

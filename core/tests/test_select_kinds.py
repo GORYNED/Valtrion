@@ -24,12 +24,12 @@ MAP["areas"] = [
     {"glob": "validation/**", "kind": "docs"},
 ]
 MAP["kinds"] = {
-    "media": {"L2": ["editmode:Media.Tests@unity-tests"]},
-    "ui": {"L2": ["editmode:Ui.Tests@unity-tests"]},
-    "generated": {"L0": ["l0"]},
-    "docs": {"L0": ["l0"]},
-    "scheduled": {"L2": ["editmode:Slow.Tests,Media.Tests@unity-tests"], "L3": ["player:win64"]},
-    "release": {"L2": ["editmode:Release.Tests@unity-tests"], "L4": ["device:plans/open-playback"]},
+    "media": {"affected": ["editmode:Media.Tests@unity-tests"]},
+    "ui": {"affected": ["editmode:Ui.Tests@unity-tests"]},
+    "generated": {"structure": ["structure"]},
+    "docs": {"structure": ["structure"]},
+    "scheduled": {"affected": ["editmode:Slow.Tests,Media.Tests@unity-tests"], "full": ["player:win64"]},
+    "release": {"affected": ["editmode:Release.Tests@unity-tests"], "release": ["device:plans/open-playback"]},
 }
 
 
@@ -41,7 +41,7 @@ class NamedKindTests(RepoCase):
     checks = MAP
 
     def select_json(self, *arguments):
-        code, out, err = run("select", "--level", "L4", "--checks", str(self.checks_path), "--json", *arguments)
+        code, out, err = run("select", "--level", "release", "--checks", str(self.checks_path), "--json", *arguments)
         return code, (json.loads(out) if out.strip().startswith("{") else None), err
 
     def test_a_named_kind_is_selected_without_a_diff(self):
@@ -56,26 +56,26 @@ class NamedKindTests(RepoCase):
         self.assertEqual(["player:win64"], keys(payload, "playerTests"))
 
     def test_the_level_is_cumulative_and_the_default_is_the_affected_checks(self):
-        _, low, _ = self.select_json("--kind", "scheduled", "--level", "L2")
+        _, low, _ = self.select_json("--kind", "scheduled", "--level", "affected")
         self.assertEqual([], low["playerTests"])
-        _, full, _ = self.select_json("--kind", "release", "--level", "L4")
+        _, full, _ = self.select_json("--kind", "release", "--level", "release")
         self.assertEqual(["example.perf.open-playback"], keys(full, "devicePlans"))
-        _, lower, _ = self.select_json("--kind", "release", "--level", "L3")
+        _, lower, _ = self.select_json("--kind", "release", "--level", "full")
         self.assertEqual([], lower["devicePlans"])
         code, out, _ = run("select", "--checks", str(self.checks_path), "--kind", "release", "--json")
         default = json.loads(out)
-        self.assertEqual(("L2", "affected", None), (default["level"], default["mode"], default["fullSet"]))
+        self.assertEqual(("affected", "affected", None), (default["level"], default["mode"], default["fullSet"]))
         self.assertEqual([], default["devicePlans"])
 
     def test_the_option_repeats_and_takes_a_comma_list(self):
-        _, payload, _ = self.select_json("--kind", "scheduled", "--kind", "ui,release", "--level", "L2")
+        _, payload, _ = self.select_json("--kind", "scheduled", "--kind", "ui,release", "--level", "affected")
         self.assertEqual(["release", "scheduled", "ui"], payload["selectedKinds"])
         self.assertEqual(["editmode:Media.Tests", "editmode:Release.Tests", "editmode:Slow.Tests", "editmode:Ui.Tests"], keys(payload))
 
     def test_named_kinds_are_added_to_the_kinds_of_a_diff(self):
         write(self.root, "src/media/a.cs", "changed\n")
         self.commit()
-        _, payload, _ = self.select_json("--base-ref", "main", "--kind", "scheduled", "--level", "L2")
+        _, payload, _ = self.select_json("--base-ref", "main", "--kind", "scheduled", "--level", "affected")
         self.assertEqual(["media", "scheduled"], payload["kinds"])
         self.assertEqual(["scheduled"], payload["selectedKinds"])  # only what was named
         self.assertEqual(["src/media/a.cs"], payload["changedPaths"])
@@ -107,16 +107,16 @@ class NamedKindTests(RepoCase):
 
     def test_include_worktree_applies_only_together_with_a_base_ref(self):
         write(self.root, "src/ui/b.cs", "edited, not committed\n")
-        code, payload, _ = self.select_json("--kind", "scheduled", "--level", "L2", "--include-worktree")
+        code, payload, _ = self.select_json("--kind", "scheduled", "--level", "affected", "--include-worktree")
         self.assertEqual(0, code)
         self.assertEqual([], payload["changedPaths"])  # the named kinds alone; the working tree is not a diff here
         self.assertFalse(payload["includeWorktree"])
-        code, payload, _ = self.select_json("--base-ref", "main", "--kind", "scheduled", "--level", "L2", "--include-worktree")
+        code, payload, _ = self.select_json("--base-ref", "main", "--kind", "scheduled", "--level", "affected", "--include-worktree")
         self.assertEqual(["src/ui/b.cs"], payload["changedPaths"])
         self.assertEqual(["scheduled", "ui"], payload["kinds"])
 
     def test_the_text_output_names_the_kinds(self):
-        code, out, _ = run("select", "--checks", str(self.checks_path), "--kind", "scheduled", "--level", "L2")
+        code, out, _ = run("select", "--checks", str(self.checks_path), "--kind", "scheduled", "--level", "affected")
         self.assertEqual(0, code)
         self.assertIn("named kinds: scheduled", out)
         self.assertNotIn("nothing to select", out)
@@ -125,13 +125,13 @@ class NamedKindTests(RepoCase):
         results = self.root.parent / (self.root.name + "-results")
         results.mkdir()
         self.addCleanup(lambda: results.rmdir() if results.exists() and not any(results.iterdir()) else None)
-        code, out, _ = run("report", "--checks", str(self.checks_path), "--kind", "scheduled", "--level", "L2", "--results", str(results), "--json")
+        code, out, _ = run("report", "--checks", str(self.checks_path), "--kind", "scheduled", "--level", "affected", "--results", str(results), "--json")
         self.assertEqual(constants.EXIT_BLOCKED, code)  # selected checks without results are NOT_RUN, which exits 2
         payload = json.loads(out)
         self.assertEqual(["scheduled"], payload["selectedKinds"])
         self.assertTrue(payload["kindsNamedExplicitly"])
         self.assertEqual(["editmode:Media.Tests", "editmode:Slow.Tests"], [row["key"] for row in payload["rows"]])
-        code, out, _ = run("report", "--checks", str(self.checks_path), "--kind", "scheduled", "--level", "L2", "--results", str(results))
+        code, out, _ = run("report", "--checks", str(self.checks_path), "--kind", "scheduled", "--level", "affected", "--results", str(results))
         self.assertIn("named kinds `scheduled`", out)
         self.assertNotIn("No changed paths", out)
         code, _, err = run("report", "--checks", str(self.checks_path), "--kind", "nightly", "--results", str(results))
@@ -141,7 +141,7 @@ class NamedKindTests(RepoCase):
 class RunnerTests(RepoCase):
     checks = MAP
 
-    def commands(self, *kinds, level="L2"):
+    def commands(self, *kinds, level="affected"):
         paths = []
         config = self.config()
         return select.select(config, paths, level, named_kinds=kinds).editor_commands()
@@ -160,16 +160,16 @@ class RunnerTests(RepoCase):
         self.assertEqual(["editmode:Media.Tests", "editmode:Release.Tests", "editmode:Slow.Tests", "editmode:Ui.Tests"], commands[0]["suites"])
 
     def test_a_name_that_is_not_in_runners_is_the_literal_command_as_before(self):
-        data = {**copy.deepcopy(MAP), "kinds": {**MAP["kinds"], "docs": {"L2": ["editmode:Docs.Tests@echo {assemblies}"]}}}
+        data = {**copy.deepcopy(MAP), "kinds": {**MAP["kinds"], "docs": {"affected": ["editmode:Docs.Tests@echo {assemblies}"]}}}
         config = select.Config(self.checks_path, data)
-        (command,) = select.select(config, [], "L2", named_kinds=["docs"]).editor_commands()
+        (command,) = select.select(config, [], "affected", named_kinds=["docs"]).editor_commands()
         self.assertEqual("echo Docs.Tests", command["command"])
         self.assertIsNone(command["runnerName"])
 
     def test_the_comma_placeholder_is_unchanged(self):
-        data = {**copy.deepcopy(MAP), "kinds": {**MAP["kinds"], "docs": {"L2": ["editmode:A.Tests,B.Tests@unity-tests-csv"]}}}
+        data = {**copy.deepcopy(MAP), "kinds": {**MAP["kinds"], "docs": {"affected": ["editmode:A.Tests,B.Tests@unity-tests-csv"]}}}
         config = select.Config(self.checks_path, data)
-        (command,) = select.select(config, [], "L2", named_kinds=["docs"]).editor_commands()
+        (command,) = select.select(config, [], "affected", named_kinds=["docs"]).editor_commands()
         self.assertEqual("python tools/run-tests.py --assemblies A.Tests,B.Tests", command["command"])
 
     def test_both_placeholders_in_one_template(self):
@@ -182,12 +182,12 @@ class RunnerTests(RepoCase):
         self.assertEqual((None, None), select.Config(self.checks_path, copy.deepcopy(CHECKS)).resolve_runner(None))
 
     def test_two_different_runners_for_one_suite_still_conflict_by_name_or_text(self):
-        data = {**copy.deepcopy(MAP), "kinds": {**MAP["kinds"], "docs": {"L2": ["editmode:Ui.Tests@unity-tests-csv"]}}}
+        data = {**copy.deepcopy(MAP), "kinds": {**MAP["kinds"], "docs": {"affected": ["editmode:Ui.Tests@unity-tests-csv"]}}}
         config = select.Config(self.checks_path, data)
         with self.assertRaises(select.ConfigError):
-            select.select(config, [], "L2", named_kinds=["docs", "ui"])
-        same = {**copy.deepcopy(MAP), "kinds": {**MAP["kinds"], "docs": {"L2": [f"editmode:Ui.Tests@{RUNNER_SEMICOLON}"]}}}
-        select.select(select.Config(self.checks_path, same), [], "L2", named_kinds=["docs", "ui"])  # a name and its own text agree
+            select.select(config, [], "affected", named_kinds=["docs", "ui"])
+        same = {**copy.deepcopy(MAP), "kinds": {**MAP["kinds"], "docs": {"affected": [f"editmode:Ui.Tests@{RUNNER_SEMICOLON}"]}}}
+        select.select(select.Config(self.checks_path, same), [], "affected", named_kinds=["docs", "ui"])  # a name and its own text agree
 
     def check_config(self, data):
         self.checks_path.write_text(json.dumps(data), encoding="utf-8")
@@ -208,23 +208,23 @@ class RunnerTests(RepoCase):
         self.assertIn("runners.typo2", err)
         self.assertIn("{assemblies:;}", err)
         bad = copy.deepcopy(MAP)
-        bad["kinds"]["docs"]["L2"] = ["editmode:Docs.Tests@echo {assemblies;;}"]
+        bad["kinds"]["docs"]["affected"] = ["editmode:Docs.Tests@echo {assemblies;;}"]
         code, _, err = self.check_config(bad)
         self.assertEqual(0, code, err)  # in a literal command it is a warning: that text was valid before
-        self.assertIn("warning: kinds.docs.L2", err)
+        self.assertIn("warning: kinds.docs.affected", err)
         self.assertIn("{assemblies;;}", err)
 
     def test_text_that_looks_like_a_placeholder_stays_valid_in_a_literal_command(self):
         data = copy.deepcopy(MAP)
         for text in ("run.sh {assemblies.txt}", "run.sh {assemblies,x}", "run.sh {assembly}", "pwsh -c @{assembly=1}"):
-            data["kinds"]["docs"]["L2"] = [f"editmode:Docs.Tests@{text}"]
+            data["kinds"]["docs"]["affected"] = [f"editmode:Docs.Tests@{text}"]
             code, _, err = self.check_config(data)
             self.assertEqual(0, code, f"{text}: {err}")
 
     def test_a_runner_name_that_is_also_a_program_on_path_is_a_warning(self):
         data = copy.deepcopy(MAP)
         data["runners"]["echo"] = "echo {assemblies}"
-        data["kinds"]["docs"]["L2"] = ["editmode:Docs.Tests@echo"]
+        data["kinds"]["docs"]["affected"] = ["editmode:Docs.Tests@echo"]
         with mock.patch.object(select.shutil, "which", lambda name: "/bin/" + name if name == "echo" else None):
             code, _, err = self.check_config(data)
         self.assertEqual(0, code, err)
@@ -236,12 +236,12 @@ class RunnerTests(RepoCase):
 
     def test_a_shell_variable_or_brace_list_in_a_literal_runner_is_not_a_placeholder(self):
         data = copy.deepcopy(MAP)
-        data["kinds"]["docs"]["L2"] = ["editmode:Docs.Tests@echo ${HOME} {a,b} {assemblies}"]
+        data["kinds"]["docs"]["affected"] = ["editmode:Docs.Tests@echo ${HOME} {a,b} {assemblies}"]
         code, _, err = self.check_config(data)
         self.assertEqual(0, code, err)
         # A map that was valid before must stay valid: variables that merely start like the placeholder are the command's own.
         for text in ("run.sh ${assemblyDir} {assemblies}", "run.sh ${assemblies_dir} {assemblies}", "run.sh ${assembly} {assemblies;}"):
-            data["kinds"]["docs"]["L2"] = [f"editmode:Docs.Tests@{text}"]
+            data["kinds"]["docs"]["affected"] = [f"editmode:Docs.Tests@{text}"]
             code, _, err = self.check_config(data)
             self.assertEqual(0, code, f"{text}: {err}")
 
@@ -254,7 +254,7 @@ class RunnerTests(RepoCase):
 
     def test_an_undefined_bare_name_is_a_warning_when_the_map_has_runners(self):
         data = copy.deepcopy(MAP)
-        data["kinds"]["docs"]["L2"] = ["editmode:Docs.Tests@unity-test"]  # a typo of unity-tests
+        data["kinds"]["docs"]["affected"] = ["editmode:Docs.Tests@unity-test"]  # a typo of unity-tests
         code, _, err = self.check_config(data)
         self.assertEqual(0, code)
         self.assertIn("warning", err)
@@ -292,7 +292,7 @@ class ExcludeTests(RepoCase):
     def test_a_path_excluded_everywhere_is_unclassified_and_widens_the_selection(self):
         write(self.root, "src/media/x.meta", "new\n")
         self.commit()
-        selection = self.selection("L2")
+        selection = self.selection("affected")
         self.assertEqual(["src/media/x.meta"], selection.unclassified)
         self.assertTrue(selection.widest)
 

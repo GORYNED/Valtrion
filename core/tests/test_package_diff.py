@@ -327,7 +327,7 @@ class OutputTests(PackageCase):
         new = self.package_commit({"Plugins/Android/lib.aar": "x"})
         self.pin(new)
         self.commit()
-        code, out, _ = run("select", "--level", "L4", "--checks", str(self.checks_path), "--base-ref", "main", "--explain")
+        code, out, _ = run("select", "--level", "release", "--checks", str(self.checks_path), "--base-ref", "main", "--explain")
         self.assertEqual(0, code)
         self.assertIn("PACKAGE DIFF (1)", out)
         self.assertIn(f"{LOCK}: {NAME}: platform ({self.old[:8]}..{new[:8]}, 1 file(s))", out)
@@ -351,12 +351,12 @@ class OutputTests(PackageCase):
                  "areas": [{"glob": "**/*", "kind": "light"}],
                  "jsonRules": [{"glob": "Packages/packages-lock.json", "root": "dependencies", "keys": [
                      {"match": "*", "kind": "heavy", "byContent": {"managed": "light", "platform": "heavy"}}]}],
-                 "kinds": {"light": {"L0": ["l0"]}, "heavy": {"L0": ["l0"], "L3": ["player:ios"]}}}
+                 "kinds": {"light": {"structure": ["structure"]}, "heavy": {"structure": ["structure"], "full": ["player:ios"]}}}
         self.checks_path.write_text(json.dumps(light), encoding="utf-8")
         new = self.package_commit({"Plugins/lib.so": "x", "Runtime/Effect.shader": "x"})
         self.pin(new)
         self.commit()
-        code, out, _ = run("select", "--level", "L4", "--checks", str(self.checks_path), "--base-ref", "main", "--json")
+        code, out, _ = run("select", "--level", "release", "--checks", str(self.checks_path), "--base-ref", "main", "--json")
         record = json.loads(out)["packageDiffs"][LOCK][NAME]
         self.assertEqual("platform", record["verdict"], record)
 

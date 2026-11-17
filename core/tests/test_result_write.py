@@ -44,7 +44,7 @@ class ResultWriteTests(RepoCase):
         self.assertEqual("xml", document["artifacts"][0]["kind"])
 
     def test_report_shows_pass_rows_with_evidence_and_host(self):
-        self.write("l0", "--status", "PASS", "--host-id", "win-1")
+        self.write("structure", "--status", "PASS", "--host-id", "win-1")
         self.write("editmode:Media.Tests", "--status", "PASS", "--host-id", "win-1")
         self.write("editmode:Media.More.Tests", "--status", "PASS", "--host-id", "win-1")
         self.write("playmode:Media.Play.Tests", "--status", "FAIL", "--reason", "2 failed", "--host-id", "win-1")
@@ -53,7 +53,7 @@ class ResultWriteTests(RepoCase):
         rows = self.rows(payload)
         self.assertEqual(("PASS", "editor", "win-1"), (rows["editmode:Media.Tests"]["status"], rows["editmode:Media.Tests"]["evidence"], rows["editmode:Media.Tests"]["host"]))
         self.assertEqual("PASS", rows["editmode:Media.More.Tests"]["status"])
-        self.assertEqual("PASS", rows["l0"]["status"])
+        self.assertEqual("PASS", rows["structure"]["status"])
         self.assertEqual("host", rows["player:win64"]["evidence"])
         self.assertEqual(("FAIL", "2 failed"), (rows["playmode:Media.Play.Tests"]["status"], rows["playmode:Media.Play.Tests"]["detail"]))
         self.assertEqual(constants.EXIT_FAIL, code)
@@ -68,21 +68,21 @@ class ResultWriteTests(RepoCase):
 
     def test_the_output_folder_inside_the_repository_is_not_dirt(self):
         folder = self.root / "results"
-        code, _, err = run("result", "write", "l0", "--status", "PASS", "--out", str(folder), "--repo-dir", str(self.root))
+        code, _, err = run("result", "write", "structure", "--status", "PASS", "--out", str(folder), "--repo-dir", str(self.root))
         self.assertEqual(0, code, err)
         document = json.loads(next(folder.glob("*.json")).read_text(encoding="utf-8"))
         self.assertFalse(document["candidate"]["dirty"])
 
     def test_dirty_flag_can_only_make_it_worse(self):
-        path = self.write("l0", "--status", "PASS", "--dirty")
+        path = self.write("structure", "--status", "PASS", "--dirty")
         self.assertTrue(json.loads(Path(path).read_text(encoding="utf-8"))["candidate"]["dirty"])
 
     def test_another_commit_does_not_count(self):
-        self.write("l0", "--status", "PASS")
+        self.write("structure", "--status", "PASS")
         write(self.root, "src/media/more.cs")
         self.commit()
         _, payload = self.report()
-        self.assertEqual("NOT_RUN", self.rows(payload)["l0"]["status"])
+        self.assertEqual("NOT_RUN", self.rows(payload)["structure"]["status"])
 
     def test_the_same_inputs_give_the_same_file_and_other_assemblies_other_files(self):
         first = self.write("editmode:A", "--status", "PASS")
@@ -93,25 +93,25 @@ class ResultWriteTests(RepoCase):
         self.assertEqual(2, len(list(self.results.glob("*.json"))))
 
     def test_dirty_flag_says_so_and_the_host_is_part_of_the_file_name(self):
-        document = json.loads(Path(self.write("l0", "--status", "PASS", "--dirty")).read_text(encoding="utf-8"))
+        document = json.loads(Path(self.write("structure", "--status", "PASS", "--dirty")).read_text(encoding="utf-8"))
         self.assertIn("marked dirty by --dirty", document["unverified"])
-        one = self.write("l0", "--status", "PASS", "--host-id", "h" * 40 + "a")
-        two = self.write("l0", "--status", "PASS", "--host-id", "h" * 40 + "b")
+        one = self.write("structure", "--status", "PASS", "--host-id", "h" * 40 + "a")
+        two = self.write("structure", "--status", "PASS", "--host-id", "h" * 40 + "b")
         self.assertNotEqual(one, two)
 
     def test_inputs_that_cannot_be_true_are_refused(self):
-        self.write("l0", "--status", "FAIL", expect=1)  # no reason
-        self.write("l0", "--status", "PASS", "--reason", "fine", expect=1)
+        self.write("structure", "--status", "FAIL", expect=1)  # no reason
+        self.write("structure", "--status", "PASS", "--reason", "fine", expect=1)
         self.write("player:win64", "--status", "PASS", expect=1)  # platform unknown
-        self.write("l0", "--status", "PASS", "--sha", "0" * 40, expect=1)
+        self.write("structure", "--status", "PASS", "--sha", "0" * 40, expect=1)
         self.write("bad key", "--status", "PASS", expect=1)
         with self.assertRaises(SystemExit):  # argparse refuses a device evidence
-            self.write("l0", "--status", "PASS", "--evidence", "physical")
+            self.write("structure", "--status", "PASS", "--evidence", "physical")
         self.write("editmode:A", "--status", "PASS", "--evidence", "host", expect=1)
         self.write("example.perf.open-playback", "--status", "PASS", "--platform", "ios", expect=1)  # a device plan id
-        self.write("l0", "--status", "PASS", "--count", "passed=-1", expect=1)
-        self.write("l0", "--status", "PASS", "--artifact", "xml=" + str(self.results / "missing.xml"), expect=1)
-        self.write("l0", "--status", "PASS", "--started-utc", "2030-01-01T00:00:00Z", "--finished-utc", "2029-01-01T00:00:00Z", expect=1)
+        self.write("structure", "--status", "PASS", "--count", "passed=-1", expect=1)
+        self.write("structure", "--status", "PASS", "--artifact", "xml=" + str(self.results / "missing.xml"), expect=1)
+        self.write("structure", "--status", "PASS", "--started-utc", "2030-01-01T00:00:00Z", "--finished-utc", "2029-01-01T00:00:00Z", expect=1)
         self.assertEqual([], list(self.results.glob("*.json")))
 
 
