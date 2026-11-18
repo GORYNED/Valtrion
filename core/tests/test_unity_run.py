@@ -782,7 +782,7 @@ class GuardTests(UnityRunTestCase):
 
 class AssemblyNamesTests(UnityRunTestCase):
     def test_a_united_comma_list_reaches_unity_as_one_semicolon_list(self):
-        # Regression: `valtrion select` substitutes {assemblies} as `A,B`; Unity reads `-assemblyNames` as `A;B` and took `A,B` as one name.
+        # Regression: an agent passes `A,B` (a `;` ends a shell command); Unity reads `-assemblyNames` as `A;B` and took `A,B` as one name.
         dump = self.base / "dump"
         code, lines, _ = self.unity("-assemblyNames", "Game.Runtime.Tests,Game.Playback.Tests", "--dump", str(dump))
         self.assertEqual("STATUS PASS", lines[-1])
@@ -796,15 +796,6 @@ class AssemblyNamesTests(UnityRunTestCase):
     def test_other_options_are_untouched(self):
         args = ["-testFilter", "Ns.Test(1,2);Ns.Other", "-runTests", "-assemblyNames"]  # a trailing option without a value
         self.assertEqual(args, unityrun.normalize_assembly_names(args))
-
-    def test_the_runner_command_of_select_carries_the_comma_list_that_unity_run_accepts(self):
-        from valtrion import select
-
-        runner = "valtrion unity run -- -assemblyNames {assemblies}"
-        selection = select.Selection.__new__(select.Selection)
-        selection.checks = [select.Check("editmode:B", select.EDITMODE, "B", "affected", runner), select.Check("editmode:A", select.EDITMODE, "A", "affected", runner)]
-        command = selection.editor_commands()[0]["command"]
-        self.assertTrue(command.endswith("-assemblyNames A,B"), command)
 
 
 @unittest.skipIf(os.name == "nt", "POSIX pipes")

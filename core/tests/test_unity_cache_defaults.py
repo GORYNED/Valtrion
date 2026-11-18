@@ -80,7 +80,7 @@ class DefaultsTests(CacheTestCase):
 class OffloadPathTests(CacheTestCase):
     def test_an_offloaded_run_gets_the_result_path_under_the_project(self):
         from valtrion import commands
-        from .test_select import run as cli
+        from .test_host import run as cli
 
         seen = {}
 

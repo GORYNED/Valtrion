@@ -573,10 +573,9 @@ class MarksTests(HostTestCase):
 
     def test_the_report_row_says_it_ran_elsewhere(self):
         from valtrion import report
-        from valtrion.select import Check
         from .test_pipeline_resume import _result
         result = _result(host={"id": "build-pc", "transport": "ssh", "selectedBy": "capability", "tools": {"offloadFrom": "mac"}})
-        row = report._result_row(Check("perf.open", "device", "android", "affected"), "android", result)  # noqa: SLF001
+        row = report._row(result)  # noqa: SLF001
         self.assertIn("ran on build-pc, sent from mac (offloaded)", row.detail)
         self.assertEqual("build-pc", row.host)
 

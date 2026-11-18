@@ -42,7 +42,7 @@ State is kept as files: a run folder per job under the artifacts root holds `job
 
 ## Choosing checks for a change
 
-A project can map changed files to the checks a change needs (`valtrion select`) and print a verification block for a pull request (`valtrion report`). See [cli.md](cli.md).
+`valtrion report` shows the results of runs in a folder: what passed, what failed, the files of the run and how to run the failed ones again. See [cli.md](cli.md).
 
 ## Seeing what runs
 

@@ -1032,9 +1032,8 @@ class RepeatGuardTests(_CliMixin, _Harness):
 class ReportTests(unittest.TestCase):
     def test_a_reused_result_says_which_run_it_came_from(self):
         from valtrion import report
-        from valtrion.select import Check
         result = _result(reusedFrom={"runId": "job-a-3-1", "key": "e" * 64})
-        row = report._result_row(Check("perf.open", "device", "android", "affected"), "android", result)
+        row = report._row(result)  # noqa: SLF001
         self.assertIn("reused from run job-a-3-1", row.detail)
 
 

@@ -18,7 +18,6 @@ sys.path.insert(0, str(ROOT / "core"))
 from valtrion import __version__  # noqa: E402
 from valtrion.project import ProjectError, load_compat_document, package_matches, version_in_range  # noqa: E402
 from valtrion.schema import SchemaError, UnreadableInput, Validator, validate_file  # noqa: E402
-from valtrion.select import ConfigError, load_config, validate_config  # noqa: E402
 
 
 def project_field(text: str, name: str) -> str:
@@ -55,14 +54,10 @@ def check_sources(root: Path, tracked_paths: list[str]) -> list[str]:
         problems.append(f"Unity {package.get('version')} and Core {__version__} are not paired in compat.json")
 
     validator = Validator(root / "contracts" / "schemas")
-    for name, expected_schema in (("smoke.plan.json", "gdv.plan/1"), ("quick-start-checks.json", "gdv.checks/1")):
-        schema, errors = validate_file(root / "examples" / name, validator)
-        problems.extend(f"examples/{name}: {error}" for error in errors)
-        if schema != expected_schema:
-            problems.append(f"examples/{name}: expected {expected_schema}, found {schema}")
-    config = load_config(root / "examples" / "quick-start-checks.json", validator)
-    errors, _ = validate_config(config, validator)
-    problems.extend(f"examples/quick-start-checks.json: {error}" for error in errors)
+    schema, errors = validate_file(root / "examples" / "smoke.plan.json", validator)
+    problems.extend(f"examples/smoke.plan.json: {error}" for error in errors)
+    if schema != "gdv.plan/1":
+        problems.append(f"examples/smoke.plan.json: expected gdv.plan/1, found {schema}")
 
     generated = {"library", "temp", "logs", "obj", "usersettings"}
     for name in tracked_paths:
@@ -77,7 +72,7 @@ def main() -> int:
         tracked = subprocess.run(["git", "ls-files", "-z"], cwd=ROOT, check=True,
                                  capture_output=True, timeout=30).stdout.decode("utf-8").split("\0")
         problems = check_sources(ROOT, [name for name in tracked if name])
-    except (OSError, ValueError, KeyError, ProjectError, SchemaError, UnreadableInput, ConfigError,
+    except (OSError, ValueError, KeyError, ProjectError, SchemaError, UnreadableInput,
             subprocess.SubprocessError) as error:
         print(f"FAIL release source checks: {error}", file=sys.stderr)
         return 1

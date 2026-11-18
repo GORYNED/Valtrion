@@ -434,7 +434,7 @@ _BUILD_TARGET = re.compile(r"[A-Za-z][A-Za-z0-9]{0,63}")
 
 def unity_build_target(home: Path | None = None) -> str | None:
     """`unityBuildTarget` of host.json: the `-buildTarget` that `unity run` passes to Unity when the command names none (for example
-    `StandaloneWindows64` on a Windows host, `iOS` on a Mac), so one check map serves every host and the result cache knows the platform.
+    `StandaloneWindows64` on a Windows host, `iOS` on a Mac), so one command line serves every host and the result cache knows the platform.
     None when host.json does not set it: the command is passed as it is."""
     base = home or core.valtrion_home()
     try:
