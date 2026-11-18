@@ -1,66 +1,32 @@
-"""The assembly graph of a Unity project and of a changed git package: which test assemblies a change inside the package reaches.
+"""The assembly graph of a Unity project: assembly definitions by name and by GUID, and the edges of their `references`.
 
-`select` uses it for `byContent.assemblies` of a `jsonRules` key. A package change is mapped to the package assemblies it touches (the nearest
-`.asmdef` above each changed file; the assembly an `.asmref` in a folder names for the files below it), and the project's test assemblies are the
-ones that reach such an assembly through `references` (by name or by `GUID:`), directly or through other assemblies of the project or the
-package. Whatever the graph cannot say is a `GraphError` and the caller keeps the broader kind (fail closed): a file that belongs to no
-assembly, an assembly that cannot be read, a name or a GUID that two assemblies share, a change of a test assembly of the package itself.
-The same graph narrows a change of the project's own C# code (the `assemblies` member of an area): `ProjectFolders` finds the assembly of a
-file, `changed_definition` judges a modified `.asmdef` and `narrow_project` names the test assemblies that reach the changed ones.
-The module has no dependency outside the standard library; the callers pass the readers of the files.
+The Unity result cache (`unitycache`) uses it to find the folders of the assemblies a test run names and of the assemblies they reference.
+Whatever the graph cannot say is a `GraphError`, and the caller then does not cache the run: an assembly that cannot be read, a name or a GUID
+that two assemblies share, a reference by GUID that cannot be resolved. The module has no dependency outside the standard library.
 """
 
 from __future__ import annotations
 
 import json
 import re
-from collections import deque
 from dataclasses import dataclass
-from typing import Any, Callable, Iterable, Mapping, Sequence
+from typing import Any, Iterable, Mapping
 
 GUID_PREFIX = "GUID:"
 _META_GUID = re.compile(r"^guid:\s*([0-9a-fA-F]{32})\s*$", re.MULTILINE)
-_FOLDER_META = re.compile(r"^folderAsset:\s*yes\s*$", re.MULTILINE)
-#: Files that belong to no assembly and change no behavior: documents of a package.
-_DOCUMENT_SUFFIXES = (".md", ".markdown", ".txt")
-#: Files that reach assemblies other than the one whose folder they sit in (precompiled references, `csc.rsp`).
-_PRECOMPILED_SUFFIXES = (".dll", ".so", ".a", ".bundle", ".dylib", ".jar", ".aar", ".rsp")
-_DOCUMENT_STEMS = frozenset({"license", "licence", "changelog", "readme", "notice", "authors"})
-#: An assembly that references the test runner or NUnit holds tests, whatever its define constraints say.
-_TEST_RUNNERS = frozenset({"UnityEngine.TestRunner", "UnityEditor.TestRunner",
-                           GUID_PREFIX + "27619889b8ba8c24980f49ee34dbb44a", GUID_PREFIX + "0acc523941302664db1f4e527237feb3"})
-_NUNIT = "nunit.framework.dll"
-
-
-def _is_test_runner(reference: str) -> bool:
-    """A reference to `UnityEngine.TestRunner` or `UnityEditor.TestRunner`, by name or by the GUID of the Test Framework package."""
-    if reference[:len(GUID_PREFIX)].upper() == GUID_PREFIX:
-        return GUID_PREFIX + reference[len(GUID_PREFIX):].lower() in _TEST_RUNNERS
-    return reference in _TEST_RUNNERS
 
 
 class GraphError(Exception):
-    """The graph cannot be used for this change; the message says why."""
+    """The graph cannot be used; the message says why."""
 
 
 @dataclass(frozen=True)
 class Assembly:
     name: str
-    #: The `.asmdef` file, as the caller knows it (only used in messages and to find the assembly of a file).
+    #: The `.asmdef` file, as the caller knows it (used in messages).
     path: str
     guid: str | None
     references: tuple[str, ...]
-    #: Names of the packages whose version sets a define of this assembly (`versionDefines`).
-    version_defines: tuple[str, ...]
-    test: bool
-    editor_only: bool
-    #: Unity's predefined assemblies (Assembly-CSharp and the like) reference it without naming it (`autoReferenced` is not false).
-    auto_referenced: bool = True
-
-    @property
-    def mode(self) -> str:
-        """`editmode` for an assembly that exists only in the Editor, else `playmode`."""
-        return "editmode" if self.editor_only else "playmode"
 
 
 def _strings(document: Mapping[str, Any], key: str, path: str) -> list[str]:
@@ -73,10 +39,6 @@ def _strings(document: Mapping[str, Any], key: str, path: str) -> list[str]:
 def guid_of_meta(data: bytes) -> str | None:
     match = _META_GUID.search(data.decode("utf-8", "replace"))
     return match.group(1).lower() if match else None
-
-
-def is_folder_meta(data: bytes) -> bool:
-    return bool(_FOLDER_META.search(data.decode("utf-8", "replace")))
 
 
 def _json_document(path: str, data: bytes) -> dict[str, Any]:
@@ -95,20 +57,11 @@ def parse_definition(path: str, data: bytes, guid: str | None) -> Assembly:
     name = document.get("name")
     if not isinstance(name, str) or not name:
         raise GraphError(f"{path}: has no name")
-    versions = document.get("versionDefines") or []
-    if not isinstance(versions, list):
-        raise GraphError(f"{path}: versionDefines is not a list")
-    references = _strings(document, "references", path)
-    test = ("UNITY_INCLUDE_TESTS" in _strings(document, "defineConstraints", path) or "TestAssemblies" in _strings(document, "optionalUnityReferences", path)
-            or any(_is_test_runner(item) for item in references) or _NUNIT in _strings(document, "precompiledReferences", path))
-    return Assembly(
-        name=name, path=path, guid=guid, references=tuple(references),
-        version_defines=tuple(sorted({item["name"] for item in versions if isinstance(item, dict) and isinstance(item.get("name"), str)})),
-        test=test, editor_only=document.get("includePlatforms") == ["Editor"], auto_referenced=document.get("autoReferenced", True) is not False)
+    return Assembly(name=name, path=path, guid=guid, references=tuple(_strings(document, "references", path)))
 
 
 class Graph:
-    """Assemblies by name and by GUID, and the edges of their `references`."""
+    """Assemblies by name and by GUID."""
 
     def __init__(self, assemblies: Iterable[Assembly]) -> None:
         self.assemblies = list(assemblies)
@@ -137,254 +90,3 @@ class Graph:
                 raise GraphError(f"the reference {reference} cannot be resolved: {self._missing_guid[0]} has no readable .meta file with a GUID")
             return reference
         return reference
-
-    def dependents(self, seeds: Iterable[str]) -> dict[str, list[str]]:
-        """Every assembly of the graph that is a seed or reaches one through `references`, with the shortest chain `[assembly, ..., seed]`
-        (each one references the next). Ties are broken by name, so the result does not depend on the order of the files."""
-        seed_names = sorted(set(seeds))
-        reverse: dict[str, list[str]] = {}
-        for assembly in self.assemblies:
-            for reference in assembly.references:
-                reverse.setdefault(self.target(reference), []).append(assembly.name)
-        # A seed may be a name no assembly has any more (an assembly that was renamed): what still references it is reached all the same.
-        next_step: dict[str, str | None] = {name: None for name in seed_names}
-        queue = deque(seed_names)
-        while queue:
-            current = queue.popleft()
-            for referrer in sorted(reverse.get(current, ())):
-                if referrer not in next_step:
-                    next_step[referrer] = current
-                    queue.append(referrer)
-        chains: dict[str, list[str]] = {}
-        for name in next_step:
-            if name not in self.by_name:
-                continue
-            chain = [name]
-            while next_step[chain[-1]] is not None:
-                chain.append(next_step[chain[-1]])  # type: ignore[arg-type]
-            chains[name] = chain
-        return chains
-
-
-def _is_document(relative: str) -> bool:
-    segments = relative.split("/")
-    if any(segment.endswith("~") for segment in segments):
-        return True  # a folder whose name ends in `~` (`Documentation~`, `Samples~`) is not imported by Unity
-    name = segments[-1].lower()
-    if name.endswith(".meta"):
-        name = name[:-5]
-    return name.endswith(_DOCUMENT_SUFFIXES) or name.split(".")[0] in _DOCUMENT_STEMS
-
-
-def package_assemblies(tree: Sequence[str], read: Callable[[str], bytes]) -> list[Assembly]:
-    """The assembly definitions of a package at one commit: `tree` lists its files (relative to the package folder), `read` returns one."""
-    files = set(tree)
-    found = []
-    for path in sorted(item for item in files if item.endswith(".asmdef")):
-        meta = path + ".meta"
-        found.append(parse_definition(path, read(path), guid_of_meta(read(meta)) if meta in files else None))
-    return found
-
-
-def changed_assemblies(
-        changes: Sequence[tuple[str, str]], tree: Sequence[str], package: Graph, read_new: Callable[[str], bytes],
-        read_old: Callable[[str], bytes]) -> dict[str, list[str]]:
-    """Assembly name -> the changed files of the package that belong to it. `changes` are (status, path) of the files that differ, `tree` the
-    files of the new commit, `package` the graph of its assemblies. A renamed assembly is listed under both names.
-
-    Raises `GraphError` for a file that belongs to no assembly (a document and the meta file of a folder do not), for an `.asmref` that names an
-    assembly outside the package, for a GUID that changed and for precompiled code."""
-    files = set(tree)
-    definitions: dict[str, str] = {}
-    references: dict[str, str] = {}
-    for path in tree:
-        folder, _, name = path.rpartition("/")
-        if name.endswith(".asmdef"):
-            definitions.setdefault(folder, path)
-        elif name.endswith(".asmref"):
-            references.setdefault(folder, path)
-    by_path = {assembly.path: assembly for assembly in package.assemblies}
-    changed: dict[str, list[str]] = {}
-
-    def add(name: str, relative: str) -> None:
-        listed = changed.setdefault(name, [])
-        if relative not in listed:
-            listed.append(relative)
-
-    def referenced(path: str, data: bytes) -> str:
-        reference = _json_document(path, data).get("reference")
-        if not isinstance(reference, str) or not reference:
-            raise GraphError(f"{path}: names no assembly")
-        name = package.target(reference)
-        if name not in package.by_name:
-            raise GraphError(f"{path}: names {reference!r}, which is not an assembly of this package")
-        return name
-
-    for status, relative in changes:
-        name = relative.rsplit("/", 1)[-1]
-        if relative == "package.json":
-            continue  # the judgement has accepted it: only members that say nothing about what ships
-        if name.endswith(".asmdef"):
-            current = by_path.get(relative)
-            if current is None:
-                raise GraphError(f"{relative}: the assembly definition is gone")
-            add(current.name, relative)
-            if status == "M":
-                add(parse_definition(relative, read_old(relative), None).name, relative)
-        elif name.endswith(".asmdef.meta"):
-            current = by_path.get(relative[:-5])
-            if current is None:
-                raise GraphError(f"{relative}: the assembly definition is gone")
-            if status != "M" or guid_of_meta(read_old(relative)) != guid_of_meta(read_new(relative)):
-                raise GraphError(f"{relative}: the GUID of the assembly changed")
-            add(current.name, relative)
-        elif name.endswith((".asmref", ".asmref.meta")):
-            if status != "M" and name.endswith(".asmref"):
-                # Files below the folder move to or from the enclosing assembly, which would have to be changed too.
-                raise GraphError(f"{relative}: an assembly reference was {'added' if status == 'A' else 'removed'}")
-            path = relative[:-5] if name.endswith(".meta") else relative
-            if path != relative:  # the meta file of an `.asmref`: the folder keeps the assembly the `.asmref` names
-                sides = [read_new] if path in files else [read_old]
-            else:
-                sides = [read_new] if status == "A" else [read_old] if status == "D" else [read_new, read_old]
-            for read in sides:
-                add(referenced(path, read(path)), relative)
-        elif name.lower().endswith(_PRECOMPILED_SUFFIXES):
-            raise GraphError(f"{relative}: precompiled code or compiler options may be referenced by assemblies the graph does not link to it")
-        else:
-            if name.endswith(".meta") and is_folder_meta(read_old(relative) if status == "D" else read_new(relative)):
-                continue
-            folder = relative.rpartition("/")[0]
-            owner = None
-            while True:
-                if folder in definitions:
-                    owner = by_path[definitions[folder]].name
-                    break
-                if folder in references:
-                    owner = referenced(references[folder], read_new(references[folder]))
-                    break
-                if not folder:
-                    break
-                folder = folder.rpartition("/")[0]
-            if owner is None:
-                if _is_document(relative):
-                    continue
-                raise GraphError(f"{relative}: belongs to no assembly")
-            add(owner, relative)
-    return changed
-
-
-#: Members of an assembly definition whose change the graph can judge: the references (the graph is read as of the new state) and the root
-#: namespace (it only sets what the Editor proposes for new scripts). A new name is not one of them: `[SerializeReference]` data, `link.xml` and
-#: `InternalsVisibleTo` name the assembly.
-_GRAPH_MEMBERS = frozenset({"references", "rootNamespace"})
-
-
-def changed_definition(path: str, new: bytes, old: bytes) -> list[str]:
-    """The name of a modified assembly definition of the project. Raises `GraphError` when a member other than `references` and
-    `rootNamespace` changed (the name, platforms, defines, compiler options, ...): what such a change does is not in the graph."""
-    new_document, old_document = _json_document(path, new), _json_document(path, old)
-    differ = sorted(key for key in set(new_document) | set(old_document)
-                    if key not in _GRAPH_MEMBERS and json.dumps(new_document.get(key), sort_keys=True) != json.dumps(old_document.get(key), sort_keys=True))
-    if differ:
-        raise GraphError(f"{path}: {', '.join(differ)} changed; only references and rootNamespace can be judged by the graph")
-    return [parse_definition(path, new, None).name]
-
-
-class ProjectFolders:
-    """Which assembly of the project a file of its `Assets` or `Packages` folders belongs to. `tree` lists the files (repository-relative),
-    `graph` holds the project's assemblies (their `path` as in `tree`) and `read` returns a file of the tree."""
-
-    def __init__(self, tree: Iterable[str], graph: Graph, read: Callable[[str], bytes | None]) -> None:
-        self.graph = graph
-        self.read = read
-        self.definitions: dict[str, str] = {}
-        self.references: dict[str, str] = {}
-        self.code: list[str] = []
-        for path in sorted(tree):
-            folder, _, name = path.rpartition("/")
-            if name.endswith((".asmdef", ".asmref")):
-                other = self.definitions.get(folder) or self.references.get(folder)
-                if other is not None:
-                    raise GraphError(f"{folder or '.'}: has more than one assembly definition or reference ({other} and {path})")
-                (self.definitions if name.endswith(".asmdef") else self.references)[folder] = path
-            elif name.endswith(".cs"):
-                self.code.append(path)
-        self.by_path = {assembly.path: assembly for assembly in graph.assemblies}
-
-    def loose_code(self, assets: str) -> str | None:
-        """The first `.cs` file under the folder `assets` that no `.asmdef` or `.asmref` takes: it compiles into one of Unity's predefined
-        assemblies (Assembly-CSharp, Assembly-CSharp-Editor, the `firstpass` ones), which may hold tests. None when there is none."""
-        owned = set(self.definitions) | set(self.references)
-        for path in self.code:
-            if not path.startswith(assets + "/"):
-                continue
-            folder = path.rpartition("/")[0]
-            while folder not in owned and folder:
-                folder = folder.rpartition("/")[0]
-            if folder not in owned:
-                return path
-        return None
-
-    def referenced(self, path: str, data: bytes | None) -> str:
-        """The assembly of the project that an `.asmref` names. Raises `GraphError` for one that names nothing or an assembly outside the project."""
-        if data is None:
-            raise GraphError(f"{path}: cannot be read")
-        reference = _json_document(path, data).get("reference")
-        if not isinstance(reference, str) or not reference:
-            raise GraphError(f"{path}: names no assembly")
-        name = self.graph.target(reference)
-        if name not in self.graph.by_name:
-            raise GraphError(f"{path}: names {reference!r}, which is not an assembly of this project")
-        return name
-
-    def owner(self, path: str) -> str:
-        """The assembly a file compiles into: the nearest `.asmdef` above it, or the one an `.asmref` of the nearest such folder names. Raises
-        `GraphError` for a file that belongs to no assembly definition (Unity's predefined assemblies such as Assembly-CSharp are not in the graph)."""
-        folder = path.rpartition("/")[0]
-        while True:
-            if folder in self.definitions:
-                assembly = self.by_path.get(self.definitions[folder])
-                if assembly is None:
-                    raise GraphError(f"{path}: the assembly definition {self.definitions[folder]} cannot be read")
-                return assembly.name
-            if folder in self.references:
-                return self.referenced(self.references[folder], self.read(self.references[folder]))
-            if not folder:
-                raise GraphError(f"{path}: belongs to no assembly definition (a predefined assembly such as Assembly-CSharp cannot be narrowed)")
-            folder = folder.rpartition("/")[0]
-
-
-def narrow_project(project: Sequence[Assembly], changed: Mapping[str, Sequence[str]]) -> list[dict[str, Any]]:
-    """The test assemblies of the project that reach a changed assembly of the project (a changed test assembly reaches itself); see `narrow`."""
-    return narrow(project, {}, "", changed)
-
-
-def predefined_reach(project: Sequence[Assembly], changed: Mapping[str, Sequence[str]]) -> str | None:
-    """The first assembly (by name) that is a changed one or reaches one and that Unity's predefined assemblies reference implicitly
-    (`autoReferenced`), or None: through it a change reaches the code outside every assembly definition, and the tests in it."""
-    graph = Graph(project)
-    return next((name for name in sorted(graph.dependents(changed)) if graph.by_name[name].auto_referenced), None)
-
-
-def narrow(
-        project: Sequence[Assembly], packages: Mapping[str, Sequence[Assembly]], package_name: str, changed: Mapping[str, Sequence[str]],
-        testables: Iterable[str] = ()) -> list[dict[str, Any]]:
-    """The test assemblies that reach a changed assembly of the package: `{assembly, mode, via, files}` sorted by name, `via` being the chain
-    of references from the test assembly to the changed assembly. `project` are the assemblies of the project and `packages` those of every
-    package the graph needs (the changed one, named `package_name`, and the ones that depend on it), by package name. A test assembly of the
-    project is selectable; one of a package only when the package is in `testables` (otherwise the project never runs it). An assembly that
-    sets a define from the version of the package (`versionDefines`) counts as changed too: the version moves with every pin.
-
-    Raises `GraphError` when the sets of assemblies clash."""
-    members = [assembly for items in packages.values() for assembly in items]
-    graph = Graph([*project, *members])
-    seeds: dict[str, list[str]] = {name: list(files) for name, files in changed.items()}
-    for assembly in graph.assemblies:
-        if package_name in assembly.version_defines:
-            seeds.setdefault(assembly.name, []).append(f"(versionDefines of {package_name})")
-    reached = graph.dependents(seeds)
-    listed = set(testables)
-    selectable = {assembly.name for assembly in project} | {assembly.name for name, items in packages.items() if name in listed for assembly in items}
-    return [{"assembly": name, "mode": graph.by_name[name].mode, "via": chain, "files": seeds[chain[-1]]}
-            for name, chain in sorted(reached.items()) if name in selectable and graph.by_name[name].test]
