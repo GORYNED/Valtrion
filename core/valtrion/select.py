@@ -20,7 +20,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Collection, Mapping, Sequence
 
-from . import asmgraph, constants, nowindow, packagediff, presets, project
+from . import asmgraph, constants, fixtureselect, nowindow, packagediff, presets, project
 from .schema import SchemaError, UnreadableInput, Validator, parse_json, validate_file
 
 LEVELS = ("structure", "fast", "affected", "full", "release")
@@ -97,6 +97,9 @@ class Check:
     plan: DevicePlan | None = None
     #: The key of `runners` the runner came from, or None for a literal command.
     runner_name: str | None = None
+    #: For a test class chosen by name inside a test assembly (`editmode:Ns.Class`): the check key of that assembly (`editmode:Assembly`). The class
+    #: check is dropped when the whole assembly is selected too, since it already runs the class.
+    fixture_of: str | None = None
 
 
 @dataclass(frozen=True)
@@ -728,6 +731,30 @@ def _git(root: Path, *arguments: str) -> bytes:
     return completed.stdout
 
 
+def _git_blobs(root: Path, revision: str, paths: Sequence[str]) -> dict[str, bytes | None]:
+    """The files `paths` of `revision` in one `git cat-file --batch` call (None for a path the revision does not have)."""
+    request = "".join(f"{revision}:{path}\n" for path in paths).encode("utf-8", "surrogateescape")
+    try:
+        completed = subprocess.run(["git", "-C", str(root), "cat-file", "--batch"], input=request, capture_output=True, timeout=_GIT_TIMEOUT_SEC * 4,
+                                   check=False, **nowindow.OPTIONS)
+    except (OSError, subprocess.SubprocessError) as error:
+        raise GitError(f"git cat-file --batch: {error}") from error
+    if completed.returncode != 0:
+        raise GitError(f"git cat-file --batch failed ({completed.returncode}): {completed.stderr.decode('utf-8', 'replace').strip()}")
+    data, found, position = completed.stdout, {}, 0
+    for path in paths:
+        end = data.index(b"\n", position)
+        header = data[position:end].split(b" ")
+        if header[-1] == b"missing":
+            found[path] = None
+            position = end + 1
+            continue
+        size = int(header[2])
+        found[path] = data[end + 1:end + 1 + size]
+        position = end + 1 + size + 1
+    return found
+
+
 def _split_z(data: bytes) -> list[str]:
     return [item.decode("utf-8", "surrogateescape") for item in data.split(b"\0") if item]
 
@@ -1288,6 +1315,8 @@ class _ProjectGraph:
         #: The first `.cs` file of the project's `Assets` folder outside every assembly definition, or None.
         self.loose: str | None = None
         self.include_worktree = include_worktree
+        self._owners: dict[str, str] | None = None
+        self._sources: dict[str, fixtureselect.Source] = {}
         try:
             _require_unity_project(root, project, include_worktree)
             _refuse_foreign_users(root, project, include_worktree)
@@ -1312,6 +1341,71 @@ class _ProjectGraph:
 
     def old(self, path: str) -> bytes:
         return _git(self.root, "show", f"{self.merge_base}:{path}")
+
+    def fixtures(self, changed: Mapping[str, Sequence[str]], tests: Sequence[Mapping[str, Any]]) -> tuple[dict[str, list[str] | None], str | None]:
+        """`(fixtures, reason)`: for each test assembly of `tests`, the test classes (full names) that the changed C# files can affect (see
+        `fixtureselect`), or None when the whole assembly has to run. `reason` says why nothing could be judged (then every value is None)."""
+        none: dict[str, list[str] | None] = {str(test["assembly"]): None for test in tests}
+        everything = [item for files in changed.values() for item in files]
+        paths = [item for item in everything if item.endswith(".cs")]
+        # The `.meta` of a script added in the same change only gives it a GUID that nothing refers to yet; any other file keeps the whole assembly.
+        others = [item for item in everything if not item.endswith(".cs")
+                  and not (item.endswith(".cs.meta") and item not in self.old_files and item[:-5] in paths)]
+        if not paths or others:
+            return none, "the change is not only C# code"
+        try:
+            return self._fixtures(changed, tests, paths), None
+        except fixtureselect.Unjudgeable as error:
+            return none, str(error)
+        except (asmgraph.GraphError, GitError, OSError, ValueError, UnicodeError, RecursionError) as error:
+            return none, f"the C# files cannot be read: {error}"
+
+    def scope(self, changed: Mapping[str, Sequence[str]], paths: Sequence[str]) -> tuple[
+            dict[str, list[fixtureselect.Source | None]], dict[str, fixtureselect.Source], set[str]]:
+        """`(versions, sources, members)` for the changed C# `paths` (old and new source of each), every `.cs` file of the changed assemblies and
+        of the assemblies that reach them (`sources`, parsed once per graph) and the paths of those files (`members`)."""
+        folders = self.folders
+        assert folders is not None
+        if self._owners is None:
+            self._owners = {}
+            for path in folders.code:
+                try:
+                    self._owners[path] = folders.owner(path)
+                except asmgraph.GraphError:
+                    pass  # code outside every assembly definition is not part of an assembly's closure
+        scope = set(asmgraph.Graph(self.assemblies).dependents(changed))
+        members = {path for path, name in self._owners.items() if name in scope} | set(paths)
+        self._load_sources(members)
+        sources = {path: self._sources[path] for path in members if path in self._sources}
+        versions: dict[str, list[fixtureselect.Source | None]] = {}
+        for path in paths:
+            old = None
+            if path in self.old_files:
+                old = fixtureselect.parse(self.old(path).decode("utf-8-sig"))
+            versions[path] = [old, sources.get(path)]
+        return versions, sources, members
+
+    def _fixtures(self, changed: Mapping[str, Sequence[str]], tests: Sequence[Mapping[str, Any]], paths: Sequence[str]) -> dict[str, list[str] | None]:
+        versions, sources, members = self.scope(changed, paths)
+        assert self._owners is not None
+        names = {str(test["assembly"]) for test in tests}
+        test_files = {name: [path for path in members if self._owners.get(path) == name] for name in names}
+        return fixtureselect.affected_fixtures(versions, sources, test_files)
+
+    def _load_sources(self, paths: Collection[str]) -> None:
+        missing = sorted(path for path in paths if path not in self._sources and self.present(path))
+        if not missing:
+            return
+        if self.include_worktree:
+            blobs = {path: self.read(path) for path in missing}
+        else:
+            blobs = _git_blobs(self.root, "HEAD", missing)
+        for path, data in blobs.items():
+            if data is not None:
+                try:
+                    self._sources[path] = fixtureselect.parse(data.decode("utf-8-sig"))
+                except fixtureselect.Unjudgeable as error:
+                    raise fixtureselect.Unjudgeable(f"{path}: {error}") from error
 
     def present(self, path: str) -> bool:
         """Whether the path exists in the new state (`HEAD`, or the working tree)."""
@@ -1362,7 +1456,28 @@ class _ProjectGraph:
         raise asmgraph.GraphError(f"{path}: not C# code or an assembly file, so the assembly graph cannot judge it")
 
 
-def _project_record(graph: _ProjectGraph, changed: Mapping[str, Sequence[str]], index: int, member: Mapping[str, Any]) -> dict[str, Any]:
+def _test_keys(test: Mapping[str, Any]) -> list[str]:
+    """The check keys a narrowed test assembly stands for: its test classes when they were chosen by name, else the assembly."""
+    return [f"{test['mode']}:{name}" for name in test.get("fixtures") or [test["assembly"]]]
+
+
+def _test_text(test: Mapping[str, Any]) -> str:
+    """`mode:assembly`, or `mode:assembly (N test classes: A, B, ...)` for an assembly narrowed to its test classes."""
+    names = test.get("fixtures")
+    if not names:
+        return f"{test['mode']}:{test['assembly']}"
+    shown = ", ".join(name.rsplit(".", 1)[-1] for name in names[:5]) + (f", +{len(names) - 5} more" if len(names) > 5 else "")
+    return f"{test['mode']}:{test['assembly']} ({len(names)} test class{'es' if len(names) != 1 else ''}: {shown})"
+
+
+def _fixture_runner(config: Config, runner: str) -> bool:
+    """Whether the runner filters by test-name prefix (`{prefixes;}`) and by nothing else: only then can a test class be named as a target."""
+    template, _ = config.resolve_runner(runner)
+    return template is not None and PREFIXES_SEMICOLON in template and ASSEMBLIES_SEMICOLON not in template and ASSEMBLIES_COMMA not in template
+
+
+def _project_record(graph: _ProjectGraph, changed: Mapping[str, Sequence[str]], index: int, member: Mapping[str, Any],
+                    config: Config | None = None) -> dict[str, Any]:
     """`{area, status: "narrowed", kind, level, changed, tests}` for the changed assemblies of one path, or `{area, status: "unresolved", reason}`."""
     try:
         if graph.loose is not None:
@@ -1378,15 +1493,32 @@ def _project_record(graph: _ProjectGraph, changed: Mapping[str, Sequence[str]], 
             if not _NAME.match(test["assembly"]):
                 raise asmgraph.GraphError(f"the test assembly name {test['assembly']!r} is not a valid assembly name for a check")
             test["runner"] = runner
+        if config is not None:
+            _narrow_to_fixtures(graph, changed, tests, config)
     except (asmgraph.GraphError, ValueError, RecursionError) as error:
         return {"area": index, "status": "unresolved", "reason": str(error)}
     return {"area": index, "status": "narrowed", "kind": member["kind"], "level": member.get("level", ASSEMBLIES_LEVEL),
             "changed": [{"assembly": name, "files": list(changed[name])} for name in sorted(changed)], "tests": tests}
 
 
+def _narrow_to_fixtures(graph: _ProjectGraph, changed: Mapping[str, Sequence[str]], tests: list[dict[str, Any]], config: Config) -> None:
+    """Give a test assembly the test classes (`fixtures`) that the changed C# files can affect, when its runner filters by test-name prefix
+    and the classes can be named. Otherwise the assembly keeps all its tests (`fixtureReason` says why, when the code could not be judged)."""
+    candidates = [test for test in tests if _fixture_runner(config, test["runner"])]
+    if not candidates:
+        return
+    found, reason = graph.fixtures(changed, candidates)
+    for test in candidates:
+        names = found.get(test["assembly"])
+        if names is not None and all(_NAME.match(name) for name in names):
+            test["fixtures"] = names
+        else:
+            test["fixtureReason"] = reason or "no test class of the assembly names an affected type, or a class cannot be named by a test filter"
+
+
 def project_assembly_paths(
         root: Path, config: Config, paths: Sequence[str], merge_base: str | None, include_worktree: bool,
-        skip: Collection[str] = ()) -> dict[str, list[dict[str, Any]]]:
+        skip: Collection[str] = (), fixture_narrowing: bool = True) -> dict[str, list[dict[str, Any]]]:
     """For each changed path that matches an area with an `assemblies` member, one record per such area: the test assemblies of the project
     that reach the assembly the path belongs to (`narrowed`, see `_project_record`), or why they cannot be named (`unresolved`: the path keeps
     the area's own kind). Paths in `skip` (already classified by a JSON, comment or equivalence rule) are left alone. A map without the member
@@ -1418,9 +1550,131 @@ def project_assembly_paths(
                     changed = graph.changed(path)
                 except (asmgraph.GraphError, GitError, OSError, ValueError, RecursionError) as error:
                     reason = str(error)
-        found[path] = [_project_record(graph, changed, index, area["assemblies"]) if changed is not None
+        found[path] = [_project_record(graph, changed, index, area["assemblies"], config if fixture_narrowing else None) if changed is not None
                        else {"area": index, "status": "unresolved", "reason": reason} for index, area in areas]
+    if fixture_narrowing:
+        for path in [item for item in found if item.endswith(".cs.meta") and item[:-5] in found]:
+            # The `.meta` of a script added in the same change only gives it a GUID: it selects what the script selects, not the whole assembly.
+            project = unity_project_of(path)
+            graph = graphs.get(project) if project is not None else None
+            if graph is None or graph.error is not None or path in graph.old_files:
+                continue
+            sibling = {record["area"]: record for record in found[path[:-5]]}
+            found[path] = [_with_meta(sibling[record["area"]], path) if record["area"] in sibling and record["status"] == "narrowed"
+                           and sibling[record["area"]]["status"] == "narrowed" else record for record in found[path]]
     return found
+
+
+def _kept(selection: "Selection", check: Check, reason: str) -> None:
+    selection.type_narrowing[check.key] = {"kept": reason}
+
+
+def narrow_checks_by_types(root: Path, config: Config, selection: "Selection", merge_base: str | None, include_worktree: bool) -> None:
+    """Cut each suite of the selection that a change to C# code alone brought in, down to the test classes that name an affected type.
+
+    A suite of the map is a test-name prefix (`editmode:Namespace`, run by a runner with `{prefixes;}`). The classes under the prefix that the
+    changed code can reach by a name (see `fixtureselect`) replace it as `editmode:Namespace.Class` targets. It stays whole when: the selection is
+    a full set (`full`, `release`), the widest set or named kinds; a changed path that is not C# code, or anything but this change, put the suite in;
+    the diff is not in one Unity project or its code cannot be read or judged; no known test class is under the prefix or none of them is reached;
+    a reached class cannot be named by a filter (nested, generic). Every decision is in `selection.type_narrowing`."""
+    selection.type_narrowing = {}
+    if merge_base is None or selection.full_set or selection.widest or selection.named_kinds:
+        return
+    targets = [check for check in selection.checks if check.type in _EDITOR_TYPES and check.fixture_of is None and check.runner is not None
+               and _fixture_runner(config, check.runner)]
+    paths = [path for path in selection.paths if path.endswith(".cs")]
+    if not targets or not paths:
+        return
+    projects = {unity_project_of(path) for path in paths}
+    reason = None
+    graph = None
+    if None in projects or len(projects) != 1:
+        reason = "the changed C# files are not in one Unity project"
+    else:
+        graph = _ProjectGraph(root, next(iter(projects)), merge_base, include_worktree)
+        reason = graph.error
+    changed: dict[str, list[str]] = {}
+    deleted: list[str] = []
+    analysis = None
+    members: set[str] = set()
+    if reason is None:
+        assert graph is not None and graph.folders is not None
+        try:
+            for path in paths:
+                if path in graph.old_files and not graph.present(path):
+                    # A deleted or moved script: what still names its types must change in the same diff, or the project does not compile. Only a
+                    # Unity object can be held by GUID from a scene or an asset, which names cannot show (checked below).
+                    deleted.append(path)
+                    changed.setdefault(graph.folders.owner(path), []).append(path)
+                else:
+                    for name, files in graph.changed(path).items():
+                        changed.setdefault(name, []).extend(files)
+            versions, sources, members = graph.scope(changed, paths)
+            analysis = fixtureselect.analyse(versions, sources)
+            for path in deleted:
+                if any(analysis.is_unity_object(item) for item in (versions[path][0].types if versions[path][0] else ())):
+                    raise fixtureselect.Unjudgeable(f"{path}: a deleted script is a Unity object, which a scene or an asset can hold by GUID")
+        except fixtureselect.Unjudgeable as error:
+            reason = str(error)
+        except (asmgraph.GraphError, GitError, OSError, ValueError, UnicodeError, RecursionError) as error:
+            reason = f"the C# code cannot be read: {error}"
+    if reason is not None or analysis is None or graph is None:
+        for check in targets:
+            _kept(selection, check, reason or "the C# code cannot be judged")
+        return
+    owners = graph._owners or {}
+    by_name = asmgraph.Graph(graph.assemblies).by_name
+    classes = {mode: analysis.test_classes([path for path in sorted(members) if (owner := owners.get(path)) in by_name and by_name[owner].test
+                                            and by_name[owner].mode == mode]) for mode in ("editmode", "playmode")}
+    allowed = set(paths) | {path for path in selection.paths if path.endswith(".cs.meta") and path[:-5] in paths
+                            and (path not in graph.old_files or path[:-5] in deleted)}
+    sources_by_kind = selection.kind_sources()
+    for check in targets:
+        blocker = next((f"also selected by {path or entry.get('rule', 'the map')}" for kind in sorted(check.kinds & set(selection.kinds))
+                        for path, entry in sources_by_kind.get(kind, ()) if path is None or path not in allowed), None)
+        if blocker is not None:
+            _kept(selection, check, blocker)
+            continue
+        under = [found for found in classes[check.type] if found.item.approx.startswith(check.target)]
+        distinct = {found.item.approx for found in under}
+        chosen = [found for found in under if found.selected]
+        if not under:
+            _kept(selection, check, f"no test class of the project is known under {check.target}")
+        elif not chosen:
+            _kept(selection, check, f"no test class under {check.target} names an affected type")
+        elif any(found.item.full_name is None for found in chosen):
+            _kept(selection, check, "a test class that the change reaches is nested or generic, which a test filter cannot name")
+        elif len({found.item.approx for found in chosen}) == len(distinct):
+            _kept(selection, check, f"the change reaches every test class under {check.target}")
+        else:
+            names = sorted({found.item.full_name for found in chosen if found.item.full_name})
+            if not all(_NAME.match(name) for name in names):
+                _kept(selection, check, "a test class name is not valid for a check")
+                continue
+            existing = {item.key: item for item in selection.checks}
+            selection.checks.remove(check)
+            for name in names:
+                key = f"{check.type}:{name}"
+                other = existing.get(key)
+                if other is None:
+                    selection.checks.append(Check(key, check.type, name, check.level, check.runner, set(check.kinds), runner_name=check.runner_name,
+                                                  fixture_of=check.key))
+                else:
+                    other.kinds |= check.kinds
+                    if LEVELS.index(check.level) < LEVELS.index(other.level):
+                        other.level = check.level
+            selection.type_narrowing[check.key] = {"classes": names, "of": len(distinct)}
+    selection.checks.sort(key=lambda check: (TYPES.index(check.type), check.key))
+
+
+def _with_meta(record: Mapping[str, Any], meta: str) -> dict[str, Any]:
+    """A copy of the record of a script that also lists its added `.meta` file among the changed files."""
+    copy = json.loads(json.dumps(record))
+    for entry in copy["changed"]:
+        entry["files"].append(meta)
+    for test in copy["tests"]:
+        test["files"] = [*test["files"], meta]
+    return copy
 
 
 # --- project commands that prove a change keeps every value -------------------------------------------------------------------------
@@ -1507,6 +1761,9 @@ class Selection:
     mode: str | None = None
     #: Changed paths of an area with an `assemblies` member, one record per such area (path -> [{area, status, ...}]; see `project_assembly_paths`).
     project_assemblies: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
+    #: Suites of the map narrowed to the test classes that name an affected type, or kept whole with the reason (suite key -> `{classes, of}` |
+    #: `{kept}`); see `narrow_checks_by_types`.
+    type_narrowing: dict[str, dict[str, Any]] = field(default_factory=dict)
 
     @property
     def mode_name(self) -> str | None:
@@ -1638,7 +1895,7 @@ class Selection:
                     if record["status"] != "narrowed" or record["kind"] not in check.kinds:
                         continue
                     for test in record["tests"]:
-                        if f"{test['mode']}:{test['assembly']}" != check.key:
+                        if check.key not in _test_keys(test):
                             continue
                         rule = f"areas[{record['area']}].assemblies"
                         entry = grouped_tests.setdefault(json.dumps([rule, test["via"]]), {
@@ -1681,6 +1938,7 @@ class Selection:
             "equivalenceUnprovenPaths": self.equivalence_unproven,
             "packageDiffs": self.package_diffs,
             "projectAssemblies": self.project_assemblies,
+            "typeNarrowing": self.type_narrowing,
             "selectedKinds": self.named_kinds,
             "kindsNamedExplicitly": bool(self.named_kinds),
             "structure": [_check_json(check) for check in self.of_type(STRUCTURE)],
@@ -1804,8 +2062,13 @@ def select(
         for narrowed in [*_narrowed(package_diffs), *project_narrowed]:
             if LEVELS.index(narrowed["level"]) <= LEVELS.index(level):
                 for test in narrowed["tests"]:
-                    spec = Spec(test["mode"], test["assembly"], test["runner"], f"{test['mode']}:{test['assembly']}@{test['runner']}")
-                    _expand(spec, config, narrowed["level"], narrowed["kind"], found, validator)
+                    for target in test.get("fixtures") or [test["assembly"]]:
+                        spec = Spec(test["mode"], target, test["runner"], f"{test['mode']}:{target}@{test['runner']}")
+                        _expand(spec, config, narrowed["level"], narrowed["kind"], found, validator)
+                        if target != test["assembly"]:
+                            found[f"{test['mode']}:{target}"].fixture_of = f"{test['mode']}:{test['assembly']}"
+        for key in [key for key, check in found.items() if check.fixture_of is not None and check.fixture_of in found]:
+            del found[key]  # the whole assembly runs, and runs the class too
     checks = sorted(found.values(), key=lambda check: (TYPES.index(check.type), check.key))
     return Selection(
         level, base_ref, merge_base, include_worktree, list(paths), classified, unclassified, policy, widest, sorted(kinds), checks, config, failed,
@@ -1828,6 +2091,9 @@ def _add_common(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--include-worktree", action="store_true", help="also count staged, unstaged and untracked files as changed")
     parser.add_argument("--offline", action="store_true",
                         help="do not fetch a dependency's repository to judge a `byContent` key by what changed inside it: such a key keeps its own kinds")
+    parser.add_argument("--no-fixture-narrowing", action="store_true",
+                        help="keep whole test assemblies: do not narrow an area's test assemblies to the test classes that name an affected type "
+                             "(done when the area's runner filters by test-name prefix, `{prefixes;}`)")
 
 
 def _configure_select(parser: argparse.ArgumentParser) -> None:
@@ -1900,13 +2166,16 @@ def resolve_selection(arguments: argparse.Namespace) -> Selection:
     json_keys, package_diffs = package_diff_paths(root, config, json_keys, merge_base, include_worktree, bool(getattr(arguments, "offline", False)))
     equivalent, unproven = equivalent_paths(root, config, paths, merge_base, include_worktree, skip=set(cosmetic) | set(json_keys))
     project_assemblies = project_assembly_paths(root, config, paths, merge_base, include_worktree,
-                                                skip=set(cosmetic) | set(json_keys) | set(equivalent))
+                                                skip=set(cosmetic) | set(json_keys) | set(equivalent),
+                                                fixture_narrowing=not getattr(arguments, "no_fixture_narrowing", False))
     selection = select(config, paths, arguments.level, base_ref=arguments.base_ref, merge_base=merge_base,
                        include_worktree=include_worktree, named_kinds=named, cosmetic=cosmetic, json_keys=json_keys,
                        equivalent=equivalent, equivalence_unproven=unproven, package_diffs=package_diffs,
                        project_assemblies=project_assemblies)
     selection.full_set_reason = reason
     selection.mode = mode
+    if not getattr(arguments, "no_fixture_narrowing", False):
+        narrow_checks_by_types(root, config, selection, merge_base, include_worktree)
     return selection
 
 
@@ -2012,11 +2281,19 @@ def format_selection(selection: Selection, explain: bool = False) -> str:
         for path, records in sorted(selection.project_assemblies.items()):
             for record in records:
                 if record["status"] == "narrowed":
-                    tests = [f"{test['mode']}:{test['assembly']}" for test in record["tests"]]
+                    tests = [_test_text(test) for test in record["tests"]]
                     lines.append(f"  {path}: areas[{record['area']}] -> {record['kind']}, test assemblies by reference ({record['level']}): "
                                  + (", ".join(tests) or "none"))
+                    lines.extend(f"    {test['mode']}:{test['assembly']}: all tests ({test['fixtureReason']})" for test in record["tests"]
+                                 if test.get("fixtureReason"))
                 else:
                     lines.append(f"  {path}: areas[{record['area']}] not narrowed, keeps the area's kind: {record['reason']}")
+    if selection.type_narrowing:
+        cut = {key: item for key, item in selection.type_narrowing.items() if "classes" in item}
+        kept = {key: item["kept"] for key, item in selection.type_narrowing.items() if "kept" in item}
+        lines.append(f"TEST CLASSES BY TYPE ({len(cut)} of {len(selection.type_narrowing)} suites cut to the test classes that name an affected type):")
+        lines.extend(f"  {key}: {len(item['classes'])} of {item['of']} test classes" for key, item in sorted(cut.items()))
+        lines.extend(f"  {key}: kept whole, {reason}" for key, reason in sorted(kept.items()))
     if selection.unclassified:
         action = "no checks selected, fix the area map" if selection.failed else "widest set selected"
         lines.append(f"UNCLASSIFIED ({len(selection.unclassified)}), policy {selection.policy}: {action}")

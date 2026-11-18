@@ -2,6 +2,10 @@
 
 Core (the `valtrion` Python package) and the Unity package `com.goryned.valtrion.unity` are versioned independently. The Unity changelog is in `integrations/unity/com.goryned.valtrion.unity/CHANGELOG.md`; `compat.json` lists compatible pairs.
 
+## Unreleased
+
+- **`select` cuts a suite that a C# change brought in to the test classes that name an affected type.** A suite that is a test-name prefix (a runner with `{prefixes;}`, no `{assemblies}`) becomes `editmode:Namespace.Class` targets for the classes that reach a type the changed files declare, found by name from the code alone (no Unity, no compiler), instead of the whole suite; the same for the test assemblies of an area's `assemblies` member. Only for the default selection and `--mode fast`/`affected`: `full`, `release`, the widest set and `--kind` keep whole suites. Whatever cannot be judged keeps the whole suite and says why (`typeNarrowing` in `--json`, a `TEST CLASSES BY TYPE` block in the text output): a changed path that is not C# code, code that cannot be read, a deleted Unity object, no class or every class reached, a class a filter cannot name. `--no-fixture-narrowing` turns it off. A runner with `{assemblies}` is not narrowed, so existing maps with such runners behave as before. See `docs/cli.md`, "Test classes that name an affected type".
+
 ## 0.25.0 (2026-11-18)
 
 - **Upgrade note.** Additive: existing `checks.json` files and runners keep working. `compat.json` pairs Core 0.25.0 with Unity packages 0.20.x (0.20.1 is the package of this release). Update with `pipx upgrade valtrion` (and `valtrion hosts sync` on SSH hosts). A project opts in to fixture selection by mapping change kinds to the test fixtures that cover them (see `examples/unity-fixture-checks.json`); maps that do not are unchanged.
