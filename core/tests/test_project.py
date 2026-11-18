@@ -62,6 +62,38 @@ class DiscoveryTests(ProjectCase):
                     project.resolve_unity_project(None, {}, self.repo)
                 self.assertIn("valtrion.json", str(caught.exception))
 
+    def test_a_checks_key_is_refused_with_the_upgrade_text(self):
+        self.write_file({"unityProject": "game/UnityProject", "checks": "validation/device/checks.json"})
+        with self.assertRaises(project.ProjectError) as caught:
+            project.resolve_unity_project(None, {}, self.repo)
+        self.assertIn('"checks" names a check map', str(caught.exception))
+        self.assertIn("Remove the", str(caught.exception))
+
+    def test_any_other_unknown_key_is_refused_by_name(self):
+        self.write_file({"unityProject": "game/UnityProject", "platforms": ["ios"]})
+        with self.assertRaises(project.ProjectError) as caught:
+            project.resolve_unity_project(None, {}, self.repo)
+        self.assertIn("'platforms'", str(caught.exception))
+
+    def test_a_leftover_checks_key_blocks_the_commands_that_find_the_project(self):
+        self.write_file({"unityProject": "game/UnityProject", "checks": "x.json"})
+        plan = self.base / "p.json"
+        plan.write_text((Path(__file__).resolve().parent.parent.parent / "contracts" / "fixtures" / "valid" / "plan.json").read_text(encoding="utf-8"), encoding="utf-8")
+        with mock.patch("pathlib.Path.cwd", return_value=self.repo), mock.patch.dict(os.environ, {core.HOME_ENV: str(self.base / "h")}):
+            os.environ.pop(project.PROJECT_ENV, None)
+            code, _, err = run("run", "--repo", "r", "--sha", "a" * 40, "--app", "x", str(plan))
+            self.assertEqual(2, code)
+            self.assertIn('"checks" names a check map', err)
+            code, _, err = run("doctor", "--json", "--project")
+            self.assertEqual(2, code)
+            self.assertIn('"checks" names a check map', err)
+
+    def test_removed_commands_are_unknown(self):
+        for command in ("select", "check-config"):
+            with self.subTest(command), self.assertRaises(SystemExit) as caught:
+                run(command)
+            self.assertEqual(2, caught.exception.code)
+
     def test_a_pipeline_command_reports_an_invalid_valtrion_json_as_blocked(self):
         self.write_file({"unityProject": "missing"})
         plan = self.base / "p.json"
@@ -159,6 +191,24 @@ class DoctorProjectTests(ProjectCase):
         code, out, _ = self.doctor("--project", str(self.unity))
         self.assertEqual(0, code)
         self.assertEqual("skipped", json.loads(out)["project"]["status"])
+
+    def test_a_leftover_check_map_is_a_warning_not_a_block(self):
+        self.lock({"version": "0.20.0", "source": "registry"})
+        (self.repo / ".git").mkdir()
+        old = self.repo / "validation" / "device"
+        old.mkdir(parents=True)
+        (old / "checks.json").write_text("{}", encoding="utf-8")
+        code, out, _ = self.doctor("--project", str(self.unity))
+        project_report = json.loads(out)["project"]
+        self.assertEqual((0, "ok"), (code, project_report["status"]))
+        self.assertEqual(1, len(project_report["warnings"]))
+        self.assertIn("checks.json", project_report["warnings"][0])
+
+    def test_without_a_leftover_map_there_is_no_warning(self):
+        self.lock({"version": "0.20.0", "source": "registry"})
+        (self.repo / ".git").mkdir()
+        _, out, _ = self.doctor("--project", str(self.unity))
+        self.assertNotIn("warnings", json.loads(out)["project"])
 
     def test_supported_package_passes(self):
         self.lock({"version": "0.20.0", "source": "registry"})

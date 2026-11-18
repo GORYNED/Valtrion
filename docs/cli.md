@@ -32,7 +32,7 @@ Commands that need the Unity project (`run`, `pipeline`, `doctor --project`) res
 
 Build profiles are always read from `validation/device/profiles.json` inside the Unity project folder resolved by the three rules above.
 
-`valtrion.json` only names a folder. It does not run anything. A missing folder or an invalid file is `BLOCKED`.
+`valtrion.json` only names a folder. It does not run anything. A missing folder or an invalid file is `BLOCKED`. `unityProject` is its only key: any other key is an error, and `"checks"` (the check map of Valtrion before 1.0) says so in its message. `doctor --project` warns about a leftover `validation/device/checks.json`, which Valtrion no longer reads; the warning does not block.
 
 ## Remote options
 

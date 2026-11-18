@@ -305,7 +305,11 @@ def _project_check(arguments: argparse.Namespace) -> dict | None:
         return {"status": "BLOCKED", "reason": str(error), "action": "fix valtrion.json or pass the project folder"}
     if folder is None:
         return {"status": "skipped", "reason": "no Unity project given (no --project DIR, GDV_UNITY_PROJECT or valtrion.json)"}
-    return {**project.check_project(folder), "project": str(folder)}
+    result = {**project.check_project(folder), "project": str(folder)}
+    leftover = project.leftover_check_map(folder)
+    if leftover is not None:
+        result["warnings"] = [f"{leftover} is a check map: Valtrion 1.0 selects nothing and no longer reads it; delete it (see the Core CHANGELOG, Unreleased)"]
+    return result
 
 
 def _remote_doctor(arguments: argparse.Namespace, entry: config.HostEntry) -> tuple[int, dict | None]:
@@ -362,6 +366,8 @@ def _doctor(arguments: argparse.Namespace) -> int:
             print(f"  device {item['id']} ({item['class']}, {item.get('evidence', 'physical')})" + ("" if config.is_online(item) else " OFFLINE"))
         if check is not None:
             print(f"  project: {check['status']} - {check['reason']}")
+            for warning in check.get("warnings", []):
+                print(f"  WARNING {warning}")
     return code
 
 
