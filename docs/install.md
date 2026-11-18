@@ -10,12 +10,23 @@ Python 3.10 or newer. Nothing else is installed at runtime (standard library onl
 
 ```
 pipx install valtrion              # latest release
-pipx install valtrion==0.7.4       # a specific release
+pipx install valtrion==1.1.0       # a specific release
 pipx upgrade valtrion              # update later
+pipx install --force valtrion==1.1.0   # pin or change to a specific release
 valtrion --version
 ```
 
-Without pipx: `python -m venv <dir>` then `<dir>/bin/pip install valtrion` (`Scripts` on Windows). `pipx` puts `valtrion` on your PATH (`pipx ensurepath`). The package has no runtime dependencies. Releases are published by the manual [Release workflow](releasing.md) through PyPI Trusted Publishing; Core `0.7.4` is the first PyPI release.
+### One copy, installed by pipx
+
+Valtrion is installed and updated only through pipx. Do not use `pip install`, do not put a copy of a checkout on PATH and do not place a script by hand. If a machine has another copy (installed with `pip`, a checkout, a copied folder or a script that `valtrion` resolves to), remove it so that `valtrion` on PATH is the pipx one. Find the copies and check the result:
+
+```
+which -a valtrion      # Windows: where valtrion
+pip list               # a `valtrion` entry here is a pip-installed copy: pip uninstall valtrion
+valtrion --version     # the version you installed
+```
+
+`pipx` puts `valtrion` on your PATH (`pipx ensurepath`). The package has no runtime dependencies. Releases are published by the manual [Release workflow](releasing.md) through PyPI Trusted Publishing; Core `0.7.4` is the first PyPI release.
 
 ## Unity package (UPM, from Git)
 
@@ -29,12 +40,14 @@ Since package 0.11.0 the `PlanTest` helper is an ordinary package assembly and n
 
 ## Updating
 
-- Core: `pipx upgrade valtrion`. On SSH hosts run `valtrion hosts sync` so every host has the same version.
+- Core: `pipx upgrade valtrion` (only pipx; see [One copy, installed by pipx](#one-copy-installed-by-pipx)). On SSH hosts run `valtrion hosts sync` so every host has the same version.
 - Unity: change the tag in the manifest URL (for example `#unity-v1.0.0` to a newer `unity-vX.Y.Z`), let Unity resolve it, and commit `Packages/manifest.json` and `packages-lock.json`.
 - Core 1.x is paired with package 1.0.x. Package 1.0.0 removed the reader of the old check map (`ChecksDocument`), which Core 1.0 no longer has; plans, results and steps are unchanged. Older pairs (Core 0.24.x and 0.25.x with package 0.20.x, and before) are listed in [compat.json](../compat.json). A plan that uses the steps added for device measurements (`session.offsets`, `storage.*`, `timer.*`, `counter.*`, `repeat`, `call.time`, `app.background`) needs package 0.16.0 or newer. The package 0.13.0 and newer also hides the windows that tests open on macOS (`unity run`).
 - Then run `valtrion doctor --project <Unity project>`: it reports `BLOCKED` with the action to take if the pair is not listed in [compat.json](../compat.json). Read the changelogs ([Core](../CHANGELOG.md), [Unity](../integrations/unity/com.goryned.valtrion.unity/CHANGELOG.md)) before upgrading.
 
 ## From a checkout
+
+A checkout is a way to build the wheel that pipx installs; never run `valtrion` from the checkout folder or put it on PATH.
 
 ```
 python tools/install.py            # pipx when it is installed, otherwise a virtual environment

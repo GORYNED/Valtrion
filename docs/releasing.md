@@ -22,6 +22,7 @@ Versions are final `X.Y.Z` (no `rc`/`a` suffix): the classifier is `Development 
 3. Run it again with **dry run off**. For Core the order is: draft GitHub Release with the exact files → **manual approval of the `pypi` environment** → upload to PyPI by OIDC → the draft is published as the Latest release, which creates the tag at the verified commit. For Unity it creates the tag and the Release directly (not marked Latest).
 4. Never create these tags by hand: the workflow refuses an existing tag. If the install docs reference a new Unity tag, release the Unity package first.
 5. Check <https://pypi.org/project/valtrion/> and the Release page.
+6. Update each machine with `pipx upgrade valtrion` (and `valtrion hosts sync` on SSH hosts), and check that `valtrion --version` shows the released version. Valtrion is installed only through pipx; remove any other copy ([install.md](install.md#one-copy-installed-by-pipx)).
 
 ## Protection against repeats and partial releases
 
