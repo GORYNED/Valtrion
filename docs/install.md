@@ -31,7 +31,7 @@ Since package 0.11.0 the `PlanTest` helper is an ordinary package assembly and n
 
 - Core: `pipx upgrade valtrion`. On SSH hosts run `valtrion hosts sync` so every host has the same version.
 - Unity: change the tag in the manifest URL (for example `#unity-v1.0.0` to a newer `unity-vX.Y.Z`), let Unity resolve it, and commit `Packages/manifest.json` and `packages-lock.json`.
-- Core 1.0.x is paired with package 1.0.x. Package 1.0.0 removed the reader of the old check map (`ChecksDocument`), which Core 1.0 no longer has; plans, results and steps are unchanged. Older pairs (Core 0.24.x and 0.25.x with package 0.20.x, and before) are listed in [compat.json](../compat.json). A plan that uses the steps added for device measurements (`session.offsets`, `storage.*`, `timer.*`, `counter.*`, `repeat`, `call.time`, `app.background`) needs package 0.16.0 or newer. The package 0.13.0 and newer also hides the windows that tests open on macOS (`unity run`).
+- Core 1.x is paired with package 1.0.x. Package 1.0.0 removed the reader of the old check map (`ChecksDocument`), which Core 1.0 no longer has; plans, results and steps are unchanged. Older pairs (Core 0.24.x and 0.25.x with package 0.20.x, and before) are listed in [compat.json](../compat.json). A plan that uses the steps added for device measurements (`session.offsets`, `storage.*`, `timer.*`, `counter.*`, `repeat`, `call.time`, `app.background`) needs package 0.16.0 or newer. The package 0.13.0 and newer also hides the windows that tests open on macOS (`unity run`).
 - Then run `valtrion doctor --project <Unity project>`: it reports `BLOCKED` with the action to take if the pair is not listed in [compat.json](../compat.json). Read the changelogs ([Core](../CHANGELOG.md), [Unity](../integrations/unity/com.goryned.valtrion.unity/CHANGELOG.md)) before upgrading.
 
 ## From a checkout
@@ -86,7 +86,7 @@ valtrion doctor --host mac
 
 `valtrion doctor --project` reads the package version of the project from `Packages/packages-lock.json` and checks it against the table. The result is `ok`, `skipped` (the project does not use the package), or `BLOCKED` with the action to take: update the package to a listed version, or install a core that lists it. The Unity package has its own version and release lifecycle; the core and the package are not released together.
 
-A project names its Unity project with a `valtrion.json` next to or above where you run commands; see [cli.md](cli.md).
+A project names its Unity project with a `tools/valtrion/valtrion.json` in the repository above where you run commands; see [cli.md](cli.md#the-toolsvaltrion-folder) for the layout of the `tools/valtrion/` folder.
 
 ## Moving from the earlier tool
 
@@ -97,7 +97,7 @@ Valtrion replaces an earlier tool with the same behaviour under different names.
 | command `gdv` | command `valtrion` (also `python -m valtrion`) |
 | home directory of the earlier tool | `~/.valtrion` |
 | environment variable `GDV_HOME` | `VALTRION_HOME` |
-| a per-project shim script that located and ran the CLI of the pinned package | `valtrion.json` at the project root, naming the Unity project: `{"unityProject": "<path relative to the file>"}`; the installed `valtrion` is used |
+| a per-project shim script that located and ran the CLI of the pinned package | `tools/valtrion/valtrion.json`, naming the Unity project: `{"unityProject": "<path relative to the file>"}`; the installed `valtrion` is used |
 | CLI shipped inside the Unity package | CLI installed separately; compatibility is checked with `compat.json` |
 
 Unchanged on purpose: the schema ids `gdv.*/1`, the `-gdv*` launch arguments, the `GDV_*` environment variables read by apps and tools, the `GDV-RESULT` line, and the format of lease files.

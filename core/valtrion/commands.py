@@ -110,7 +110,7 @@ def _failure_evidence(target: remote.Remote, result: remote.CommandResult) -> st
 
 
 def _unity_project(arguments: argparse.Namespace) -> Path | None:
-    """The Unity project: --project-dir, else GDV_UNITY_PROJECT, else the project named by the nearest valtrion.json."""
+    """The Unity project: --project-dir, else GDV_UNITY_PROJECT, else the project named by the nearest tools/valtrion/valtrion.json."""
     try:
         found = project.resolve_unity_project(arguments.project_dir)
     except project.ProjectError as error:
@@ -292,7 +292,7 @@ def _configure_doctor(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--devices", action="store_true", help="also run live device discovery and refresh the registry")
     parser.add_argument("--project", nargs="?", const="", metavar="DIR", help="also check that the Unity package of the project (default: "
-                        "GDV_UNITY_PROJECT or the project named by valtrion.json) is supported by this core")
+                        "GDV_UNITY_PROJECT or the project named by tools/valtrion/valtrion.json) is supported by this core")
     _add_host_options(parser)
 
 
@@ -302,9 +302,9 @@ def _project_check(arguments: argparse.Namespace) -> dict | None:
     try:
         folder = project.resolve_unity_project(Path(arguments.project) if arguments.project else None)
     except project.ProjectError as error:
-        return {"status": "BLOCKED", "reason": str(error), "action": "fix valtrion.json or pass the project folder"}
+        return {"status": "BLOCKED", "reason": str(error), "action": "fix tools/valtrion/valtrion.json or pass the project folder"}
     if folder is None:
-        return {"status": "skipped", "reason": "no Unity project given (no --project DIR, GDV_UNITY_PROJECT or valtrion.json)"}
+        return {"status": "skipped", "reason": "no Unity project given (no --project DIR, GDV_UNITY_PROJECT or tools/valtrion/valtrion.json)"}
     result = {**project.check_project(folder), "project": str(folder)}
     leftover = project.leftover_check_map(folder)
     if leftover is not None:
@@ -1039,7 +1039,7 @@ def _finite_seconds(text: str) -> float:
 
 
 def _common_run_options(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--project-dir", type=Path, help="Unity project folder (Unity version, git state, builds); default: GDV_UNITY_PROJECT or the project named by the nearest valtrion.json")
+    parser.add_argument("--project-dir", type=Path, help="Unity project folder (Unity version, git state, builds); default: GDV_UNITY_PROJECT or the project named by the nearest tools/valtrion/valtrion.json")
     parser.add_argument("--stall-sec", type=float, default=supervise.DEFAULT_STALL_SEC)
     parser.add_argument("--timeout-sec", type=float, default=7200)
     parser.add_argument("--lease-wait", type=float, default=None, metavar="SEC",
@@ -1614,7 +1614,7 @@ def _configure_unity(parser: argparse.ArgumentParser) -> None:
                          description="valtrion unity run [options] -- <Unity arguments>. The last stdout line is STATUS <name>; "
                                      "exit codes: PASS 0, FAIL 1, BLOCKED 2, STALL and TIMEOUT 3; with --rerun-failed also 4 (STATUS NOTHING_TO_RUN: no failed test, nothing ran), "
                                      "which a script run with `set -e` must handle.")
-    run.add_argument("--project-dir", type=Path, help="Unity project (when the Unity arguments carry no -projectPath); default: GDV_UNITY_PROJECT or valtrion.json")
+    run.add_argument("--project-dir", type=Path, help="Unity project (when the Unity arguments carry no -projectPath); default: GDV_UNITY_PROJECT or tools/valtrion/valtrion.json")
     run.add_argument("--unity", help="path of the Unity executable (or a macOS .app) instead of the Editor of ProjectSettings/ProjectVersion.txt")
     run.add_argument("--lease-wait", type=_finite_seconds, default=None, metavar="SEC",
                      help="seconds to wait for the project and an Editor slot before BLOCKED (default: leaseWaitSec of host.json, 1800)")
@@ -1709,7 +1709,7 @@ def _unity(arguments: argparse.Namespace) -> int:
             return unityoffload.blocked_result(received)
         unity_args, found, prepare = received.unity_args, received.project_dir, received.prepare
     else:
-        if unityrun.option_value(unity_args, "-projectPath") is None:  # -projectPath wins; a broken valtrion.json must not block such a run
+        if unityrun.option_value(unity_args, "-projectPath") is None:  # -projectPath wins; a broken tools/valtrion/valtrion.json must not block such a run
             try:
                 found = project.resolve_unity_project(arguments.project_dir)
             except project.ProjectError as error:

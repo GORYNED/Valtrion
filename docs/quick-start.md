@@ -11,7 +11,7 @@ pipx install valtrion
 valtrion --version
 ```
 
-Expected: `valtrion 1.0.0 (contract 2)` (or a newer version). Without `pipx`, use a virtual environment: `python -m venv .venv`, then `.venv/bin/pip install valtrion` (`.venv\Scripts\pip` on Windows). Then run `.venv/bin/valtrion` (`.venv\Scripts\valtrion` on Windows) wherever this guide says `valtrion`, or activate the environment. To install from a checkout instead, see [installation](install.md).
+Expected: `valtrion 1.1.0 (contract 2)` (or a newer version). Without `pipx`, use a virtual environment: `python -m venv .venv`, then `.venv/bin/pip install valtrion` (`.venv\Scripts\pip` on Windows). Then run `.venv/bin/valtrion` (`.venv\Scripts\valtrion` on Windows) wherever this guide says `valtrion`, or activate the environment. To install from a checkout instead, see [installation](install.md).
 
 ## 2. Run a check
 

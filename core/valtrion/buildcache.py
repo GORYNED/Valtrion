@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping
 
 from . import core
+from .project import profiles_file
 
 MANIFEST = "manifest.json"
 ARTIFACT_FOLDER = "artifact"
@@ -55,13 +56,13 @@ def builds_root(home: Path | None = None) -> Path:
     return (home or core.valtrion_home()) / "builds"
 
 
-def profile_config_hash(project_dir: Path | None, profile: str, profiles_file: Path = Path("validation") / "device" / "profiles.json") -> str:
-    """Hash of what the project says about the build profile: its entry in `validation/device/profiles.json` (all platforms), or
+def profile_config_hash(project_dir: Path | None, profile: str) -> str:
+    """Hash of what the project says about the build profile: its entry in `tools/valtrion/profiles.json` (all platforms), or
     the whole file when it cannot be read as JSON, or `none` when the project has no such file. A changed profile is a new key."""
     if project_dir is None:
         return "none"
     try:
-        data = (project_dir / profiles_file).read_bytes()
+        data = profiles_file(project_dir).read_bytes()
     except OSError:
         return "none"
     try:

@@ -113,7 +113,7 @@ class EditorAdapterTests(unittest.TestCase):
         self.project = self.base / "repo" / "proj"
         (self.project / "ProjectSettings").mkdir(parents=True)
         (self.project / "ProjectSettings" / "ProjectVersion.txt").write_text("m_EditorVersion: 6000.6.7f1\n", encoding="utf-8")
-        (self.project / "validation" / "device").mkdir(parents=True)
+        (self.project / "tools" / "valtrion").mkdir(parents=True)
         (self.base / "repo" / "tools" / "validation").mkdir(parents=True)
         (self.base / "repo" / "tools" / "validation" / "run-unity-tests.py").write_text(RUNNER, encoding="utf-8")
         self.set_profile({"planAssembly": "My.Plan.Tests"})
@@ -125,7 +125,7 @@ class EditorAdapterTests(unittest.TestCase):
         self.adapters = []
 
     def set_profile(self, editor):
-        (self.project / "validation" / "device" / "profiles.json").write_text(json.dumps({"schema": "gdv.profiles/1", "profiles": {"Validation": {"editor": editor}}}), encoding="utf-8")
+        (self.project / "tools" / "valtrion" / "profiles.json").write_text(json.dumps({"schema": "gdv.profiles/1", "profiles": {"Validation": {"editor": editor}}}), encoding="utf-8")
 
     def adapter(self):
         adapter = EditorAdapter(self.env, home=self.home)
@@ -340,8 +340,8 @@ class EditorPipelineTests(unittest.TestCase):
         project = base / "repo" / "proj"
         (project / "ProjectSettings").mkdir(parents=True)
         (project / "ProjectSettings" / "ProjectVersion.txt").write_text("m_EditorVersion: 6000.6.7f1\n", encoding="utf-8")
-        (project / "validation" / "device").mkdir(parents=True)
-        (project / "validation" / "device" / "profiles.json").write_text(json.dumps({"schema": "gdv.profiles/1", "profiles": {"Validation": {"editor": {"planAssembly": "A"}}}}), encoding="utf-8")
+        (project / "tools" / "valtrion").mkdir(parents=True)
+        (project / "tools" / "valtrion" / "profiles.json").write_text(json.dumps({"schema": "gdv.profiles/1", "profiles": {"Validation": {"editor": {"planAssembly": "A"}}}}), encoding="utf-8")
         (base / "repo" / "tools" / "validation").mkdir(parents=True)
         (base / "repo" / "tools" / "validation" / "run-unity-tests.py").write_text(RUNNER, encoding="utf-8")
         plan = {"schema": "gdv.plan/1", "id": "smoke", "kind": "smoke", "requires": {"platforms": ["editor"]}, "dataPolicy": "isolated",

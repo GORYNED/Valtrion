@@ -1,7 +1,8 @@
 """Project discovery (`valtrion.json`) and the compatibility check between the core and the Unity package of a project.
 
-`valtrion.json` at a project root names the Unity project: `{"unityProject": "<path relative to that file>"}`. It holds no other key. The
-CLI finds it by walking up from the working directory. `--project-dir` and the `GDV_UNITY_PROJECT` environment variable override it, in that order.
+`tools/valtrion/valtrion.json` names the Unity project: `{"unityProject": "<path relative to that file>"}`. It holds no other key. The
+build profiles are `tools/valtrion/profiles.json`. Nothing is read from any other place. The CLI finds `valtrion.json` by walking up
+from the working directory. `--project-dir` and the `GDV_UNITY_PROJECT` environment variable override it, in that order.
 `compat.json` maps Unity package versions to the range of core versions that supports them.
 """
 
@@ -15,7 +16,9 @@ from typing import Any, Mapping
 
 from . import __version__
 
+PROJECT_FOLDER = Path("tools") / "valtrion"
 PROJECT_FILE = "valtrion.json"
+PROFILES_FILE = "profiles.json"
 PROJECT_ENV = "GDV_UNITY_PROJECT"
 UNITY_PACKAGE = "com.goryned.valtrion.unity"
 
@@ -31,13 +34,30 @@ class ProjectError(Exception):
 
 
 def find_project_file(start: Path) -> Path | None:
-    """The nearest `valtrion.json` in `start` or a parent folder."""
+    """The nearest `tools/valtrion/valtrion.json` in `start` or a parent folder; the search ends at the first folder with a `.git`."""
     start = start.resolve()
     for folder in (start, *start.parents):
-        candidate = folder / PROJECT_FILE
+        candidate = folder / PROJECT_FOLDER / PROJECT_FILE
         if candidate.is_file():
             return candidate
+        if (folder / ".git").exists():
+            return None
     return None
+
+
+def profiles_file(project: Path) -> Path:
+    """The build profiles of a Unity project: `tools/valtrion/profiles.json` in the project folder or the nearest parent, up to the
+    repository root (the first folder with a `.git`). When there is none, the path where it is expected (the file may not exist)."""
+    project = project.resolve()
+    root: Path | None = None
+    for folder in (project, *project.parents):
+        candidate = folder / PROJECT_FOLDER / PROFILES_FILE
+        if candidate.is_file():
+            return candidate
+        if (folder / ".git").exists():
+            root = folder
+            break
+    return (root or project) / PROJECT_FOLDER / PROFILES_FILE
 
 
 def load_project_file(path: Path) -> Path:
@@ -70,7 +90,7 @@ def leftover_check_map(folder: Path) -> Path | None:
     levels = (folder, *folder.parents)
     chain = [folder]
     for index, candidate in enumerate(levels):
-        if (candidate / "valtrion.json").exists() or (candidate / ".git").exists():
+        if (candidate / PROJECT_FOLDER / PROJECT_FILE).exists() or (candidate / ".git").exists():
             chain = list(levels[: index + 1])
             break
     for candidate in chain:
@@ -81,7 +101,7 @@ def leftover_check_map(folder: Path) -> Path | None:
 
 
 def resolve_unity_project(explicit: Path | None = None, environ: Mapping[str, str] | None = None, cwd: Path | None = None) -> Path | None:
-    """`--project-dir`, else `GDV_UNITY_PROJECT`, else the project named by the nearest valtrion.json; None when none is set."""
+    """`--project-dir`, else `GDV_UNITY_PROJECT`, else the project named by the nearest tools/valtrion/valtrion.json; None when none is set."""
     if explicit is not None:
         return explicit.resolve()
     environment = os.environ if environ is None else environ

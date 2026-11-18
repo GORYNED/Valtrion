@@ -30,7 +30,7 @@ valtrion --version
 valtrion validate examples/smoke.plan.json
 ```
 
-Expected: `valtrion 1.0.0 (contract 2)` (or a newer version that [compat.json](../compat.json) pairs with the package), and a valid `gdv.plan/1`. If you installed from the checkout, run the same commands with the CLI path the installer printed (no environment activation or `PATH` change needed).
+Expected: `valtrion 1.1.0 (contract 2)` (or a newer version that [compat.json](../compat.json) pairs with the package), and a valid `gdv.plan/1`. If you installed from the checkout, run the same commands with the CLI path the installer printed (no environment activation or `PATH` change needed).
 
 ## 2. Add the Unity package
 
@@ -59,13 +59,13 @@ Copy both files from [examples/unity-smoke](../examples/unity-smoke) into `Asset
 
 The test calls `PlanTest.RunFromEnvironment()`. The plan waits a few frames and writes a marker. It uses only built-in steps; add app-specific assertions later. It does not need a device, signing identity or build method.
 
-Optionally create `valtrion.json` in your project's Git root:
+Optionally create `tools/valtrion/valtrion.json` in your repository. `unityProject` is relative to that file:
 
 ```json
-{ "unityProject": "." }
+{ "unityProject": "../.." }
 ```
 
-If Unity lives in a subfolder, replace `.` with its relative path.
+If the Unity project is in a subfolder, add it: `"../../MyGame"`. Build profiles, if you use them, go in `tools/valtrion/profiles.json` ([providers.md](providers.md)). The whole folder layout is in [cli.md](cli.md#the-toolsvaltrion-folder).
 
 ## 4. Run in a background Editor
 

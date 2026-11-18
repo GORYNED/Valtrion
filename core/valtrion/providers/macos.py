@@ -34,6 +34,7 @@ from typing import Callable, Mapping, Sequence
 
 from .. import config, constants, core, doctor, retention, supervise
 from ..adapter import Capabilities, DeviceHealth, DeviceInfo, PlatformAdapter, StepOutcome
+from ..project import profiles_file
 from . import register
 
 PLATFORM = "macos"
@@ -42,7 +43,6 @@ VALIDATION_SUFFIX = ".gdv"
 BUILD_METHOD_ENV = "GDV_MACOS_BUILD_METHOD"
 SIGN_SCRIPT_ENV = "GDV_MACOS_SIGN_SCRIPT"
 SIGN_SCRIPT_FOLDER = Path("tools") / "build"  # without `signScript`, the first `sign-macos*.py` of this folder in the project or above it
-PROFILES_FILE = Path("validation") / "device" / "profiles.json"
 BUILD_TIMEOUT_SEC = 3600.0
 BUILD_STALL_SEC = 600.0
 SETTLE_SEC = 3.0
@@ -110,10 +110,10 @@ def _tail(path: Path, limit: int = 2000) -> str:
 
 
 def load_profile(project: Path, profile: str = "Validation") -> dict:
-    """The macOS section of a build profile in `<project>/validation/device/profiles.json` (`gdv.profiles/1`:
+    """The macOS section of a build profile in `tools/valtrion/profiles.json` (`gdv.profiles/1`:
     `{"profiles": {"<name>": {"<platform>": {...}}}}`)."""
     try:
-        document = json.loads((project / PROFILES_FILE).read_text(encoding="utf-8-sig"))
+        document = json.loads(profiles_file(project).read_text(encoding="utf-8-sig"))
     except (OSError, ValueError):
         return {}
     profiles = document.get("profiles") if isinstance(document, dict) else None
@@ -284,7 +284,7 @@ class MacOSAdapter(PlatformAdapter):
         method = find_build_method(project, self._environ, profile)
         if method is None:
             return StepOutcome(constants.BLOCKED, f"no macOS validation build method: set {BUILD_METHOD_ENV} or executeMethod in "
-                                                  f"{PROFILES_FILE} (section {PLATFORM})")
+                                                  f"{profiles_file(project)} (section {PLATFORM})")
         identity = identity_for(project)
         out.mkdir(parents=True, exist_ok=True)
         app = out / f"{identity.product}.app"

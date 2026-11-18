@@ -71,7 +71,7 @@ class WindowsAdapterTests(unittest.TestCase):
         self.screens = []
 
     def profile(self, **entry):
-        target = self.project / "validation" / "device" / "profiles.json"
+        target = self.project / "tools" / "valtrion" / "profiles.json"
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(json.dumps({"schema": "gdv.profiles/1", "profiles": {"Validation": {"windows": entry}}}), encoding="utf-8")
 
@@ -115,7 +115,7 @@ class WindowsAdapterTests(unittest.TestCase):
     # -- build -----------------------------------------------------------------------------------------------------------------
 
     def test_build_blocks_without_a_hook_and_names_the_file(self):
-        (self.project / "validation" / "device" / "profiles.json").unlink()
+        (self.project / "tools" / "valtrion" / "profiles.json").unlink()
         outcome = self.adapter({"GDV_UNITY_HUB_PATHS": str(self.base / "hub")}).build(self.project, "Validation", self.base / "b")
         self.assertEqual(constants.BLOCKED, outcome.status)
         self.assertIn("executeMethod", outcome.reason)

@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from valtrion import cli, core, project
+from valtrion import buildcache, cli, core, project
 
 COMPAT = {"schema": "valtrion.compat/1", "package": project.UNITY_PACKAGE, "ranges": [{"package": "0.7.x", "core": ">=0.7.0,<0.8"}]}
 
@@ -37,10 +37,29 @@ class ProjectCase(unittest.TestCase):
 
 class DiscoveryTests(ProjectCase):
     def write_file(self, value):
-        (self.repo / "valtrion.json").write_text(json.dumps(value), encoding="utf-8")
+        target = self.repo / "tools" / "valtrion" / "valtrion.json"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(json.dumps(value), encoding="utf-8")
+
+    def test_an_old_valtrion_json_at_the_project_root_is_ignored(self):
+        (self.repo / "valtrion.json").write_text(json.dumps({"unityProject": "game/UnityProject"}), encoding="utf-8")
+        self.assertIsNone(project.find_project_file(self.repo))
+        self.assertIsNone(project.resolve_unity_project(None, {}, self.repo))
+
+    def test_unity_project_is_relative_to_the_file_in_tools_valtrion(self):
+        self.write_file({"unityProject": "../../game/UnityProject"})
+        self.assertEqual(self.repo / "tools" / "valtrion" / "valtrion.json", project.find_project_file(self.repo / "game"))
+
+    def test_the_search_ends_at_the_first_folder_with_a_git_folder(self):
+        self.write_file({"unityProject": "../../game/UnityProject"})
+        nested = self.repo / "nested"
+        (nested / ".git").mkdir(parents=True)
+        self.assertIsNone(project.find_project_file(nested / "deep"))
+        self.assertIsNone(project.find_project_file(nested))
+        self.assertIsNotNone(project.find_project_file(self.repo / "game"))
 
     def test_valtrion_json_is_found_by_walking_up_from_the_working_directory(self):
-        self.write_file({"unityProject": "game/UnityProject"})
+        self.write_file({"unityProject": "../../game/UnityProject"})
         deep = self.repo / "a" / "b"
         deep.mkdir(parents=True)
         self.assertEqual(self.unity.resolve(), project.resolve_unity_project(None, {}, deep))
@@ -49,7 +68,7 @@ class DiscoveryTests(ProjectCase):
         self.assertIsNone(project.resolve_unity_project(None, {}, self.base))
 
     def test_explicit_folder_beats_environment_beats_valtrion_json(self):
-        self.write_file({"unityProject": "game/UnityProject"})
+        self.write_file({"unityProject": "../../game/UnityProject"})
         other, third = self.base / "other", self.base / "third"
         self.assertEqual(other.resolve(), project.resolve_unity_project(other, {project.PROJECT_ENV: str(third)}, self.repo))
         self.assertEqual(third.resolve(), project.resolve_unity_project(None, {project.PROJECT_ENV: str(third)}, self.repo))
@@ -63,20 +82,20 @@ class DiscoveryTests(ProjectCase):
                 self.assertIn("valtrion.json", str(caught.exception))
 
     def test_a_checks_key_is_refused_with_the_upgrade_text(self):
-        self.write_file({"unityProject": "game/UnityProject", "checks": "validation/device/checks.json"})
+        self.write_file({"unityProject": "../../game/UnityProject", "checks": "validation/device/checks.json"})
         with self.assertRaises(project.ProjectError) as caught:
             project.resolve_unity_project(None, {}, self.repo)
         self.assertIn('"checks" names a check map', str(caught.exception))
         self.assertIn("Remove the", str(caught.exception))
 
     def test_any_other_unknown_key_is_refused_by_name(self):
-        self.write_file({"unityProject": "game/UnityProject", "platforms": ["ios"]})
+        self.write_file({"unityProject": "../../game/UnityProject", "platforms": ["ios"]})
         with self.assertRaises(project.ProjectError) as caught:
             project.resolve_unity_project(None, {}, self.repo)
         self.assertIn("'platforms'", str(caught.exception))
 
     def test_a_leftover_checks_key_blocks_the_commands_that_find_the_project(self):
-        self.write_file({"unityProject": "game/UnityProject", "checks": "x.json"})
+        self.write_file({"unityProject": "../../game/UnityProject", "checks": "x.json"})
         plan = self.base / "p.json"
         plan.write_text((Path(__file__).resolve().parent.parent.parent / "contracts" / "fixtures" / "valid" / "plan.json").read_text(encoding="utf-8"), encoding="utf-8")
         with mock.patch("pathlib.Path.cwd", return_value=self.repo), mock.patch.dict(os.environ, {core.HOME_ENV: str(self.base / "h")}):
@@ -103,6 +122,57 @@ class DiscoveryTests(ProjectCase):
             code, _, err = run("run", "--repo", "r", "--sha", "a" * 40, "--app", "x", str(plan))
         self.assertEqual(2, code)
         self.assertIn("BLOCKED", err)
+
+
+class ProfilesLocationTests(ProjectCase):
+    def test_profiles_are_found_in_tools_valtrion_of_the_repository_root(self):
+        (self.repo / ".git").mkdir()
+        target = self.repo / "tools" / "valtrion" / "profiles.json"
+        target.parent.mkdir(parents=True)
+        target.write_text("{}", encoding="utf-8")
+        self.assertEqual(target, project.profiles_file(self.unity))
+
+    def test_the_nearest_file_wins(self):
+        (self.repo / ".git").mkdir()
+        for folder in (self.repo, self.unity):
+            (folder / "tools" / "valtrion").mkdir(parents=True)
+            (folder / "tools" / "valtrion" / "profiles.json").write_text("{}", encoding="utf-8")
+        self.assertEqual(self.unity / "tools" / "valtrion" / "profiles.json", project.profiles_file(self.unity))
+
+    def test_the_old_place_is_ignored_and_the_expected_path_is_named(self):
+        (self.repo / ".git").mkdir()
+        old = self.unity / "validation" / "device"
+        old.mkdir(parents=True)
+        (old / "profiles.json").write_text("{}", encoding="utf-8")
+        found = project.profiles_file(self.unity)
+        self.assertEqual(self.repo / "tools" / "valtrion" / "profiles.json", found)
+        self.assertFalse(found.exists())
+
+    def test_the_search_does_not_leave_the_repository(self):
+        outer = self.base / "tools" / "valtrion"
+        outer.mkdir(parents=True)
+        (outer / "profiles.json").write_text("{}", encoding="utf-8")
+        (self.repo / ".git").mkdir()
+        self.assertEqual(self.repo / "tools" / "valtrion" / "profiles.json", project.profiles_file(self.unity))
+
+    def test_the_build_cache_hashes_the_profile_from_tools_valtrion_only(self):
+        (self.repo / ".git").mkdir()
+        self.assertEqual("none", buildcache.profile_config_hash(self.unity, "Validation"))
+        old = self.unity / "validation" / "device"
+        old.mkdir(parents=True)
+        (old / "profiles.json").write_text(json.dumps({"profiles": {"Validation": {"android": {"executeMethod": "X.Y"}}}}), encoding="utf-8")
+        self.assertEqual("none", buildcache.profile_config_hash(self.unity, "Validation"))
+        target = self.repo / "tools" / "valtrion" / "profiles.json"
+        target.parent.mkdir(parents=True)
+        target.write_text(json.dumps({"profiles": {"Validation": {"android": {"executeMethod": "X.Y"}}}}), encoding="utf-8")
+        first = buildcache.profile_config_hash(self.unity, "Validation")
+        target.write_text(json.dumps({"profiles": {"Validation": {"android": {"executeMethod": "X.Z"}}}}), encoding="utf-8")
+        second = buildcache.profile_config_hash(self.unity, "Validation")
+        self.assertNotIn("none", (first, second))
+        self.assertNotEqual(first, second)
+
+    def test_without_a_repository_the_expected_path_is_below_the_project(self):
+        self.assertEqual(self.unity / "tools" / "valtrion" / "profiles.json", project.profiles_file(self.unity))
 
 
 class VersionTests(unittest.TestCase):
@@ -215,7 +285,8 @@ class DoctorProjectTests(ProjectCase):
         outside = self.base / "validation" / "device"
         outside.mkdir(parents=True)
         (outside / "checks.json").write_text("{}", encoding="utf-8")
-        (self.repo / "valtrion.json").write_text("{}", encoding="utf-8")
+        (self.repo / "tools" / "valtrion").mkdir(parents=True)
+        (self.repo / "tools" / "valtrion" / "valtrion.json").write_text("{}", encoding="utf-8")
         self.assertIsNone(project.leftover_check_map(self.unity))
 
     def test_without_a_repository_or_valtrion_json_only_the_folder_is_searched(self):
@@ -227,6 +298,25 @@ class DoctorProjectTests(ProjectCase):
         own.mkdir(parents=True)
         (own / "checks.json").write_text("{}", encoding="utf-8")
         self.assertEqual(own / "checks.json", project.leftover_check_map(self.unity))
+
+    def test_doctor_project_finds_the_unity_project_through_tools_valtrion(self):
+        self.lock({"version": "1.0.0", "source": "registry"})
+        target = self.repo / "tools" / "valtrion" / "valtrion.json"
+        target.parent.mkdir(parents=True)
+        target.write_text(json.dumps({"unityProject": "../../game/UnityProject"}), encoding="utf-8")
+        with mock.patch("pathlib.Path.cwd", return_value=self.repo):
+            os.environ.pop(project.PROJECT_ENV, None)
+            code, out, _ = self.doctor("--project")
+        self.assertEqual((0, "ok", str(self.unity)), (code, json.loads(out)["project"]["status"], json.loads(out)["project"]["project"]))
+
+    def test_doctor_project_ignores_an_old_valtrion_json_and_names_the_new_path(self):
+        (self.repo / "valtrion.json").write_text(json.dumps({"unityProject": "game/UnityProject"}), encoding="utf-8")
+        with mock.patch("pathlib.Path.cwd", return_value=self.repo):
+            os.environ.pop(project.PROJECT_ENV, None)
+            _, out, _ = self.doctor("--project")
+        report = json.loads(out)["project"]
+        self.assertEqual("skipped", report["status"])
+        self.assertIn("tools/valtrion/valtrion.json", report["reason"])
 
     def test_without_a_leftover_map_there_is_no_warning(self):
         self.lock({"version": "1.0.0", "source": "registry"})

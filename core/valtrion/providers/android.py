@@ -1,7 +1,7 @@
 """Android adapter: a physical device (or an emulator, labelled as such) driven through `adb`.
 
 Flow of a run: `build` (Unity batchmode, a consumer `-executeMethod` hook and a profile from the project's
-`validation/device/profiles.json`), `install` (`adb install -r`), `prepare` (binds the application; `pm clear` only for a
+`tools/valtrion/profiles.json`), `install` (`adb install -r`), `prepare` (binds the application; `pm clear` only for a
 `clean-install` plan), `push` of the plan into the application's data root (`/sdcard/Android/data/<package>/files`, which is
 `persistentDataPath`), `launch` (`am start` with the `gdv-plan` intent extra, `logcat` captured), `pull` polls of `gdv/out`,
 `terminate` (dumpsys snapshots, `am force-stop`, logcat stopped) and `screenshot`.
@@ -11,7 +11,7 @@ NEEDS_PERMISSION with the action for the owner; a missing device or tool is BLOC
 supervisor, so a hung `adb` cannot hang a run. The adapter never changes device settings and never uninstalls or clears an
 application outside a `clean-install` plan.
 
-`profiles.json` (`<unity project>/validation/device/profiles.json`):
+`profiles.json` (`tools/valtrion/profiles.json`):
 
     {"profiles": {"Validation": {"android": {
         "executeMethod": "Company.Project.Editor.Build.Android", "scriptingBackend": "Mono",
@@ -36,6 +36,7 @@ from typing import Callable, Mapping, Sequence
 
 from .. import config, constants, core, doctor, nowindow, supervise
 from ..adapter import Capabilities, DeviceHealth, DeviceInfo, PlatformAdapter, StepOutcome
+from ..project import profiles_file
 from . import register
 
 ADB_ENV = "GDV_ADB"
@@ -383,7 +384,7 @@ class AndroidAdapter(PlatformAdapter):
         return {"androidBackend": backend} if backend else {}
 
     def build(self, project: Path, profile: str, out: Path) -> StepOutcome:
-        profiles_path = project / "validation" / "device" / "profiles.json"
+        profiles_path = profiles_file(project)
         try:
             document = json.loads(profiles_path.read_text(encoding="utf-8-sig"))
         except OSError as error:

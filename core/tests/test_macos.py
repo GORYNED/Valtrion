@@ -99,7 +99,7 @@ class MacOSTestCase(unittest.TestCase):
         (self.project / "ProjectSettings").mkdir(parents=True)
         (self.project / "ProjectSettings" / "ProjectVersion.txt").write_text("m_EditorVersion: 6000.6.7f1\n", encoding="utf-8")
         (self.project / "Assets" / "Editor").mkdir(parents=True)
-        profiles = self.project / "validation" / "device" / "profiles.json"
+        profiles = self.project / "tools" / "valtrion" / "profiles.json"
         profiles.parent.mkdir(parents=True)
         profiles.write_text(json.dumps({"schema": "gdv.profiles/1", "profiles": {"Validation": {"macos": {
             "executeMethod": METHOD, "timeoutSec": 1234, "stallSec": 99}}}}), encoding="utf-8")
@@ -246,7 +246,7 @@ class BuildTests(MacOSTestCase):
         self.assertEqual((constants.BLOCKED, True), (no_editor.status, "6000.6.7f1 is not installed" in no_editor.reason))
         no_module = self.adapter(editors=lambda: [{**EDITOR, "modules": ["ios"]}]).build(self.project, "Validation", out)
         self.assertEqual((constants.BLOCKED, True), (no_module.status, "macOS build support" in no_module.reason))
-        (self.project / "validation" / "device" / "profiles.json").unlink()
+        (self.project / "tools" / "valtrion" / "profiles.json").unlink()
         no_method = self.adapter().build(self.project, "Validation", out)
         self.assertEqual((constants.BLOCKED, True), (no_method.status, macos.BUILD_METHOD_ENV in no_method.reason))
         self.assertEqual([], self.run_tool.calls, "nothing is run when a prerequisite is missing")

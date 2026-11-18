@@ -19,6 +19,7 @@ from typing import Any, Callable, Mapping, Sequence
 
 from .. import config, constants, core, doctor, retention, supervise
 from ..adapter import Capabilities, DeviceHealth, DeviceInfo, PlatformAdapter, StepOutcome
+from ..project import profiles_file
 from . import register
 from .unity import support
 
@@ -100,7 +101,7 @@ class WindowsAdapter(PlatformAdapter):
             return None, str(error)
         _, entry = support.platform_profile(profiles, profile, "windows")
         if entry is None or not entry.get("executeMethod"):
-            return None, (f"{project / support.PROFILES_RELATIVE} names no profiles.{profile}.windows.executeMethod: the project must provide a "
+            return None, (f"{profiles_file(project)} names no profiles.{profile}.windows.executeMethod: the project must provide a "
                           "build hook that honors -buildOutput, -gdvProductName and -gdvCompanyName")
         return entry, None
 

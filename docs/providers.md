@@ -11,7 +11,7 @@ This page describes the platform providers (`ios`, `android`, `windows`, `macos`
 
 ## Build profiles
 
-Every provider that builds reads its settings from `<unity project>/validation/device/profiles.json`:
+Every provider that builds reads its settings from `tools/valtrion/profiles.json` in the repository of the Unity project (next to `valtrion.json`, see [the folder layout](cli.md#the-toolsvaltrion-folder); a `validation/device/profiles.json` is no longer read):
 
 ```json
 {
@@ -100,13 +100,15 @@ Runs a plan as a Unity Test Framework PlayMode test in a background batch-mode E
 
 ## unity-support
 
+`editor.runner` sets the test runner script (relative to the Unity project); without it the first `tools/validation/run-unity-tests.py` found in the project folder or above is used.
+
 `valtrion.providers.unity.support` is shared code, not a platform: reading `profiles.json`, finding the Editor of a project, tolerant file copies, and turning a process exit plus its `GDV-RESULT` or `STATUS` line into a status (never a `PASS` without a result).
 
 ## Environment variables
 
 | Variable | Read by | Meaning |
 | --- | --- | --- |
-| `GDV_UNITY_PROJECT` | CLI | Unity project folder (below `--project-dir`, above `valtrion.json`) |
+| `GDV_UNITY_PROJECT` | CLI | Unity project folder (below `--project-dir`, above `tools/valtrion/valtrion.json`) |
 | `GDV_UNITY_HUB_PATHS` | doctor, providers | Folders to search for Unity Editors, separated by the OS path separator; replaces the default Hub path |
 | `GDV_UNITY_EDITORS` | ios | Folder of the Hub editors on the Mac (default `/Applications/Unity/Hub/Editor`) |
 | `GDV_ADB` | android | Path of the `adb` to use |

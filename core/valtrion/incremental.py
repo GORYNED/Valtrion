@@ -6,7 +6,7 @@ by Unity with Append, so only changes are exported) and Xcode's `DerivedData/`; 
 `Library/`, which a checkout reset keeps. The folder is used only by a build that holds the checkout's `unity-project:` lease.
 
 The folder is reused while its *key* is unchanged. The key covers the toolchain (Unity, Xcode), the build profile with its settings
-in `validation/device/profiles.json` and the device the build is signed for; any change, or a request (`--clean`), makes the next
+in `tools/valtrion/profiles.json` and the device the build is signed for; any change, or a request (`--clean`), makes the next
 build start from nothing. A build that was killed half way (timeout, stall) forgets the key, so the next one starts clean too.
 """
 

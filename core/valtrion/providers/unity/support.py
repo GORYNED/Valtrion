@@ -1,6 +1,6 @@
 """What the Editor and Windows adapters share: project profiles, finding the Editor, tolerant file copies and exit results.
 
-A project describes how it is built and run in `<project>/validation/device/profiles.json`:
+A project describes how it is built and run in `tools/valtrion/profiles.json` (in the repository of the Unity project):
 
     { "schema": "gdv.profiles/1",
       "profiles": { "Validation": {
@@ -23,8 +23,8 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from ... import constants, core, doctor, supervise
+from ...project import profiles_file
 
-PROFILES_RELATIVE = Path("validation") / "device" / "profiles.json"
 _VERSION = re.compile(r"m_EditorVersion:\s*(\S+)")
 _COMPILE_ERROR = re.compile(r"error CS\d+|Scripts have compiler errors|Compilation failed")
 _COPY_ATTEMPTS = 5
@@ -37,7 +37,7 @@ class ProfileError(Exception):
 
 def load_profiles(project: Path) -> dict[str, Any]:
     """The `profiles` map of the project's profiles.json (profile name -> platform -> settings); {} when there is no file."""
-    path = project / PROFILES_RELATIVE
+    path = profiles_file(project)
     try:
         document = json.loads(path.read_text(encoding="utf-8-sig"))
     except FileNotFoundError:

@@ -755,7 +755,7 @@ class BuildTests(AndroidTestCase):
         self.project = self.base / "project"
         (self.project / "ProjectSettings").mkdir(parents=True)
         (self.project / "ProjectSettings" / "ProjectVersion.txt").write_text("m_EditorVersion: 6000.6.7f1\n", encoding="utf-8")
-        (self.project / "validation" / "device").mkdir(parents=True)
+        (self.project / "tools" / "valtrion").mkdir(parents=True)
         self.script = self.base / "fake_unity.py"
         self.script.write_text(FAKE_UNITY, encoding="utf-8")
         self.profile = {"executeMethod": "Company.Build.Android", "scriptingBackend": "Mono", "package": PACKAGE, "stallSec": 5, "timeoutSec": 60}
@@ -765,7 +765,7 @@ class BuildTests(AndroidTestCase):
             unity_editors=lambda: [{"version": "6000.6.7f1", "path": "unused", "modules": ["android"]}])
 
     def write_profiles(self, document):
-        (self.project / "validation" / "device" / "profiles.json").write_text(json.dumps({"profiles": document}), encoding="utf-8")
+        (self.project / "tools" / "valtrion" / "profiles.json").write_text(json.dumps({"profiles": document}), encoding="utf-8")
 
     def test_a_build_runs_the_consumer_hook_and_returns_the_apk(self):
         out = self.base / "out"
@@ -853,9 +853,9 @@ class BuildTests(AndroidTestCase):
 
     def test_missing_pieces_are_blocked_with_the_reason(self):
         self.assertEqual(constants.BLOCKED, self.adapter.build(self.project, "Nope", self.base / "o1").status)
-        (self.project / "validation" / "device" / "profiles.json").write_text("{", encoding="utf-8")
+        (self.project / "tools" / "valtrion" / "profiles.json").write_text("{", encoding="utf-8")
         self.assertIn("not valid JSON", self.adapter.build(self.project, "Validation", self.base / "o2").reason)
-        (self.project / "validation" / "device" / "profiles.json").unlink()
+        (self.project / "tools" / "valtrion" / "profiles.json").unlink()
         self.assertIn("no build profiles", self.adapter.build(self.project, "Validation", self.base / "o3").reason)
 
     def test_an_unsuitable_editor_is_blocked(self):

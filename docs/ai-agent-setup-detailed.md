@@ -98,8 +98,8 @@ Install and integrate
 5. Reuse suitable existing tests, or copy examples/unity-smoke into a dedicated
    Assets/Validation test folder. Its assembly is Valtrion.SmokeTests. Copy
    examples/smoke.plan.json to validation/smoke.plan.json. Avoid duplicate assembly
-   names. Add valtrion.json at the Git root with unityProject relative to that file
-   (only that key). Target only platforms that really exist.
+   names. Add tools/valtrion/valtrion.json with unityProject relative to that file
+   (for a Unity project at the Git root: "../.."; only that key). Target only platforms that really exist.
 6. Add output/cache paths to the project's ignore rules. Keep Unity-generated
    .meta files for the added assets; do not commit Library, Temp, credentials,
    device inventory, output or personal paths. Preserve unrelated manifest data.
@@ -146,7 +146,7 @@ Project automation and handover
     using the verified Unity invocation above. If integrating Valtrion's `run`
     Editor provider, implement the exact runner interface in docs/providers.md:
     Python runner accepting --editor, --output, --assemblies and --timeout, with
-    <output>/PlayMode.xml and forwarded logs. Configure profiles.json only after
+    <output>/PlayMode.xml and forwarded logs. Configure tools/valtrion/profiles.json only after
     that runner exists and has been tested. Do not invent a built-in init command
     or call the placeholder build/install/launch commands. Device builds need
     project-owned build methods and authorized real targets; configure and test

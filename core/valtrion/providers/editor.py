@@ -1,7 +1,7 @@
 """Unity Editor adapter: a plan runs as a Unity Test Framework PlayMode test in a background batch-mode Editor.
 
 The run goes through the project's existing runner (the repository's `tools/validation/run-unity-tests.py`, or the one named by
-`editor.runner` in `<project>/validation/device/profiles.json`) restricted to the test assembly that holds the plan test
+`editor.runner` in `tools/valtrion/profiles.json`, relative to the Unity project) restricted to the test assembly that holds the plan test
 (`editor.planAssembly`). The plan is staged in a private folder and handed to the test through `GDV_PLAN`, `GDV_OUT_ROOT` and
 `GDV_RUN_ID`; the harness writes its heartbeat and result under `GDV_OUT_ROOT/<runId>` like a device player does. When the harness
 wrote no result, or the NUnit XML disagrees with it, the adapter normalizes the NUnit XML into the result. The target is always
@@ -26,6 +26,7 @@ from typing import Any, Callable, Mapping, Sequence
 
 from .. import config, constants, core, doctor, lease, supervise, unityguard
 from ..adapter import Capabilities, DeviceHealth, DeviceInfo, PlatformAdapter, StepOutcome
+from ..project import profiles_file
 from . import register
 from .unity import support
 
@@ -207,7 +208,7 @@ class EditorAdapter(PlatformAdapter):
         settings = settings or {}
         assembly = app if app and app != "editor" else settings.get("planAssembly")
         if not assembly:
-            return StepOutcome(constants.BLOCKED, f"{project / support.PROFILES_RELATIVE} names no editor.planAssembly (the test assembly "
+            return StepOutcome(constants.BLOCKED, f"{profiles_file(project)} names no editor.planAssembly (the test assembly "
                                "that holds the plan test); pass it as --app or add it to the profile")
         runner = find_runner(project, settings.get("runner"))
         if runner is None:
