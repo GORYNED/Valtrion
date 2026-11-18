@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.0.0 (2026-11-18)
+
+- **Breaking: the reader and writer of the old check map are removed.** Core 1.0 has no check map, so `ChecksDocument` and the classes it uses (`ChecksPlatforms`, `ChecksArea`, `ChecksJsonKey`, `ChecksByContent`, `ChecksAssemblies`, `ChecksJsonRule`, `ChecksBlockComment`, `ChecksContentRule`, `ChecksEquivalenceRule`, `ChecksLevels`), `SchemaIds.Checks` and `Enums.Unclassified` are gone, and so are `ContractReader.Choices` and `ContractReader.StringListMap`, which only they used. `ContractSerializer` no longer reads `gdv.checks/1`. Remove any code of yours that used these types. The baseline classes (`BaselineDocument`, `ComparabilityKey`, `BaselineSource`, `BaselineMetric`) moved unchanged to `Baselines.cs` (the file kept its `.meta`). Plans, results, steps and the runtime harness are unchanged.
+- Compatible Core versions are listed in `compat.json`: package 1.0.x works with Core 1.0.0 up to, not including, 2. Package 0.20.x stays paired with Core 0.24.x and 0.25.x. The Editor tests of the package (268: 267 passed, 1 ignored on Windows; 26 fewer than before because the check-map fixtures are gone) and its PlayMode tests (7) passed in Unity 6000.6.8f1; update the package tag in `Packages/manifest.json` to `unity-v1.0.0`.
+
 ## 0.20.1 (2026-11-18)
 
 - Compatible Core versions are listed in `compat.json`: package 0.20.1 works with Core 0.24.0 up to, not including, 0.26. No package code changed; this release moves the pairing to Core 0.25.0, which adds fixture selection for Unity test runs. The Editor tests of the package (294: 293 passed, 1 ignored on Windows) and its PlayMode tests (7) passed in Unity 6000.6.8f1, the Editor of the package's test project from this release.

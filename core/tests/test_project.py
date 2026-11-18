@@ -170,7 +170,7 @@ class CheckTests(ProjectCase):
         self.assertEqual("ok", self.check()["status"])
 
     def test_the_shipped_compat_table_is_valid_and_lists_this_core(self):
-        self.lock({"version": "0.20.0", "source": "registry"})
+        self.lock({"version": "1.0.0", "source": "registry"})
         self.assertEqual("ok", project.check_project(self.unity)["status"])
 
 
@@ -193,7 +193,7 @@ class DoctorProjectTests(ProjectCase):
         self.assertEqual("skipped", json.loads(out)["project"]["status"])
 
     def test_a_leftover_check_map_is_a_warning_not_a_block(self):
-        self.lock({"version": "0.20.0", "source": "registry"})
+        self.lock({"version": "1.0.0", "source": "registry"})
         (self.repo / ".git").mkdir()
         old = self.repo / "validation" / "device"
         old.mkdir(parents=True)
@@ -205,13 +205,13 @@ class DoctorProjectTests(ProjectCase):
         self.assertIn("checks.json", project_report["warnings"][0])
 
     def test_without_a_leftover_map_there_is_no_warning(self):
-        self.lock({"version": "0.20.0", "source": "registry"})
+        self.lock({"version": "1.0.0", "source": "registry"})
         (self.repo / ".git").mkdir()
         _, out, _ = self.doctor("--project", str(self.unity))
         self.assertNotIn("warnings", json.loads(out)["project"])
 
     def test_supported_package_passes(self):
-        self.lock({"version": "0.20.0", "source": "registry"})
+        self.lock({"version": "1.0.0", "source": "registry"})
         code, out, _ = self.doctor("--project", str(self.unity))
         self.assertEqual((0, "ok"), (code, json.loads(out)["project"]["status"]))
 
@@ -223,7 +223,7 @@ class ShippedTableTests(ProjectCase):
         self.assertEqual("0.7.x", ranges[0]["package"])
 
     def test_package_0_7_x_stays_compatible_with_every_core_of_the_0_9_line_up_to_0_13(self):
-        # The new optional keys of gdv.checks/1 do not change what the package reads, so core 0.9.x keeps the 0.7.x pairing.
+        # The new optional keys of a contract do not change what the package reads, so core 0.9.x keeps the 0.7.x pairing.
         self.lock({"version": "0.7.1", "source": "registry"})
         for core_version in ("0.8.8", "0.9.0", "0.9.7", "0.13.1"):
             self.assertEqual("ok", project.check_project(self.unity, core_version)["status"], core_version)
@@ -348,6 +348,17 @@ class ShippedTableTests(ProjectCase):
         self.lock({"version": "0.19.0", "source": "registry"})
         self.assertEqual("ok", project.check_project(self.unity, "0.23.2")["status"])
         self.assertNotEqual("ok", project.check_project(self.unity, "0.24.0")["status"])
+
+    def test_package_1_0_x_is_paired_with_core_1_x_only_and_0_20_x_is_not(self):
+        _, ranges = project.load_compat_document()
+        self.assertEqual([{"package": "1.0.x", "core": ">=1.0.0,<2"}], [r for r in ranges if r["package"] == "1.0.x"])
+        self.lock({"version": "1.0.0", "source": "registry"})
+        self.assertEqual("ok", project.check_project(self.unity, "1.0.0")["status"])
+        self.assertNotEqual("ok", project.check_project(self.unity, "0.25.0")["status"])
+        self.assertNotEqual("ok", project.check_project(self.unity, "2.0.0")["status"])
+        self.lock({"version": "0.20.1", "source": "registry"})
+        self.assertEqual("ok", project.check_project(self.unity, "0.25.0")["status"])
+        self.assertNotEqual("ok", project.check_project(self.unity, "1.0.0")["status"])
 
     def test_package_0_14_x_is_not_paired_with_core_0_18_that_it_cannot_read_the_keys_of(self):
         self.lock({"version": "0.14.0", "source": "registry"})

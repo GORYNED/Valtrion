@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "valtrion"
-version = "0.25.0"
+version = "1.0.0"
 description = "Repeatable checks, supervised execution and verifiable evidence on local and SSH hosts."
 readme = "README.md"
 license = "MIT"
@@ -14,7 +14,7 @@ dependencies = []
 keywords = ["testing", "validation", "supervision", "unity", "evidence"]
 authors = [{ name = "GORYNED" }]
 classifiers = [
-    "Development Status :: 4 - Beta",
+    "Development Status :: 5 - Production/Stable",
     "Intended Audience :: Developers",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3 :: Only",

@@ -18,7 +18,7 @@ The smoke plan and test assets used below live in this repository, so clone it n
 ```sh
 git clone https://github.com/GORYNED/Valtrion.git
 cd Valtrion
-git checkout unity-v0.20.1
+git checkout unity-v1.0.0
 ```
 
 Record the resolved commit with `git rev-parse HEAD`. To test unreleased code instead, install Core from the checkout with `python tools/install.py --venv --home .valtrion-home` (use `python3` if that is your Python 3 command; the last line it prints is the CLI path) and use that same checkout for the package.
@@ -30,7 +30,7 @@ valtrion --version
 valtrion validate examples/smoke.plan.json
 ```
 
-Expected: `valtrion 0.7.4 (contract 1)` (or a newer version that [compat.json](../compat.json) pairs with the package), and a valid `gdv.plan/1`. If you installed from the checkout, run the same commands with the CLI path the installer printed (no environment activation or `PATH` change needed).
+Expected: `valtrion 1.0.0 (contract 2)` (or a newer version that [compat.json](../compat.json) pairs with the package), and a valid `gdv.plan/1`. If you installed from the checkout, run the same commands with the CLI path the installer printed (no environment activation or `PATH` change needed).
 
 ## 2. Add the Unity package
 
@@ -39,7 +39,7 @@ In the Unity project, merge the following into `Packages/manifest.json`. Preserv
 ```json
 {
   "dependencies": {
-    "com.goryned.valtrion.unity": "https://github.com/GORYNED/Valtrion.git?path=integrations/unity/com.goryned.valtrion.unity#unity-v0.20.1",
+    "com.goryned.valtrion.unity": "https://github.com/GORYNED/Valtrion.git?path=integrations/unity/com.goryned.valtrion.unity#unity-v1.0.0",
     "com.unity.test-framework": "1.8.0"
   }
 }
