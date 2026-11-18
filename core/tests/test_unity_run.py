@@ -141,6 +141,13 @@ class StatusTests(UnityRunTestCase):
 
 
 class WatchdogTests(UnityRunTestCase):
+    def test_a_test_with_no_completions_stalls_despite_a_growing_log(self):
+        dump = self.base / "dump"
+        code, lines, _ = self.unity("-runTests", "--dump", str(dump), "--progress-report", "--grow", "--sleep", "30",
+                                    stall_sec=2.0, timeout_sec=15.0)
+        self.assertEqual((constants.EXIT_STALL, "STATUS STALL"), (code, lines[-1]))
+        self.assertNoLeases()
+
     def test_a_log_that_stops_growing_is_a_stall(self):
         started = time.monotonic()
         code, lines, _ = self.unity("--sleep", "30", stall_sec=3.0)

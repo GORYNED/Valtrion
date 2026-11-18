@@ -1619,7 +1619,8 @@ def _configure_unity(parser: argparse.ArgumentParser) -> None:
                      help="seconds to wait for the project and an Editor slot before BLOCKED (default: leaseWaitSec of host.json, 1800)")
     run.add_argument("--timeout-sec", type=_finite_seconds, default=0.0, metavar="N", help="hard timeout of Unity; 0 (default) = none")
     run.add_argument("--stall-sec", type=_finite_seconds, default=600.0, metavar="N",
-                     help="STALL when the -logFile has not grown for N s (default 600; 0 = off; also off without -logFile)")
+                     help="STALL after N s without completed tests (with Unity progress reports), else -logFile growth "
+                          "(default 600; 0 = off; without -logFile enabled only for -runTests)")
     run.add_argument("--purpose", default="", help="text recorded in the leases")
     run.add_argument("--lfs-materialize", action=argparse.BooleanOptionalAction, default=None,
                      help="turn Git LFS pointer files of the project into their content before Unity starts, from the host's shared LFS "

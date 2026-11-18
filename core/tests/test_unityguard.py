@@ -2,6 +2,7 @@
 platform's parser runs on every machine), recognising an Editor by its path, the ancestry rule, and the system probe with a fake runner."""
 
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -301,6 +302,25 @@ class GateTests(unittest.TestCase):
         self.assertIn("pid 4242", self.gate(self.Probe([self.EDITOR]))())
         self.assertIn("only 100 MiB", self.gate(self.Probe(memory=100.0))())
         self.assertIsNone(self.gate(self.Probe())())
+
+    def test_concurrent_slots_reserve_memory_and_the_callers_slot_is_not_counted_twice(self):
+        from valtrion import lease
+
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as folder:
+            manager = lease.LeaseManager(Path(folder))
+            probe = self.Probe(memory=3000.0)
+            gate = unityguard.Gate(manager, unityguard.GuardSettings(False, 2048), probe, poll_sec=0,
+                                   reserve_session="new")
+            self.assertTrue(manager.try_acquire(lease.slot_resource(lease.UNITY_EDITOR_RESOURCE, 1), "dev", "other", 300).acquired)
+            self.assertIn("4096 MiB are needed", gate())
+            probe.memory = 5000.0
+            self.assertIsNone(gate())
+            self.assertTrue(manager.try_acquire(lease.slot_resource(lease.UNITY_EDITOR_RESOURCE, 2), "dev", "new", 300).acquired)
+            self.assertIsNone(gate())
+            probe.memory = 3000.0
+            self.assertIn("4096 MiB are needed", gate())
+            manager.release(lease.slot_resource(lease.UNITY_EDITOR_RESOURCE, 1), "other", os.getpid())
+            self.assertIsNone(gate())
 
     def test_a_refusal_is_remembered_for_the_poll_time_and_a_pass_never_is(self):
         now = [0.0]

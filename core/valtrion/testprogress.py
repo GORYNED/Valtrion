@@ -16,6 +16,14 @@ ENVIRONMENT_VARIABLE = "GDV_PROGRESS_FILE"
 FOLDER = "progress"
 
 
+def completed_count(path: Path) -> int | None:
+    """Completed tests of a started run, or None before a readable running/finished report exists."""
+    report = read(path)
+    if report is None or report["state"] not in ("running", "finished"):
+        return None
+    return report["done"]
+
+
 def folder(home: Path | None = None) -> Path:
     return (home or core.valtrion_home()) / FOLDER
 

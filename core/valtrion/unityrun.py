@@ -3,7 +3,8 @@
 The run holds the lease on the project folder and then one slot of the host's `unity-editor` capacity (the same total every other claimant
 counts) from before Unity starts until its process tree is gone, renews both while it waits and while Unity runs, and gives them back in
 reverse order on every exit. Unity runs under the watchdog: a hard timeout, a stall window that follows the growth of the `-logFile`, and a
-lost lease each end in killing the whole process tree. The last line printed on stdout is `STATUS <name>`.
+lost lease each end in killing the whole process tree. Once the Unity package reports a test run, only newly completed tests count as
+progress; before that, log growth counts. The last line printed on stdout is `STATUS <name>`.
 
 An Edit Mode or Play Mode test run with a key (`unitycache`) is answered from the host's result cache when an identical run passed
 before, under the project lease and without an Editor slot or Unity; while it runs, the lease `unity-result:<key>` tells other sessions that the key is being
@@ -422,7 +423,7 @@ def run(
                 may_hold += [lease.slot_resource(lease.UNITY_EDITOR_RESOURCE, number) for number in range(1, capacity + 1)]
                 # The slot is taken only once no Editor runs outside a lease and enough memory is free (the gate), all within the same
                 # wait budget: a run that waits for such an Editor holds the project lease but leaves the slot to others.
-                gate = unityguard.Gate(manager, guard_settings, probe, guard_poll, lambda text: _say(err, text))
+                gate = unityguard.Gate(manager, guard_settings, probe, guard_poll, lambda text: _say(err, text), reserve_session=session)
                 slot = manager.acquire_slot(lease.UNITY_EDITOR_RESOURCE, capacity, owner, session, ttl_sec, what, pid,
                                             wait_sec=max(0.0, deadline - time.monotonic()), poll_sec=poll_sec, on_wait=waiting,
                                             precondition=gate)
@@ -436,10 +437,12 @@ def run(
                 cancel = work / "cancel"
                 before = _log_state(log_file)
                 results_before = _log_state(cache.result_path) if cache is not None else None
+                test_run = any(item.lower() == "-runtests" for item in args)
                 watchdog = supervise.Watchdog(
                     timeout_sec if timeout_sec > 0 else float("inf"),
-                    stall_sec if stall_sec > 0 and log_file is not None else float("inf"),
-                    progress_files=(log_file,) if log_file is not None else (), log_counts=False, cancel_file=cancel)
+                    stall_sec if stall_sec > 0 and (log_file is not None or test_run) else float("inf"),
+                    progress_files=(log_file,) if log_file is not None else (), log_counts=False, cancel_file=cancel,
+                    progress_counter=(lambda: testprogress.completed_count(progress_file)) if test_run else None)
 
                 def watch_leases() -> None:
                     while not stop_watching.wait(cancel_poll_sec):
