@@ -51,7 +51,7 @@ def load_project_file(path: Path) -> Path:
         raise ProjectError(f'{path} must be an object with "unityProject": "<path relative to this file>"')
     if "checks" in document:
         raise ProjectError(f'{path}: "checks" names a check map; Valtrion 1.0 selects nothing and no longer reads checks.json. '
-                           'Remove the "checks" key (and the map file). See the Core CHANGELOG, Unreleased.')
+                           'Remove the "checks" key (and the map file). See the Core CHANGELOG, 1.0.0.')
     unknown = sorted(key for key in document if key != "unityProject")
     if unknown:
         raise ProjectError(f'{path}: unknown key {", ".join(repr(key) for key in unknown)}; the only key is "unityProject"')

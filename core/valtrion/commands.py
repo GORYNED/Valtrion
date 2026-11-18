@@ -308,7 +308,7 @@ def _project_check(arguments: argparse.Namespace) -> dict | None:
     result = {**project.check_project(folder), "project": str(folder)}
     leftover = project.leftover_check_map(folder)
     if leftover is not None:
-        result["warnings"] = [f"{leftover} is a check map: Valtrion 1.0 selects nothing and no longer reads it; delete it (see the Core CHANGELOG, Unreleased)"]
+        result["warnings"] = [f"{leftover} is a check map: Valtrion 1.0 selects nothing and no longer reads it; delete it (see the Core CHANGELOG, 1.0.0)"]
     return result
 
 
