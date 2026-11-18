@@ -4,7 +4,7 @@ Current implementation, known gaps and intended work; this is not a release sche
 
 ## CURRENT: implemented in this repository
 
-- Core CLI and Python library: hosts and SSH, resource locks, detached jobs, pipelines, work folders, check selection, reports, baselines and metric comparison.
+- Core CLI and Python library: hosts and SSH, resource locks, detached jobs, pipelines, work folders, reports, baselines and metric comparison.
 - Providers for `ios`, `android`, `windows`, `macos` and `editor`, with project-supplied build or test entry points.
 - Unity package: development-only plan runner, custom steps, built-in steps, probes, heartbeat and structured results.
 - Versioned JSON schemas and valid/invalid fixtures shared by Core and Unity contract tests.

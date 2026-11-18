@@ -89,7 +89,7 @@ Copy the prompt from [AI-agent setup](docs/ai-agent-setup.md) into Claude Code, 
 | Command jobs | Local or SSH execution, timeouts, stall detection, locks for shared devices, saved logs and events |
 | Unity integration | Plan steps inside the Editor or a development player: C# steps, heartbeat, results, metrics, screenshots |
 | App pipelines | Build, install, run and collect on the Editor, Android, iOS, Windows and macOS (see [providers](docs/providers.md)) (your project supplies the build and test entry points) |
-| Reviewing a change | Choosing which checks to run, and comparing metrics with a saved baseline |
+| Reviewing a change | Reading the results of runs, and comparing metrics with a saved baseline |
 
 ## Status and limits
 

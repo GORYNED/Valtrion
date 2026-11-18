@@ -97,7 +97,7 @@ Valtrion replaces an earlier tool with the same behaviour under different names.
 | command `gdv` | command `valtrion` (also `python -m valtrion`) |
 | home directory of the earlier tool | `~/.valtrion` |
 | environment variable `GDV_HOME` | `VALTRION_HOME` |
-| a per-project shim script that located and ran the CLI of the pinned package | `valtrion.json` at the project root, naming the Unity project: `{"unityProject": "<path relative to the file>", "checks": "<path relative to the file>"}` (`checks` is optional: the check map when it is not at `validation/device/checks.json` under the repository root); the installed `valtrion` is used |
+| a per-project shim script that located and ran the CLI of the pinned package | `valtrion.json` at the project root, naming the Unity project: `{"unityProject": "<path relative to the file>"}`; the installed `valtrion` is used |
 | CLI shipped inside the Unity package | CLI installed separately; compatibility is checked with `compat.json` |
 
 Unchanged on purpose: the schema ids `gdv.*/1`, the `-gdv*` launch arguments, the `GDV_*` environment variables read by apps and tools, the `GDV-RESULT` line, and the format of lease files.

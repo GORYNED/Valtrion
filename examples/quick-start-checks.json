@@ -1,9 +1,0 @@
-{
-  "schema": "gdv.checks/1",
-  "platforms": { "required": ["editor"] },
-  "areas": [ { "glob": "**", "kind": "project" } ],
-  "kinds": {
-    "project": { "affected": ["playmode:Valtrion.SmokeTests"] }
-  },
-  "unclassified": "fail"
-}

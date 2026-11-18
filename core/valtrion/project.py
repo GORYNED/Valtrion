@@ -56,24 +56,6 @@ def load_project_file(path: Path) -> Path:
     return project
 
 
-def checks_file_setting(start: Path, root: Path | None = None) -> Path | None:
-    """The `checks` path of the nearest valtrion.json (relative to that file), or None when there is no file or no such key.
-    A file outside `root` (the repository) is ignored, so a stray file in a parent folder cannot redirect the check map."""
-    found = find_project_file(start)
-    if found is None or (root is not None and root.resolve() not in (found.parent, *found.parent.parents)):
-        return None
-    try:
-        document = json.loads(found.read_text(encoding="utf-8-sig"))
-    except (OSError, ValueError) as error:
-        raise ProjectError(f"cannot read {found}: {error}") from error
-    checks = document.get("checks") if isinstance(document, dict) else None
-    if checks is None:
-        return None
-    if not isinstance(checks, str) or not checks:
-        raise ProjectError(f'{found}: "checks" must be a path relative to this file')
-    return (found.parent / checks).resolve()
-
-
 def resolve_unity_project(explicit: Path | None = None, environ: Mapping[str, str] | None = None, cwd: Path | None = None) -> Path | None:
     """`--project-dir`, else `GDV_UNITY_PROJECT`, else the project named by the nearest valtrion.json; None when none is set."""
     if explicit is not None:

@@ -1,4 +1,4 @@
-"""The result cache for the runners a check map writes: a relative `-testResults`, a host default `-buildTarget` (host.json
+"""The result cache for a Unity command line: a relative `-testResults`, a host default `-buildTarget` (host.json
 `unityBuildTarget`) and a run that selects by `-testFilter` only (no `-assemblyNames`)."""
 
 import io

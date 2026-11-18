@@ -17,7 +17,7 @@ Valtrion starts the following, and each is chosen by the project, not by Valtrio
 | **Plans' launch arguments** | `--launch-arg`, `extraArgs`, `unityArgs` | Passed to the app or to Unity as given |
 | **The app and its plan steps** | The built player runs the `gdv.plan/1` you supply | The app, on the device |
 
-`valtrion.json` only names folders and files (`unityProject`, `checks`); it runs nothing. `compat.json` and the schemas are data.
+`valtrion.json` only names a folder (`unityProject`); it runs nothing. `compat.json` and the schemas are data.
 
 Consequence: run Valtrion only on projects you trust, and treat a profile, a plan and a sign script as code. A pull request that changes them changes what runs on your build hosts.
 

@@ -2,8 +2,6 @@ import contextlib
 import io
 import json
 import os
-import shutil
-import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -329,85 +327,3 @@ class ShippedTableTests(ProjectCase):
         self.lock({"version": "0.7.0", "source": "registry"})
         result = project.check_project(self.unity, "0.7.0", bad)
         self.assertEqual(("BLOCKED", "reinstall valtrion"), (result["status"], result["action"]))
-
-
-@unittest.skipUnless(shutil.which("git"), "needs git")
-class ChecksSettingTests(ProjectCase):
-    """`checks` in valtrion.json moves the default check map; --checks still wins."""
-
-    CHECKS = json.dumps({"schema": "gdv.checks/1", "platforms": {"required": ["ios"], "dev": ["editor"]}, "areas": [{"glob": "**", "kind": "docs"}],
-                         "kinds": {"docs": {"structure": ["structure"]}}, "unclassified": "widest"})
-
-    def setUp(self):
-        super().setUp()
-        subprocess.run(["git", "init", "-q", str(self.repo)], check=True)
-        self.nested = self.repo / "game" / "validation" / "device"
-        self.nested.mkdir(parents=True)
-        self.map = self.nested / "checks.json"
-        self.map.write_text(self.CHECKS, encoding="utf-8")
-
-    def write_file(self, value):
-        (self.repo / "valtrion.json").write_text(json.dumps(value), encoding="utf-8")
-
-    def check_config(self, *args, cwd=None):
-        with mock.patch("pathlib.Path.cwd", return_value=cwd or self.repo):
-            return run("check-config", *args)
-
-    def test_checks_key_is_relative_to_the_file_and_used_by_default(self):
-        self.write_file({"unityProject": "game/UnityProject", "checks": "game/validation/device/checks.json"})
-        code, out, err = self.check_config()
-        self.assertEqual(0, code, err)
-        self.assertIn(str(self.map.resolve()), out)
-
-    def test_without_the_key_the_repository_default_is_used(self):
-        self.write_file({"unityProject": "game/UnityProject"})
-        code, _, err = self.check_config()
-        self.assertEqual(2, code)
-        self.assertIn("checks.json", err, "validation/device/checks.json under the repository root does not exist here")
-        default = self.repo / "validation" / "device"
-        default.mkdir(parents=True)
-        (default / "checks.json").write_text(self.CHECKS, encoding="utf-8")
-        self.assertEqual(0, self.check_config()[0])
-
-    def test_the_key_is_found_from_a_subfolder(self):
-        self.write_file({"unityProject": "game/UnityProject", "checks": "game/validation/device/checks.json"})
-        self.assertEqual(0, self.check_config(cwd=self.nested)[0])
-
-    def test_explicit_checks_beats_the_key(self):
-        self.write_file({"unityProject": "game/UnityProject", "checks": "missing/checks.json"})
-        self.assertEqual(0, self.check_config("--checks", str(self.map))[0])
-
-    def test_a_bad_checks_value_is_blocked_by_every_command(self):
-        for value in (3, ""):
-            self.write_file({"unityProject": "game/UnityProject", "checks": value})
-            for command in (["check-config"], ["select", "--base-ref", "HEAD"], ["report", "--base-ref", "HEAD", "--results", str(self.base)]):
-                with self.subTest(value=value, command=command[0]), mock.patch("pathlib.Path.cwd", return_value=self.repo):
-                    code, _, err = run(*command)
-                    self.assertEqual(2, code)
-                    self.assertIn('"checks" must be a path', err)
-                    self.assertNotIn("Traceback", err)
-
-    def test_an_unreadable_valtrion_json_is_blocked(self):
-        (self.repo / "valtrion.json").write_text("{ nope", encoding="utf-8")
-        code, _, err = self.check_config()
-        self.assertEqual(2, code)
-        self.assertIn("valtrion.json", err)
-
-    def test_a_valtrion_json_above_the_repository_is_ignored(self):
-        (self.base / "valtrion.json").write_text(json.dumps({"checks": "elsewhere/checks.json"}), encoding="utf-8")
-        default = self.repo / "validation" / "device"
-        default.mkdir(parents=True)
-        (default / "checks.json").write_text(self.CHECKS, encoding="utf-8")
-        code, out, err = self.check_config()
-        self.assertEqual(0, code, err)
-        self.assertNotIn("elsewhere", out)
-
-    def test_select_uses_the_key_too(self):
-        self.write_file({"unityProject": "game/UnityProject", "checks": "game/validation/device/checks.json"})
-        env = {"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@e", "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@e"}
-        for args in (["add", "-A"], ["commit", "-q", "-m", "x"]):
-            subprocess.run(["git", "-C", str(self.repo), *args], check=True, env={**os.environ, **env})
-        with mock.patch("pathlib.Path.cwd", return_value=self.repo):
-            code, out, err = run("select", "--base-ref", "HEAD", "--json")
-        self.assertEqual(0, code, err)
-        self.assertEqual("HEAD", json.loads(out)["baseRef"])

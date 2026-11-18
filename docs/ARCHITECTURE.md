@@ -13,7 +13,7 @@ The `valtrion` CLI and library, distribution `valtrion` 0.25.0, Python 3.10 or n
 - Exclusive resource leases (devices, Unity Editor slots) with explicit release, expiry and recovery. A pipeline holds the build resources only during its `build` stage and the device only during its device stages, so builds overlap device runs; see [cli.md](cli.md#leases-by-stage-build-reuse).
 - A host-local cache of published builds (`<home>/builds`), reused by commit, profile and toolchain.
 - Build, install, launch, collect and cleanup through platform providers: `ios`, `android`, `windows`, `macos`, `editor`.
-- Result validation, baselines and comparison, check selection for a change, and a work root outside protected folders.
+- Result validation, baselines and comparison, a report over the results of runs, and a work root outside protected folders.
 
 The core does not require Unity, `adb` or Xcode to run; a missing tool makes only the work that needs it `BLOCKED`.
 

@@ -40,7 +40,7 @@ State is kept as files: a run folder per job under the artifacts root holds `job
 
 `PASS` 0, `FAIL` 1, `BLOCKED` 2, `NEEDS_PERMISSION` 2, `STALL` 3, `TIMEOUT` 3. Details are in [contracts.md](contracts.md).
 
-## Choosing checks for a change
+## Results of runs
 
 `valtrion report` shows the results of runs in a folder: what passed, what failed, the files of the run and how to run the failed ones again. See [cli.md](cli.md).
 

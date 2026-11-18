@@ -28,10 +28,9 @@ With the PyPI install, check the command from the checkout root:
 ```sh
 valtrion --version
 valtrion validate examples/smoke.plan.json
-valtrion check-config --checks examples/quick-start-checks.json
 ```
 
-Expected: `valtrion 0.7.4 (contract 1)` (or a newer version that [compat.json](../compat.json) pairs with the package), a valid `gdv.plan/1` and a valid check map. If you installed from the checkout, run the same commands with the CLI path the installer printed (no environment activation or `PATH` change needed).
+Expected: `valtrion 0.7.4 (contract 1)` (or a newer version that [compat.json](../compat.json) pairs with the package), and a valid `gdv.plan/1`. If you installed from the checkout, run the same commands with the CLI path the installer printed (no environment activation or `PATH` change needed).
 
 ## 2. Add the Unity package
 
@@ -63,10 +62,10 @@ The test calls `PlanTest.RunFromEnvironment()`. The plan waits a few frames and 
 Optionally create `valtrion.json` in your project's Git root:
 
 ```json
-{ "unityProject": ".", "checks": "validation/checks.json" }
+{ "unityProject": "." }
 ```
 
-If Unity lives in a subfolder, replace `.` with its relative path. Copy [examples/quick-start-checks.json](../examples/quick-start-checks.json) to the `checks` location relative to this file. Check it with `valtrion check-config --checks validation/checks.json` using your installed command path. This initial map selects the smoke assembly for all changed paths. Refine it as your checks grow. `select` chooses checks; it does not execute them.
+If Unity lives in a subfolder, replace `.` with its relative path.
 
 ## 4. Run in a background Editor
 
@@ -116,4 +115,4 @@ The direct smoke can list unknown candidate/host metadata under `unverified`. Wi
 
 ## Next steps
 
-Add steps that exercise your app and assert its behavior. See the [Unity guide](../integrations/unity/com.goryned.valtrion.unity/Documentation~/index.md) for custom steps and the [providers guide](providers.md) for project build methods, the Editor provider's runner interface, device runs and profiles. The direct test above does not set up a provider runner or player build pipeline. Do not use the larger [example checks map](../examples/checks.json) unchanged: its build methods, runners and app scenarios are placeholders for a project's own integration.
+Add steps that exercise your app and assert its behavior. See the [Unity guide](../integrations/unity/com.goryned.valtrion.unity/Documentation~/index.md) for custom steps and the [providers guide](providers.md) for project build methods, the Editor provider's runner interface, device runs and profiles. The direct test above does not set up a provider runner or player build pipeline.
