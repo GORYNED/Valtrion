@@ -119,7 +119,7 @@ def _rerun_hints(result: dict) -> list[str]:
     hints = [f"valtrion unity run --rerun-failed {item['path']} -- <the same Unity arguments>" for item in result["artifacts"] if item["kind"] == "xml"]
     run = result.get("pipelineRun")
     if isinstance(run, dict):
-        hints.append(f"valtrion pipeline FILE --only-failed --resume-from {result['runId']}   (pipeline {run['pipelineId']})")
+        hints.append(f"valtrion pipeline FILE --only-failed   (pipeline {run['pipelineId']})")
     return hints
 
 

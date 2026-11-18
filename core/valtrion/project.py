@@ -62,14 +62,21 @@ def load_project_file(path: Path) -> Path:
 
 
 def leftover_check_map(folder: Path) -> Path | None:
-    """`validation/device/checks.json` (the old default place of the check map) in `folder` or a parent up to the repository root, or None."""
+    """`validation/device/checks.json` (the old default place of the check map) in `folder` or a parent up to the project or repository root, or None.
+
+    The search ends at the first folder that holds `valtrion.json` or `.git`. Without either, only `folder` itself is searched.
+    """
     folder = folder.resolve()
-    for candidate in (folder, *folder.parents):
+    levels = (folder, *folder.parents)
+    chain = [folder]
+    for index, candidate in enumerate(levels):
+        if (candidate / "valtrion.json").exists() or (candidate / ".git").exists():
+            chain = list(levels[: index + 1])
+            break
+    for candidate in chain:
         found = candidate / "validation" / "device" / "checks.json"
         if found.is_file():
             return found
-        if (candidate / ".git").exists():
-            break
     return None
 
 

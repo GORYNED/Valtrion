@@ -67,10 +67,10 @@ class ReportTests(unittest.TestCase):
         self.assertIn("valtrion unity run --rerun-failed Builds/editmode.xml", out)
 
     def test_a_failed_pipeline_points_to_only_failed(self):
-        self.put("pipe", status=constants.FAIL, pipelineRun={"pipelineId": "nightly", "stages": []})
+        self.put("job-1-1", status=constants.FAIL, pipelineRun={"pipelineId": "nightly", "stages": []})
         _, _, rows = self.rows()
         (row,) = rows.values()
-        self.assertEqual(["valtrion pipeline FILE --only-failed --resume-from pipe   (pipeline nightly)"], row["rerun"])
+        self.assertEqual(["valtrion pipeline FILE --only-failed   (pipeline nightly)"], row["rerun"])
 
     def test_a_passing_run_has_nothing_to_run_again(self):
         self.put("ok", artifacts=[{"kind": "xml", "path": "a.xml", "sha256": "d" * 64}])

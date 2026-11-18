@@ -204,6 +204,30 @@ class DoctorProjectTests(ProjectCase):
         self.assertEqual(1, len(project_report["warnings"]))
         self.assertIn("checks.json", project_report["warnings"][0])
 
+    def test_the_leftover_search_stops_at_the_repository_root(self):
+        outside = self.base / "validation" / "device"
+        outside.mkdir(parents=True)
+        (outside / "checks.json").write_text("{}", encoding="utf-8")
+        (self.repo / ".git").mkdir()
+        self.assertIsNone(project.leftover_check_map(self.unity))
+
+    def test_the_leftover_search_stops_at_valtrion_json(self):
+        outside = self.base / "validation" / "device"
+        outside.mkdir(parents=True)
+        (outside / "checks.json").write_text("{}", encoding="utf-8")
+        (self.repo / "valtrion.json").write_text("{}", encoding="utf-8")
+        self.assertIsNone(project.leftover_check_map(self.unity))
+
+    def test_without_a_repository_or_valtrion_json_only_the_folder_is_searched(self):
+        parent = self.base / "validation" / "device"
+        parent.mkdir(parents=True)
+        (parent / "checks.json").write_text("{}", encoding="utf-8")
+        self.assertIsNone(project.leftover_check_map(self.unity))
+        own = self.unity / "validation" / "device"
+        own.mkdir(parents=True)
+        (own / "checks.json").write_text("{}", encoding="utf-8")
+        self.assertEqual(own / "checks.json", project.leftover_check_map(self.unity))
+
     def test_without_a_leftover_map_there_is_no_warning(self):
         self.lock({"version": "1.0.0", "source": "registry"})
         (self.repo / ".git").mkdir()
