@@ -9,7 +9,7 @@ Valtrion starts the following, and each is chosen by the project, not by Valtrio
 | What | Where it comes from | Runs as |
 | --- | --- | --- |
 | **Command jobs** | argv after `job start --`, with the supplied working directory | Invoking user's permissions on the selected host; no Unity dependency |
-| **Build methods** | `executeMethod` of a platform in `validation/device/profiles.json` (or `GDV_MACOS_BUILD_METHOD`) | Unity batch mode, with the user's permissions, with access to the project |
+| **Build methods** | `executeMethod` of a platform in `tools/valtrion/profiles.json` (or `GDV_MACOS_BUILD_METHOD`) | Unity batch mode, with the user's permissions, with access to the project |
 | **Sign scripts** | `signScript` in the profile, `GDV_MACOS_SIGN_SCRIPT`, or the first `tools/build/sign-macos*.py` found in the project folder or above | The Python that runs `valtrion`, on the Mac, with the login keychain when the job is in the `gui` domain |
 | **Editor test runner** | `editor.runner` in the profile, or the first `tools/validation/run-unity-tests.py` found in the project folder or above | The Python that runs `valtrion` |
 | **Unity batch mode** | The Editor matching the project's `ProjectVersion.txt` | The project's own editor scripts and tests run when it opens the project |
@@ -17,7 +17,7 @@ Valtrion starts the following, and each is chosen by the project, not by Valtrio
 | **Plans' launch arguments** | `--launch-arg`, `extraArgs`, `unityArgs` | Passed to the app or to Unity as given |
 | **The app and its plan steps** | The built player runs the `gdv.plan/1` you supply | The app, on the device |
 
-`valtrion.json` only names a folder (`unityProject`); it runs nothing. `compat.json` and the schemas are data.
+`tools/valtrion/valtrion.json` only names a folder (`unityProject`); it runs nothing. `compat.json` and the schemas are data.
 
 Consequence: run Valtrion only on projects you trust, and treat a profile, a plan and a sign script as code. A pull request that changes them changes what runs on your build hosts.
 

@@ -234,8 +234,8 @@ class EditorSlotTests(unittest.TestCase):
         self.project = self.base / "repo" / "proj"
         (self.project / "ProjectSettings").mkdir(parents=True)
         (self.project / "ProjectSettings" / "ProjectVersion.txt").write_text("m_EditorVersion: 6000.6.7f1\n", encoding="utf-8")
-        (self.project / "validation" / "device").mkdir(parents=True)
-        (self.project / "validation" / "device" / "profiles.json").write_text(json.dumps(
+        (self.project / "tools" / "valtrion").mkdir(parents=True)
+        (self.project / "tools" / "valtrion" / "profiles.json").write_text(json.dumps(
             {"schema": "gdv.profiles/1", "profiles": {"Validation": {"editor": {"planAssembly": "My.Plan.Tests"}}}}), encoding="utf-8")
         (self.base / "repo" / "tools" / "validation").mkdir(parents=True)
         (self.base / "repo" / "tools" / "validation" / "run-unity-tests.py").write_text("", encoding="utf-8")
@@ -334,9 +334,9 @@ class EditorSlotTests(unittest.TestCase):
         other_project = self.base / "repo" / "second"
         (other_project / "ProjectSettings").mkdir(parents=True)
         (other_project / "ProjectSettings" / "ProjectVersion.txt").write_text("m_EditorVersion: 6000.6.7f1\n", encoding="utf-8")
-        (other_project / "validation" / "device").mkdir(parents=True)
-        (other_project / "validation" / "device" / "profiles.json").write_text(
-            (self.project / "validation" / "device" / "profiles.json").read_text(encoding="utf-8"), encoding="utf-8")
+        (other_project / "tools" / "valtrion").mkdir(parents=True)
+        (other_project / "tools" / "valtrion" / "profiles.json").write_text(
+            (self.project / "tools" / "valtrion" / "profiles.json").read_text(encoding="utf-8"), encoding="utf-8")
         third = self.adapter(project=other_project)
         blocked = self.launch(third, "third.log")[1]
         self.assertEqual(constants.BLOCKED, blocked.status)

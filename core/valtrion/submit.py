@@ -6,7 +6,7 @@ host then names the files in that folder, so no path of the caller has to exist 
 
 The Unity project is resolved on the host. An explicit remote project (`--remote-project`, `GDV_REMOTE_PROJECT`) is the working
 directory, as before. Otherwise, when the host has a `projectsRoot`, the project is `<projectsRoot>/<name>`, where `<name>` is the
-final folder of the Unity project the caller resolved (`--project-dir`, `GDV_UNITY_PROJECT` or `valtrion.json`), else the last segment of
+final folder of the Unity project the caller resolved (`--project-dir`, `GDV_UNITY_PROJECT` or `tools/valtrion/valtrion.json`), else the last segment of
 `candidate.repo`; the folder must exist on the host. A host without `projectsRoot` gets the command line as it is.
 """
 

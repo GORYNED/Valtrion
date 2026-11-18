@@ -571,7 +571,7 @@ class ScopedLeaseTests(unittest.TestCase):
         self.open_gates("A", "B")
         with self.clean_git():
             self.run_job("A", self.document(sha="ab" * 20))
-            config = self.base / "projects" / "A" / "validation" / "device"
+            config = self.base / "projects" / "A" / "tools" / "valtrion"
             config.mkdir(parents=True)
             (config / "profiles.json").write_text(json.dumps({"profiles": {"Validation": {"android": {"executeMethod": "X.Y"}}}}), encoding="utf-8")
             self.run_job("A", self.document(sha="ab" * 20))

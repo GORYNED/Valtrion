@@ -111,7 +111,7 @@ class IosTests(unittest.TestCase):
         self.project = self.work / "project"
         (self.project / "ProjectSettings").mkdir(parents=True)
         (self.project / "ProjectSettings" / "ProjectVersion.txt").write_text("m_EditorVersion: 6000.6.7f1\n", encoding="utf-8")
-        (self.project / "validation" / "device").mkdir(parents=True)
+        (self.project / "tools" / "valtrion").mkdir(parents=True)
         self.editors = base / "editors"
         binary = self.editors / "6000.6.7f1" / "Unity.app" / "Contents" / "MacOS" / "Unity"
         binary.parent.mkdir(parents=True)
@@ -127,7 +127,7 @@ class IosTests(unittest.TestCase):
         self.out = base / "job" / "build"
 
     def write_profiles(self, entry, profile="Internal"):
-        (self.project / ios.PROFILES_FILE).write_text(json.dumps({"profiles": {profile: {"ios": entry}}}), encoding="utf-8")
+        (self.project / Path("tools") / "valtrion" / "profiles.json").write_text(json.dumps({"profiles": {profile: {"ios": entry}}}), encoding="utf-8")
 
     # -- discovery ---------------------------------------------------------------------------------------------------------
 
@@ -524,10 +524,10 @@ class IosTests(unittest.TestCase):
         self.assertNotIn("start it without --foreground", reason)
 
     def test_missing_or_unknown_profile_settings_are_blocked_with_the_file_named(self):
-        (self.project / ios.PROFILES_FILE).unlink()
+        (self.project / Path("tools") / "valtrion" / "profiles.json").unlink()
         outcome = self.adapter.build(self.project, "Internal", self.out)
         self.assertEqual(constants.BLOCKED, outcome.status)
-        self.assertIn("profiles.json", outcome.reason)
+        self.assertIn(str(Path("tools") / "valtrion" / "profiles.json"), outcome.reason)
         self.write_profiles({"executeMethod": "M.B", "bogus": 1})
         self.assertIn("unknown keys", self.adapter.build(self.project, "Internal", self.out).reason)
         self.write_profiles({"executeMethod": "M.B"}, profile="Other")

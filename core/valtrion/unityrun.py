@@ -296,7 +296,7 @@ def run(
         project = project_dir.expanduser().absolute()
         args += ["-projectPath", str(project)]
     else:
-        return _result(out, constants.BLOCKED, "no Unity project: pass -projectPath, --project-dir, set GDV_UNITY_PROJECT or add a valtrion.json")
+        return _result(out, constants.BLOCKED, "no Unity project: pass -projectPath, --project-dir, set GDV_UNITY_PROJECT or add tools/valtrion/valtrion.json")
     # An offloaded run (`prepare`) finds the folder and its Unity version only after the checkout has been reset to the commit.
     if prepare is None and not project.is_dir():
         return _result(out, constants.BLOCKED, f"the Unity project folder {project} does not exist")

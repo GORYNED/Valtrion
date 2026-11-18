@@ -615,7 +615,8 @@ class CommandLineTests(HostTestCase):
         self.assertEqual(0, code, err)
 
     def test_project_path_wins_over_a_broken_project_file_and_without_it_the_file_is_needed(self):
-        (self.base / "valtrion.json").write_text("{broken", encoding="utf-8")
+        (self.base / "tools" / "valtrion").mkdir(parents=True)
+        (self.base / "tools" / "valtrion" / "valtrion.json").write_text("{broken", encoding="utf-8")
         cwd = os.getcwd()
         os.chdir(self.base)
         self.addCleanup(os.chdir, cwd)

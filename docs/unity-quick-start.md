@@ -30,7 +30,7 @@ valtrion --version
 valtrion validate examples/smoke.plan.json
 ```
 
-Expected: `valtrion 1.0.0 (contract 2)` (or a newer version that [compat.json](../compat.json) pairs with the package), and a valid `gdv.plan/1`. If you installed from the checkout, run the same commands with the CLI path the installer printed (no environment activation or `PATH` change needed).
+Expected: `valtrion 1.1.0 (contract 2)` (or a newer version that [compat.json](../compat.json) pairs with the package), and a valid `gdv.plan/1`. If you installed from the checkout, run the same commands with the CLI path the installer printed (no environment activation or `PATH` change needed).
 
 ## 2. Add the Unity package
 
@@ -55,17 +55,17 @@ This is a URL template: replace the SHA. Private repository credentials must com
 
 ## 3. Add the smoke test and plan
 
-Copy both files from [examples/unity-smoke](../examples/unity-smoke) into `Assets/Validation/` in your Unity project. The assembly is named `Valtrion.SmokeTests`. Copy [examples/smoke.plan.json](../examples/smoke.plan.json) to `validation/smoke.plan.json` in your Unity project.
+Copy both files from [examples/unity-smoke](../examples/unity-smoke) into `Assets/Validation/` in your Unity project. The assembly is named `Valtrion.SmokeTests`. Copy [examples/smoke.plan.json](../examples/smoke.plan.json) to `tools/valtrion/plans/smoke.plan.json` in your Unity project.
 
 The test calls `PlanTest.RunFromEnvironment()`. The plan waits a few frames and writes a marker. It uses only built-in steps; add app-specific assertions later. It does not need a device, signing identity or build method.
 
-Optionally create `valtrion.json` in your project's Git root:
+Optionally create `tools/valtrion/valtrion.json` in your repository. `unityProject` is relative to that file:
 
 ```json
-{ "unityProject": "." }
+{ "unityProject": "../.." }
 ```
 
-If Unity lives in a subfolder, replace `.` with its relative path.
+If the Unity project is in a subfolder, add it: `"../../MyGame"`. Build profiles, if you use them, go in `tools/valtrion/profiles.json` ([providers.md](providers.md)). The whole folder layout is in [cli.md](cli.md#the-toolsvaltrion-folder).
 
 ## 4. Run in a background Editor
 
@@ -79,7 +79,7 @@ New-Item -ItemType Directory -Force $out | Out-Null
 $runId = 'smoke-' + [guid]::NewGuid().ToString('N').Substring(0, 12)
 $previous = $env:GDV_PLAN, $env:GDV_OUT_ROOT, $env:GDV_RUN_ID
 try {
-    $env:GDV_PLAN = (Resolve-Path validation/smoke.plan.json).Path
+    $env:GDV_PLAN = (Resolve-Path tools/valtrion/plans/smoke.plan.json).Path
     $env:GDV_OUT_ROOT = $out
     $env:GDV_RUN_ID = $runId
     $process = Start-Process -FilePath $editor -WindowStyle Hidden -PassThru -ArgumentList "-batchmode -projectPath `"$project`" -runTests -testPlatform PlayMode -assemblyNames Valtrion.SmokeTests -testResults `"$out/$runId.xml`" -logFile `"$out/$runId.log`""
@@ -96,7 +96,7 @@ PROJECT="$PWD"
 OUT="$PROJECT/.valtrion-results"
 mkdir -p "$OUT"
 RUN_ID="$(python3 -c 'import uuid; print("smoke-" + uuid.uuid4().hex[:12])')"
-GDV_PLAN="$PROJECT/validation/smoke.plan.json" GDV_OUT_ROOT="$OUT" GDV_RUN_ID="$RUN_ID" \
+GDV_PLAN="$PROJECT/tools/valtrion/plans/smoke.plan.json" GDV_OUT_ROOT="$OUT" GDV_RUN_ID="$RUN_ID" \
   "$EDITOR" -batchmode -projectPath "$PROJECT" -runTests -testPlatform PlayMode \
   -assemblyNames Valtrion.SmokeTests -testResults "$OUT/$RUN_ID.xml" -logFile "$OUT/$RUN_ID.log"
 ```

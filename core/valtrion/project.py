@@ -1,7 +1,8 @@
 """Project discovery (`valtrion.json`) and the compatibility check between the core and the Unity package of a project.
 
-`valtrion.json` at a project root names the Unity project: `{"unityProject": "<path relative to that file>"}`. It holds no other key. The
-CLI finds it by walking up from the working directory. `--project-dir` and the `GDV_UNITY_PROJECT` environment variable override it, in that order.
+`tools/valtrion/valtrion.json` names the Unity project: `{"unityProject": "<path relative to that file>"}`. It holds no other key. The
+build profiles are `tools/valtrion/profiles.json`. Valtrion's own configuration is read from no other place. The CLI finds `valtrion.json` by walking up
+from the working directory. `--project-dir` and the `GDV_UNITY_PROJECT` environment variable override it, in that order.
 `compat.json` maps Unity package versions to the range of core versions that supports them.
 """
 
@@ -15,7 +16,9 @@ from typing import Any, Mapping
 
 from . import __version__
 
+PROJECT_FOLDER = Path("tools") / "valtrion"
 PROJECT_FILE = "valtrion.json"
+PROFILES_FILE = "profiles.json"
 PROJECT_ENV = "GDV_UNITY_PROJECT"
 UNITY_PACKAGE = "com.goryned.valtrion.unity"
 
@@ -31,13 +34,30 @@ class ProjectError(Exception):
 
 
 def find_project_file(start: Path) -> Path | None:
-    """The nearest `valtrion.json` in `start` or a parent folder."""
+    """The nearest `tools/valtrion/valtrion.json` in `start` or a parent folder; the search ends at the first folder with a `.git`."""
     start = start.resolve()
     for folder in (start, *start.parents):
-        candidate = folder / PROJECT_FILE
+        candidate = folder / PROJECT_FOLDER / PROJECT_FILE
         if candidate.is_file():
             return candidate
+        if (folder / ".git").exists():
+            return None
     return None
+
+
+def profiles_file(project: Path) -> Path:
+    """The build profiles of a Unity project: `tools/valtrion/profiles.json` in the project folder or the nearest parent, up to the
+    repository root (the first folder with a `.git`). When there is none, the path where it is expected (the file may not exist)."""
+    project = project.resolve()
+    root: Path | None = None
+    for folder in (project, *project.parents):
+        candidate = folder / PROJECT_FOLDER / PROFILES_FILE
+        if candidate.is_file():
+            return candidate
+        if (folder / ".git").exists():
+            root = folder
+            break
+    return (root or project) / PROJECT_FOLDER / PROFILES_FILE
 
 
 def load_project_file(path: Path) -> Path:
@@ -64,13 +84,13 @@ def load_project_file(path: Path) -> Path:
 def leftover_check_map(folder: Path) -> Path | None:
     """`validation/device/checks.json` (the old default place of the check map) in `folder` or a parent up to the project or repository root, or None.
 
-    The search ends at the first folder that holds `valtrion.json` or `.git`. Without either, only `folder` itself is searched.
+    The search ends at the first folder that holds `tools/valtrion/valtrion.json` or `.git`. Without either, only `folder` itself is searched.
     """
     folder = folder.resolve()
     levels = (folder, *folder.parents)
     chain = [folder]
     for index, candidate in enumerate(levels):
-        if (candidate / "valtrion.json").exists() or (candidate / ".git").exists():
+        if (candidate / PROJECT_FOLDER / PROJECT_FILE).exists() or (candidate / ".git").exists():
             chain = list(levels[: index + 1])
             break
     for candidate in chain:
@@ -81,7 +101,7 @@ def leftover_check_map(folder: Path) -> Path | None:
 
 
 def resolve_unity_project(explicit: Path | None = None, environ: Mapping[str, str] | None = None, cwd: Path | None = None) -> Path | None:
-    """`--project-dir`, else `GDV_UNITY_PROJECT`, else the project named by the nearest valtrion.json; None when none is set."""
+    """`--project-dir`, else `GDV_UNITY_PROJECT`, else the project named by the nearest tools/valtrion/valtrion.json; None when none is set."""
     if explicit is not None:
         return explicit.resolve()
     environment = os.environ if environ is None else environ
@@ -222,3 +242,64 @@ def check_project(project: Path, core_version: str = __version__, compat_path: P
     return {"status": "BLOCKED", "package": text, "core": core_version,
             "reason": f"{package} {text} needs core {wanted}, but this is core {core_version}",
             "action": f"install a core in that range (`valtrion hosts sync` after installing it here) or move the package to a version that supports {core_version}"}
+
+
+# -- Valtrion files outside tools/valtrion/ ---------------------------------------------------------------------------------
+
+#: Folders the search for stray files never enters (VCS data, Unity and package caches, build output).
+_SKIPPED_FOLDERS = frozenset({".git", "Library", "node_modules", "Temp", "Builds", "Logs", "obj", "PackageCache", "UserSettings"})
+MAX_STRAY_WARNINGS = 20
+_MAX_VISITED = 200_000
+_PROFILES_SCHEMA = b"gdv.profiles/1"
+
+
+def repository_root(folder: Path) -> Path | None:
+    """The nearest folder, `folder` included, that has a `.git` (a folder, or a file in a worktree or submodule)."""
+    folder = folder.resolve()
+    for candidate in (folder, *folder.parents):
+        if (candidate / ".git").exists():
+            return candidate
+    return None
+
+
+def _is_profiles_document(path: Path) -> bool:
+    try:
+        with open(path, "rb") as handle:
+            return _PROFILES_SCHEMA in handle.read(1_000_000)
+    except OSError:
+        return False
+
+
+def stray_files(project: Path) -> list[str]:
+    """Warnings for Valtrion files outside `tools/valtrion/`: `valtrion.json`, a `gdv.profiles/1` `profiles.json`, `checks.json` and
+    `*.plan.json` / `*.pipeline.json` files, and a `validation/device/` folder. The walk covers the repository of the Unity project
+    (without a `.git`, the Unity project folder), skips `_SKIPPED_FOLDERS` and `tools/valtrion/`, and visits folders in sorted order.
+    At most `MAX_STRAY_WARNINGS` are listed, then a count of the rest."""
+    project = project.resolve()
+    root = repository_root(project) or project
+    right_place = root / PROJECT_FOLDER
+    found: list[str] = []
+    visited = 0
+    for current, folders, files in os.walk(root):
+        here = Path(current)
+        folders[:] = sorted(name for name in folders if name not in _SKIPPED_FOLDERS and here / name != right_place)
+        relative = here.relative_to(root).as_posix()
+        if here.name == "device" and here.parent.name == "validation" and any(name != "checks.json" for name in files):
+            found.append(f"{relative}/ is a Valtrion folder in the wrong place: move plans and baselines to tools/valtrion/plans/ and tools/valtrion/baselines/")
+        for name in sorted(files):
+            visited += 1
+            path = here / name
+            shown = name if relative == "." else f"{relative}/{name}"
+            if name == PROJECT_FILE:
+                found.append(f"{shown} is not read: move it to tools/valtrion/{PROJECT_FILE} (unityProject relative to the new place)")
+            elif name == PROFILES_FILE and _is_profiles_document(path):
+                found.append(f"{shown} is not read: move it to tools/valtrion/{PROFILES_FILE}")
+            elif name == "checks.json" and here.name == "device" and here.parent.name == "validation":
+                found.append(f"{shown} is a check map: Valtrion 1.0 selects nothing and no longer reads it; delete it (see the Core CHANGELOG, 1.0.0)")
+            elif name.endswith((".plan.json", ".pipeline.json")):
+                found.append(f"{shown} is outside tools/valtrion/: move it to tools/valtrion/plans/{name}")
+        if visited > _MAX_VISITED:
+            break
+    if len(found) > MAX_STRAY_WARNINGS:
+        found = found[:MAX_STRAY_WARNINGS] + [f"{len(found) - MAX_STRAY_WARNINGS} more Valtrion files outside tools/valtrion/"]
+    return found

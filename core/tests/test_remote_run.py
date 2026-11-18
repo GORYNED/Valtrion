@@ -82,7 +82,7 @@ class RemoteRunTests(HostTestCase):
         for patch in patches:
             patch.start()
             self.addCleanup(patch.stop)
-        # No valtrion.json of this repository may name the project of these runs.
+        # No tools/valtrion/valtrion.json of this repository may name the project of these runs.
         patcher = mock.patch.dict(os.environ, {"GDV_REMOTE_PROJECT": ""})
         patcher.start()
         self.addCleanup(patcher.stop)

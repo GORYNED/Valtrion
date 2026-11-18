@@ -8,7 +8,7 @@ Every external tool call is bounded by `supervise.run_bounded` (hard timeout, st
 `devicectl copy`. The device is always taken from `devicectl list devices`: a UDID is never trusted from a script or a stale
 registry, the registry only adds the owner's class, capabilities and alias to a device that discovery just found.
 
-Build settings come from the project: `validation/device/profiles.json`,
+Build settings come from the project: `tools/valtrion/profiles.json`,
 
     {"profiles": {"Internal": {"ios": {"executeMethod": "My.Build.Editor.IosBuild.Internal",
                                          "buildProfile": "Assets/Build/Profiles/Internal.asset",
@@ -36,10 +36,10 @@ from urllib.parse import unquote
 
 from .. import config, constants, core, incremental, supervise
 from ..adapter import Capabilities, DeviceHealth, DeviceInfo, PlatformAdapter, StepOutcome
+from ..project import profiles_file
 from . import register
 
 PLATFORM = "ios"
-PROFILES_FILE = Path("validation") / "device" / "profiles.json"
 UNITY_EDITORS_ENV = "GDV_UNITY_EDITORS"
 DEFAULT_UNITY_EDITORS = "/Applications/Unity/Hub/Editor"
 TOOL_PATH = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
@@ -113,7 +113,7 @@ class BuildSettings:
 
 
 def load_build_settings(project: Path, profile: str) -> BuildSettings:
-    path = project / PROFILES_FILE
+    path = profiles_file(project)
     try:
         document = json.loads(path.read_text(encoding="utf-8-sig"))
     except OSError as error:
