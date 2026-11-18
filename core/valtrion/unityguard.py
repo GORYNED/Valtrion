@@ -379,7 +379,8 @@ class Gate:
 
     It is asked before the caller holds an Editor slot, so a run that waits for an Editor outside the leases (or for free memory) leaves
     its slot to others instead of keeping it idle. A refusal is remembered for `poll_sec`, so a caller that retries every second does not
-    start a process listing each time; a pass is never remembered (the checks are made again once the slot is taken)."""
+    start a process listing each time; a pass is never remembered (the checks are made again once the slot is taken).
+    `reserve_session` adds one minimum-memory allowance per other occupied Editor slot, excluding that session itself."""
 
     def __init__(self, manager: lease.LeaseManager, settings: GuardSettings, probe: Probe | None = None, poll_sec: float = GUARD_POLL_SEC,
                  say: Callable[[str], None] | None = None, monotonic: Callable[[], float] = time.monotonic,
