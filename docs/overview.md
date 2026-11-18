@@ -20,7 +20,7 @@ A run that could not prove something says so (`BLOCKED`, `NEEDS_PERMISSION`).
 | --- | --- |
 | **Core** (`valtrion` CLI and library) | Runs on the machine that drives the work and on every host that owns a resource. Selects the host, takes leases, builds, installs, launches, supervises, collects, compares. |
 | **Providers** | One per platform: `ios`, `android`, `windows`, `macos`, `editor`. Each implements build, install, push/pull files, launch, terminate, screenshot and health for its platform. See [providers.md](providers.md). |
-| **Contracts** | JSON schemas `gdv.*/1` for plans, pipelines, results, heartbeats, jobs, events, hosts, registry, leases, checks and baselines. See [contracts.md](contracts.md). |
+| **Contracts** | JSON schemas `gdv.*/1` for plans, pipelines, results, heartbeats, jobs, events, hosts, registry, leases and baselines. See [contracts.md](contracts.md). |
 | **App-side runner** | Code inside the app that reads the plan, runs the steps and writes the heartbeat and result. For Unity this is the package `com.goryned.valtrion.unity`, which has its own version; `compat.json` says which core versions each package version works with. The host and the app meet only through the files and arguments in [protocol.md](protocol.md). |
 
 ## Hosts

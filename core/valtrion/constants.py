@@ -54,13 +54,12 @@ SCHEMA_IDS = (
     "gdv.hosts/1",
     "gdv.registry/1",
     "gdv.lease/1",
-    "gdv.checks/1",
     "gdv.baseline/1",
 )
 
 # Version of the valtrion CLI contracts. The CLI and the Runtime ship in one package, so the package version and the pinned git SHA
 # identify the pair; this number changes only with a breaking change of the command surface.
-CLI_CONTRACT_VERSION = 1
+CLI_CONTRACT_VERSION = 2
 
 
 def exit_code_for_status(status: str) -> int:
