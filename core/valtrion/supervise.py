@@ -1,7 +1,8 @@
 """Supervisor and watchdog: run one step as a process with a hard timeout and stall detectors, and kill its whole process tree.
 
 Progress is judged from signals, never from the process merely being alive: growth of the log or of watched files, a
-`gdv.heartbeat/1` file whose `seq` advances, and (opt-in) CPU time of the process tree. No progress for the stall window is STALL;
+`gdv.heartbeat/1` file whose `seq` advances, and (opt-in) CPU time of the process tree. An optional completed-work counter takes
+authority once available. No progress for the stall window is STALL;
 exceeding the hard timeout is TIMEOUT. In both cases the whole tree is killed (a Windows Job Object, a POSIX process group) and
 the step never leaves processes behind. The defaults are 10 minutes, 3 for a short operation; a plan may
 narrow them but not disable them, so a window of zero or less is refused.
@@ -48,6 +49,9 @@ class Watchdog:
     poll_sec: float = 0.25
     tick_sec: float = 15.0
     cancel_file: Path | None = None
+    #: Optional completed-work counter. Once available, only a strictly larger value counts as progress; missing reads do not
+    #: return to log/CPU signals. None before the first value leaves the ordinary startup signals in use.
+    progress_counter: Callable[[], int | None] | None = None
 
     def __post_init__(self) -> None:
         if self.timeout_sec <= 0 or self.stall_sec <= 0:
@@ -341,11 +345,22 @@ class ProgressTracker:
         self._sizes: dict[Path, int] = {}
         self._seq: int | None = None
         self._cpu = 0.0
+        self._counter: int | None = None
         self.last_progress = monotonic()
         self.poll()
         self.last_progress = monotonic()
 
     def poll(self) -> bool:
+        """Sample progress; an available completed-work counter takes authority for the rest of the step."""
+        if self._watchdog.progress_counter is not None:
+            count = self._watchdog.progress_counter()
+            if count is not None:
+                if self._counter is None or count > self._counter:
+                    self._counter = count
+                    self.last_progress = self._monotonic()
+                    return True
+            if self._counter is not None:
+                return False
         advanced = False
         watched = list(self._watchdog.progress_files)
         if self._watchdog.counts_log and self._log_path is not None:

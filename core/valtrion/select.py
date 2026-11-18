@@ -570,11 +570,13 @@ ASSEMBLIES_SEMICOLON = "{assemblies;}"
 #: appears inside a longer name and its `.` matches any character. It is a plain prefix, not a namespace boundary: `Game.Ui.Tests.Hud`
 #: selects `Game.Ui.Tests.HudBindingTests` too. The anchor is `\A`, not `^`, which `cmd.exe` drops from an unquoted argument.
 PREFIXES_SEMICOLON = "{prefixes;}"
-_FILTERING = (ASSEMBLIES_COMMA, ASSEMBLIES_SEMICOLON, PREFIXES_SEMICOLON)
+#: Exact fixture names: a method separator or a parameterized fixture's opening parenthesis follows the escaped class name.
+FIXTURES_SEMICOLON = "{fixtures;}"
+_FILTERING = (ASSEMBLIES_COMMA, ASSEMBLIES_SEMICOLON, PREFIXES_SEMICOLON, FIXTURES_SEMICOLON)
 #: `-testFilter` given the assembly list: Unity matches it against test names, not assemblies (`-assemblyNames` is the option for them).
 _TEST_FILTER_ASSEMBLIES = re.compile(r"(?<![\w-])-testFilter(?:\s+|=)[\"']?\{assemblies;?\}", re.IGNORECASE)
 #: `-assemblyNames` given the prefixes: they are patterns, not assembly names.
-_ASSEMBLY_NAMES_PREFIXES = re.compile(r"(?<![\w-])-assemblyNames(?:\s+|=)[\"']?\{prefixes;\}", re.IGNORECASE)
+_ASSEMBLY_NAMES_PREFIXES = re.compile(r"(?<![\w-])-assemblyNames(?:\s+|=)[\"']?(\{(?:prefixes|fixtures);\})", re.IGNORECASE)
 
 
 def filters_by_target(template: str | None) -> bool:
@@ -590,19 +592,20 @@ def _filter_problems(template: str) -> list[str]:
         problems.append("-testFilter gets the assembly list, but Unity matches -testFilter against test names, not assemblies, and reads each "
                         f"item as an unanchored regular expression; pass assemblies with -assemblyNames, or, when the targets are test-name "
                         f"prefixes, write -testFilter \"{PREFIXES_SEMICOLON}\" (each target anchored and escaped)")
-    if _ASSEMBLY_NAMES_PREFIXES.search(template):
-        problems.append(f"-assemblyNames gets {PREFIXES_SEMICOLON}, which are test-name patterns, not assembly names; use {ASSEMBLIES_SEMICOLON} "
+    matched = _ASSEMBLY_NAMES_PREFIXES.search(template)
+    if matched:
+        problems.append(f"-assemblyNames gets {matched.group(1)}, which are test-name patterns, not assembly names; use {ASSEMBLIES_SEMICOLON} "
                         "there, or pass the prefixes to -testFilter")
     return problems
 
 
 # Look-alikes of ours only; a shell's ${assemblyDir}, ${HOME} or {a,b} is the command's own.
-_PLACEHOLDER = re.compile(r"(?<!\$)\{(?:assemblies[^{}\s]*|assembly|prefix[^{}\s]*)\}")
+_PLACEHOLDER = re.compile(r"(?<!\$)\{(?:assemblies[^{}\s]*|assembly|prefix[^{}\s]*|fixture[^{}\s]*)\}")
 
 
 def _placeholder_problems(template: str) -> list[str]:
     """A `{assembl...}` or `{prefix...}` in a runner template must be one of our placeholders; a typo would otherwise be run as text."""
-    return [f"unknown placeholder {found!r} in the runner {template!r} (use {ASSEMBLIES_COMMA}, {ASSEMBLIES_SEMICOLON} or {PREFIXES_SEMICOLON})"
+    return [f"unknown placeholder {found!r} in the runner {template!r} (use {ASSEMBLIES_COMMA}, {ASSEMBLIES_SEMICOLON}, {PREFIXES_SEMICOLON} or {FIXTURES_SEMICOLON})"
             for found in _PLACEHOLDER.findall(template) if found not in _FILTERING]
 
 
@@ -613,7 +616,10 @@ def anchored_prefix(name: str) -> str:
 
 
 def expand_runner(template: str, assemblies: Sequence[str]) -> str:
-    return (template.replace(PREFIXES_SEMICOLON, ";".join(anchored_prefix(name) for name in assemblies))
+    """Expand selected assembly, prefix or fixture targets into a command without changing the template's quoting."""
+    # Hex avoids parentheses and shell operators in the Windows batch hand-over, including parameterized fixtures.
+    return (template.replace(FIXTURES_SEMICOLON, ";".join(anchored_prefix(name) + r"[.\x28]" for name in assemblies))
+            .replace(PREFIXES_SEMICOLON, ";".join(anchored_prefix(name) for name in assemblies))
             .replace(ASSEMBLIES_SEMICOLON, ";".join(assemblies)).replace(ASSEMBLIES_COMMA, ",".join(assemblies)))
 
 

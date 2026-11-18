@@ -41,6 +41,33 @@ class SuperviseTests(unittest.TestCase):
         self.assertEqual((constants.PASS, 0), (result.status, result.returncode))
         self.assertIsNone(result.reason)
 
+    def test_completed_work_counter_takes_authority_and_never_falls_back(self):
+        now = 0.0
+        completed = None
+        watchdog = Watchdog(timeout_sec=60, progress_counter=lambda: completed)
+        tracker = supervise.ProgressTracker(watchdog, self.log, monotonic=lambda: now)
+        now = 1.0
+        self.log.write_text("importing\n")
+        self.assertTrue(tracker.poll())  # startup still uses the log
+        now = 2.0
+        completed = 0
+        self.assertTrue(tracker.poll())  # starting the tests starts their own stall window
+        now = 3.0
+        self.log.write_text("importing\ntest is still waiting\n")
+        self.assertFalse(tracker.poll())
+        completed = None  # a disappearing or unreadable report cannot re-enable log progress
+        now = 4.0
+        self.log.write_text("importing\ntest is still waiting\nmore chatter\n")
+        self.assertFalse(tracker.poll())
+        self.assertEqual(2.0, tracker.idle_sec())
+        now = 5.0
+        completed = 1
+        self.assertTrue(tracker.poll())
+        completed = 0  # a rewritten/reloaded report must advance beyond the high-water mark
+        now = 6.0
+        self.assertFalse(tracker.poll())
+        self.assertEqual(1.0, tracker.idle_sec())
+
     def test_non_zero_exit_is_fail(self):
         result = self.run_step([PYTHON, "-c", "raise SystemExit(7)"])
         self.assertEqual(constants.FAIL, result.status)

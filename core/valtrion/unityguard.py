@@ -379,10 +379,13 @@ class Gate:
 
     It is asked before the caller holds an Editor slot, so a run that waits for an Editor outside the leases (or for free memory) leaves
     its slot to others instead of keeping it idle. A refusal is remembered for `poll_sec`, so a caller that retries every second does not
-    start a process listing each time; a pass is never remembered (the checks are made again once the slot is taken)."""
+    start a process listing each time; a pass is never remembered (the checks are made again once the slot is taken).
+    `reserve_session` adds one minimum-memory allowance per other occupied Editor slot, excluding that session itself."""
 
     def __init__(self, manager: lease.LeaseManager, settings: GuardSettings, probe: Probe | None = None, poll_sec: float = GUARD_POLL_SEC,
-                 say: Callable[[str], None] | None = None, monotonic: Callable[[], float] = time.monotonic) -> None:
+                 say: Callable[[str], None] | None = None, monotonic: Callable[[], float] = time.monotonic,
+                 reserve_session: str | None = None) -> None:
+        self._reserve_session = reserve_session
         self._manager = manager
         self._settings = settings
         self._probe = probe
@@ -404,8 +407,14 @@ class Gate:
         if self._refusal is not None and now < self._refused_until:
             return self._refusal
         self._probe = self._probe or probe_factory()
-        holders = [item.record.pid for item in self._manager.list_all() if item.state == "held" and item.record is not None]
-        problem, notes = check(self._probe, self._settings, holders)
+        held = [item.record for item in self._manager.list_all() if item.state == "held" and item.record is not None]
+        holders = [record.pid for record in held]
+        settings = self._settings
+        if self._reserve_session is not None:
+            others = sum(1 for record in held if record.resource.startswith(lease.UNITY_EDITOR_RESOURCE + ":slot")
+                         and record.session != self._reserve_session)
+            settings = GuardSettings(settings.orphan_editors, settings.min_free_memory_mib * (1 + others))
+        problem, notes = check(self._probe, settings, holders)
         for note in notes:
             if note not in self._noted:
                 self._noted.add(note)
