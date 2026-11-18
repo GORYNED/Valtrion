@@ -292,14 +292,6 @@ namespace Valtrion.Unity.Contracts
             return list;
         }
 
-        public List<string> Choices(string name, string[] allowed)
-        {
-            var list = Strings(name);
-            foreach (var item in list)
-                Check(name, item, allowed);
-            return list;
-        }
-
         public List<T> Items<T>(string name, Func<ContractReader, T> read, int minItems = 0)
         {
             var array = Require(name, JsonKind.Array);
@@ -367,22 +359,6 @@ namespace Valtrion.Unity.Contracts
                 if (member.Value.Kind != JsonKind.Number)
                     throw new ContractException($"{_path}.{name}.{member.Key}: expected a number");
                 result[member.Key] = member.Value.AsNumber;
-            }
-            return result;
-        }
-
-        /// <summary>A map whose values are lists of non-empty strings (null when absent).</summary>
-        public Dictionary<string, List<string>> StringListMap(string name)
-        {
-            var node = Optional(name, JsonKind.Object);
-            if (node == null)
-                return null;
-            var result = new Dictionary<string, List<string>>();
-            foreach (var member in node.Members)
-            {
-                if (member.Value.Kind != JsonKind.Array)
-                    throw new ContractException($"{_path}.{name}.{member.Key}: expected an array");
-                result[member.Key] = StringsOf(member.Value, $"{name}.{member.Key}");
             }
             return result;
         }

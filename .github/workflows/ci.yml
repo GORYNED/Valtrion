@@ -38,7 +38,6 @@ jobs:
           "$command_path" --version
           "$command_path" schemas
           "$command_path" validate examples/smoke.plan.json
-          "$command_path" check-config --checks examples/quick-start-checks.json
 
   contracts:
     name: contracts (schemas and fixtures)

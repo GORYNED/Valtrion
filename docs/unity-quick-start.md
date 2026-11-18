@@ -18,7 +18,7 @@ The smoke plan and test assets used below live in this repository, so clone it n
 ```sh
 git clone https://github.com/GORYNED/Valtrion.git
 cd Valtrion
-git checkout unity-v0.20.1
+git checkout unity-v1.0.0
 ```
 
 Record the resolved commit with `git rev-parse HEAD`. To test unreleased code instead, install Core from the checkout with `python tools/install.py --venv --home .valtrion-home` (use `python3` if that is your Python 3 command; the last line it prints is the CLI path) and use that same checkout for the package.
@@ -28,10 +28,9 @@ With the PyPI install, check the command from the checkout root:
 ```sh
 valtrion --version
 valtrion validate examples/smoke.plan.json
-valtrion check-config --checks examples/quick-start-checks.json
 ```
 
-Expected: `valtrion 0.7.4 (contract 1)` (or a newer version that [compat.json](../compat.json) pairs with the package), a valid `gdv.plan/1` and a valid check map. If you installed from the checkout, run the same commands with the CLI path the installer printed (no environment activation or `PATH` change needed).
+Expected: `valtrion 1.0.0 (contract 2)` (or a newer version that [compat.json](../compat.json) pairs with the package), and a valid `gdv.plan/1`. If you installed from the checkout, run the same commands with the CLI path the installer printed (no environment activation or `PATH` change needed).
 
 ## 2. Add the Unity package
 
@@ -40,13 +39,13 @@ In the Unity project, merge the following into `Packages/manifest.json`. Preserv
 ```json
 {
   "dependencies": {
-    "com.goryned.valtrion.unity": "https://github.com/GORYNED/Valtrion.git?path=integrations/unity/com.goryned.valtrion.unity#unity-v0.20.1",
+    "com.goryned.valtrion.unity": "https://github.com/GORYNED/Valtrion.git?path=integrations/unity/com.goryned.valtrion.unity#unity-v1.0.0",
     "com.unity.test-framework": "1.8.0"
   }
 }
 ```
 
-The package version is pinned by the release tag, so the project stays reproducible. You can also add the same URL in Window → Package Manager → + → Add package from git URL, then keep `com.unity.test-framework`. Keep an existing compatible Test Framework version; 1.8.0 is the repository's tested version. Since package 0.11.0 (the tag above is 0.11.2) the helper assembly `Valtrion.Unity.PlayModeTests` is an ordinary package assembly: leave out `testables`, and your test runs contain only your own tests. Projects that stay on package 0.10.x still need `"testables": ["com.goryned.valtrion.unity"]` for the test helper used below, which also brings the package's own tests into your test runs. When you upgrade an existing project to 0.11.0, remove `com.goryned.valtrion.unity` from `testables` (and the key if it is then empty) and drop any exclusion of `Valtrion.Unity.Tests` classes such as `ContractFixtureTests`; asmdef references to `Valtrion.Unity.PlayModeTests` and `editor.planAssembly` stay unchanged. To try unreleased code, point to your checkout instead with `"file:/absolute/path/to/Valtrion/integrations/unity/com.goryned.valtrion.unity"` (forward slashes; `file:C:/...` on Windows) and do not commit that absolute path. To pin an exact commit instead of a tag, use its full SHA:
+The package version is pinned by the release tag, so the project stays reproducible. You can also add the same URL in Window → Package Manager → + → Add package from git URL, then keep `com.unity.test-framework`. Keep an existing compatible Test Framework version; 1.8.0 is the repository's tested version. Since package 0.11.0 (the tag above is 1.0.0) the helper assembly `Valtrion.Unity.PlayModeTests` is an ordinary package assembly: leave out `testables`, and your test runs contain only your own tests. Projects that stay on package 0.10.x still need `"testables": ["com.goryned.valtrion.unity"]` for the test helper used below, which also brings the package's own tests into your test runs. When you upgrade an existing project to 0.11.0, remove `com.goryned.valtrion.unity` from `testables` (and the key if it is then empty) and drop any exclusion of `Valtrion.Unity.Tests` classes such as `ContractFixtureTests`; asmdef references to `Valtrion.Unity.PlayModeTests` and `editor.planAssembly` stay unchanged. To try unreleased code, point to your checkout instead with `"file:/absolute/path/to/Valtrion/integrations/unity/com.goryned.valtrion.unity"` (forward slashes; `file:C:/...` on Windows) and do not commit that absolute path. To pin an exact commit instead of a tag, use its full SHA:
 
 ```text
 https://github.com/GORYNED/Valtrion.git?path=integrations/unity/com.goryned.valtrion.unity#<full-reviewed-commit-sha>
@@ -63,10 +62,10 @@ The test calls `PlanTest.RunFromEnvironment()`. The plan waits a few frames and 
 Optionally create `valtrion.json` in your project's Git root:
 
 ```json
-{ "unityProject": ".", "checks": "validation/checks.json" }
+{ "unityProject": "." }
 ```
 
-If Unity lives in a subfolder, replace `.` with its relative path. Copy [examples/quick-start-checks.json](../examples/quick-start-checks.json) to the `checks` location relative to this file. Check it with `valtrion check-config --checks validation/checks.json` using your installed command path. This initial map selects the smoke assembly for all changed paths. Refine it as your checks grow. `select` chooses checks; it does not execute them.
+If Unity lives in a subfolder, replace `.` with its relative path.
 
 ## 4. Run in a background Editor
 
@@ -110,10 +109,10 @@ Verify all three pieces of evidence:
 2. `.valtrion-results/<run-id>/result.json` says `status: PASS`, identifies `example.editor.smoke`, records `target.evidence: editor`, and contains the expected idle, wait and mark steps. Confirm `smoke.complete` in the captured log/step evidence. Validate the result with your installed `valtrion validate` command.
 3. Read the run's `.log` for import/compilation errors. The smoke is a wiring check; a result may list unknown candidate metadata under `unverified` because this direct test does not supply a build candidate.
 
-After Unity resolves the package, run `valtrion doctor --project <absolute-project-path> --json`. Inspect the `project` object: its `status` must be `ok` with Unity package 0.11.2 and an installed Core version that [compat.json](../compat.json) lists for it. `skipped` does not confirm integration. Doctor also checks tools for other platforms; unrelated missing prerequisites need not prevent this Editor smoke.
+After Unity resolves the package, run `valtrion doctor --project <absolute-project-path> --json`. Inspect the `project` object: its `status` must be `ok` with the Unity package of the pinned tag above (1.0.0) and an installed Core version that [compat.json](../compat.json) lists for it. `skipped` does not confirm integration. Doctor also checks tools for other platforms; unrelated missing prerequisites need not prevent this Editor smoke.
 
 The direct smoke can list unknown candidate/host metadata under `unverified`. With package 0.10.x in `testables` it can also list its intentionally malformed `test.badsignature` test fixture as an ignored registration warning (from 0.11.0 on, without `testables`, that fixture is not compiled in your project and the warning does not appear). Preserve those diagnostics. The passing XML, expected plan, all three passing steps and `smoke.complete` mark are still required; other warnings need investigation. This does not establish game behavior or device performance.
 
 ## Next steps
 
-Add steps that exercise your app and assert its behavior. See the [Unity guide](../integrations/unity/com.goryned.valtrion.unity/Documentation~/index.md) for custom steps and the [providers guide](providers.md) for project build methods, the Editor provider's runner interface, device runs and profiles. The direct test above does not set up a provider runner or player build pipeline. Do not use the larger [example checks map](../examples/checks.json) unchanged: its build methods, runners and app scenarios are placeholders for a project's own integration.
+Add steps that exercise your app and assert its behavior. See the [Unity guide](../integrations/unity/com.goryned.valtrion.unity/Documentation~/index.md) for custom steps and the [providers guide](providers.md) for project build methods, the Editor provider's runner interface, device runs and profiles. The direct test above does not set up a provider runner or player build pipeline.

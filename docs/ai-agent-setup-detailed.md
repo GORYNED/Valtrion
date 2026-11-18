@@ -69,7 +69,7 @@ Unity path: discover and pin
 2. Obtain https://github.com/GORYNED/Valtrion.git in a separate checkout outside
    Assets, using existing access. If access is unavailable, report BLOCKED. Use
    the user-specified ref when provided; otherwise check out the release tag that
-   matches the package you install (for example unity-v0.20.1), and use main only when
+   matches the package you install (for example unity-v1.0.0), and use main only when
    the user wants unreleased code. Record the SHA.
    Do not apply new installer flags to an older checkout. Read
    README.md, docs/unity-quick-start.md, docs/install.md, docs/providers.md,
@@ -99,10 +99,7 @@ Install and integrate
    Assets/Validation test folder. Its assembly is Valtrion.SmokeTests. Copy
    examples/smoke.plan.json to validation/smoke.plan.json. Avoid duplicate assembly
    names. Add valtrion.json at the Git root with unityProject relative to that file
-   and checks pointing to a real checks map. Start with
-   examples/quick-start-checks.json, adjust its assembly name if needed, then run
-   `valtrion check-config --checks <actual checks path>` using the installed CLI.
-   Select target platforms that really exist; check selection is not execution.
+   (only that key). Target only platforms that really exist.
 6. Add output/cache paths to the project's ignore rules. Keep Unity-generated
    .meta files for the added assets; do not commit Library, Temp, credentials,
    device inventory, output or personal paths. Preserve unrelated manifest data.
@@ -154,7 +151,7 @@ Project automation and handover
     or call the placeholder build/install/launch commands. Device builds need
     project-owned build methods and authorized real targets; configure and test
     those only when available and within this task's authorization.
-11. Run check-config again, inspect the complete diff and ensure the shared
+11. Run `valtrion validate` on the plan again, inspect the complete diff and ensure the shared
     manifest uses a reproducible dependency pin. Summarize changed files, pinned
     versions/commit, exact commands, exit codes, test counts, artifact locations,
     limitations and the one command I should use next. State PASS only for

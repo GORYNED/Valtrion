@@ -46,7 +46,7 @@ def check_release(root: Path, component: str, version: str) -> list[str]:
     if component not in TAG_PREFIX:
         return [f"unknown component {component!r}"]
     if not FINAL_VERSION.fullmatch(version):
-        problems.append(f"version {version!r} must be a final X.Y.Z version (pre-release status is the GitHub Release flag)")
+        problems.append(f"version {version!r} must be a final X.Y.Z version")
     actual = source_version(root, component)
     if actual != version:
         problems.append(f"requested {component} version {version} differs from the source version {actual}")

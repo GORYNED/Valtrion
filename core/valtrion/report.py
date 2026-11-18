@@ -1,7 +1,9 @@
-"""`valtrion report`: the `Local verification` block of a pull request, built from the selected checks and the collected results.
+"""`valtrion report`: what the runs in a results folder say, as a table: passed, failed, skipped, the files they left and how to re-run
+the ones that did not pass.
 
-A selected check without a result is listed as not run, never as PASS. A result counts only for the candidate it was produced on and,
-for a device plan, only with the evidence the plan requires.
+The folder holds `gdv.result/1` documents (written by `valtrion run`, `pipeline` and `build`, or by `valtrion result write`). For each
+name (`plan.id`), platform and host the newest result counts. Valtrion does not know what should have run: a name without a result
+does not appear.
 """
 
 from __future__ import annotations
@@ -16,22 +18,6 @@ from typing import Any
 
 from . import constants
 from .schema import UnreadableInput, parse_json, validate_document
-from .select import (
-    DEVICE,
-    LEVELS,
-    PLAYER,
-    required_evidence,
-    Check,
-    Selection,
-    _add_common,
-    _git,
-    repository_root,
-    resolve_selection,
-    run_guarded,
-)
-
-NOT_RUN = "NOT_RUN"
-NOT_VERIFIED = "NOT_VERIFIED"
 
 #: Worst first. The exit code of `report` is the code of the worst row.
 _SEVERITY = (
@@ -40,29 +26,34 @@ _SEVERITY = (
     constants.STALL,
     constants.NEEDS_PERMISSION,
     constants.BLOCKED,
-    NOT_VERIFIED,
-    NOT_RUN,
     constants.PASS,
 )
-_COUNT_ORDER = (constants.PASS, constants.FAIL, constants.BLOCKED, constants.NEEDS_PERMISSION, constants.STALL, constants.TIMEOUT, NOT_VERIFIED, NOT_RUN)
+_COUNT_ORDER = (constants.PASS, constants.FAIL, constants.BLOCKED, constants.NEEDS_PERMISSION, constants.STALL, constants.TIMEOUT)
+#: Metric names of a result that are shown as counts of tests (`valtrion result write --count passed=12`).
+_TEST_COUNTS = ("passed", "failed", "skipped")
 
 
 @dataclass
 class Row:
-    key: str
-    type: str
-    platform: str | None
+    name: str
+    platform: str
     status: str
-    evidence: str | None = None
-    host: str | None = None
+    evidence: str
+    host: str
+    sha: str
+    dirty: bool
     detail: str = ""
     run_id: str | None = None
+    counts: dict[str, int] = field(default_factory=dict)
+    artifacts: list[dict[str, str]] = field(default_factory=list)
+    rerun: list[str] = field(default_factory=list)
     unverified: list[str] = field(default_factory=list)
 
     def to_json(self) -> dict[str, Any]:
         return {
-            "key": self.key, "type": self.type, "platform": self.platform, "status": self.status, "evidence": self.evidence,
-            "host": self.host, "detail": self.detail, "runId": self.run_id, "unverified": self.unverified,
+            "name": self.name, "platform": self.platform, "status": self.status, "evidence": self.evidence, "host": self.host,
+            "sha": self.sha, "dirty": self.dirty, "detail": self.detail, "runId": self.run_id, "counts": self.counts,
+            "artifacts": self.artifacts, "rerun": self.rerun, "unverified": self.unverified,
         }
 
 
@@ -113,36 +104,28 @@ def _latest(candidates: list[dict]) -> dict:
     return max(candidates, key=lambda result: (_utc(result["finishedUtc"]), -_SEVERITY.index(result["status"]), result["runId"]))
 
 
-def _row(check: Check, platform: str | None, results: list[dict], sha: str | None) -> Row:
-    matching = [r for r in results if r["plan"]["id"] == check.key and (platform is None or r["target"]["platform"] == platform)]
-    current = [r for r in matching if sha is None or r["candidate"]["sha"] == sha]
-    if not current:
-        detail = "no result"
-        if matching:
-            detail = "only results for another revision: " + ", ".join(sorted({r["candidate"]["sha"][:8] for r in matching}))
-        return Row(check.key, check.type, platform, NOT_RUN, detail=detail)
-    if platform is None:
-        # No platform in the plan: the newest result of every platform and host counts, and the worst of them is shown.
-        groups: dict[tuple[str, str], list[dict]] = {}
-        for result in current:
-            groups.setdefault((result["target"]["platform"], result["host"]["id"]), []).append(result)
-        rows = [_result_row(check, None, _latest(group)) for group in groups.values()]
-        return min(rows, key=lambda row: (_SEVERITY.index(row.status), row.platform or "", row.host or ""))
-    return _result_row(check, platform, _latest(current))
+def _counts(result: dict) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for metric in result["metrics"]:
+        if metric["name"] in _TEST_COUNTS and metric.get("unit") == "count" and metric["samples"]:
+            counts[metric["name"]] = int(metric["samples"][0])
+    return counts
 
 
-def _result_row(check: Check, platform: str | None, result: dict) -> Row:
-    status = result["status"]
+def _rerun_hints(result: dict) -> list[str]:
+    """How to run again what did not pass: failed tests from their NUnit XML, failed stages of a pipeline."""
+    if result["status"] == constants.PASS:
+        return []
+    hints = [f"valtrion unity run --rerun-failed {item['path']} -- <the same Unity arguments>" for item in result["artifacts"] if item["kind"] == "xml"]
+    run = result.get("pipelineRun")
+    if isinstance(run, dict):
+        hints.append(f"valtrion pipeline FILE --only-failed   (pipeline {run['pipelineId']})")
+    return hints
+
+
+def _row(result: dict) -> Row:
     detail = result["reason"] or ""
-    required = required_evidence(check.plan) if check.plan is not None else ()
-    evidence = result["target"]["evidence"]
-    if status == constants.PASS and required and evidence not in required:
-        status = NOT_VERIFIED
-        detail = f"{evidence} evidence does not prove it; the plan requires {'/'.join(required)}"
     if result["candidate"]["dirty"]:
-        # A run from a dirty tree proves nothing about the commit.
-        if status == constants.PASS:
-            status = NOT_VERIFIED
         detail = (detail + "; " if detail else "") + "produced from a dirty tree"
     sent_from = (result["host"].get("tools") or {}).get("offloadFrom")
     if sent_from:
@@ -151,49 +134,28 @@ def _result_row(check: Check, platform: str | None, result: dict) -> Row:
     if isinstance(reused, dict) and reused.get("runId"):
         # A result answered from the result cache: the run that produced the evidence is named, not this job.
         detail = (detail + "; " if detail else "") + f"reused from run {reused['runId']}"
-    row_platform = platform if platform is not None else result["target"]["platform"]
-    return Row(check.key, check.type, row_platform, status, evidence, result["host"]["id"], detail, result["runId"], list(result["unverified"]))
+    return Row(result["plan"]["id"], result["target"]["platform"], result["status"], result["target"]["evidence"], result["host"]["id"],
+               result["candidate"]["sha"], bool(result["candidate"]["dirty"]), detail, result["runId"], _counts(result),
+               [{"kind": item["kind"], "path": item["path"]} for item in result["artifacts"]], _rerun_hints(result), list(result["unverified"]))
 
 
-def build_rows(selection: Selection, results: list[dict], sha: str | None) -> list[Row]:
-    rows: list[Row] = []
-    for check in selection.checks:
-        platforms: list[str | None] = list(check.plan.platforms) if check.plan is not None and check.plan.platforms else [None]
-        rows.extend(_row(check, platform, results, sha) for platform in platforms)
-    return rows
+def build_rows(results: list[dict], sha: str | None = None) -> list[Row]:
+    """One row per name, platform and host: the newest result (of the commit `sha` when given), sorted by name."""
+    groups: dict[tuple[str, str, str], list[dict]] = {}
+    for result in results:
+        if sha is None or result["candidate"]["sha"] == sha:
+            groups.setdefault((result["plan"]["id"], result["target"]["platform"], result["host"]["id"]), []).append(result)
+    return [_row(_latest(group)) for _, group in sorted(groups.items())]
 
 
 def exit_code(rows: list[Row]) -> int:
     if not rows:
-        return constants.EXIT_PASS
-    worst = min(rows, key=lambda row: _SEVERITY.index(row.status)).status
-    if worst in (NOT_RUN, NOT_VERIFIED):
-        return constants.EXIT_BLOCKED
-    return constants.exit_code_for_status(worst)
-
-
-def not_verified_lines(rows: list[Row], selection: Selection | None = None) -> list[str]:
-    lines = []
-    if selection is not None and any(check.type != "structure" for check in selection.checks):
-        # Unity-backed work was selected: a platform the project requires is verified only by a passing device or player row.
-        proven = {
-            row.platform
-            for row in rows
-            if row.status == constants.PASS and (row.type == DEVICE or (row.type == PLAYER and row.evidence in ("physical", "emulator")))
-        }
-        for platform in selection.config.data["platforms"]["required"]:
-            if platform not in proven:
-                lines.append(f"not verified on {platform}: no passing device or player check for the required platform")
-    for row in rows:
-        if row.status == constants.PASS:
-            continue
-        subject = f"on {row.platform}" if row.platform else "(no platform)"
-        lines.append(f"not verified {subject}: {row.key}, {row.status}" + (f": {row.detail}" if row.detail else ""))
-    return lines
+        return constants.EXIT_BLOCKED  # nothing to report on
+    return constants.exit_code_for_status(min(rows, key=lambda row: _SEVERITY.index(row.status)).status)
 
 
 def _flat(text: str) -> str:
-    """One line: result text is data and must not add lines to the pull request block."""
+    """One line: result text is data and must not add lines to the block."""
     return " ".join(text.split())
 
 
@@ -201,81 +163,58 @@ def _cell(text: str | None) -> str:
     return _flat(text or "-").replace("|", "\\|")
 
 
-def format_markdown(selection: Selection, rows: list[Row], sha: str | None, problems: list[str], heading: bool) -> str:
-    counts = {status: sum(1 for row in rows if row.status == status) for status in _COUNT_ORDER}
-    summary = ", ".join(f"{count} {status}" for status, count in counts.items() if count) or "nothing selected"
-    lines = ["## Local verification", ""] if heading else []
-    lines.append(
-        f"Level {selection.level}, " + (f"base `{selection.base_ref}`" if selection.base_ref else "no diff")
-        + (", named kinds " + ", ".join(f"`{name}`" for name in selection.named_kinds) if selection.named_kinds else "")
-        + (f" (merge base `{selection.merge_base[:8]}`)" if selection.merge_base else "")
-        + (f", candidate `{sha[:8]}`" if sha else "")
-        + f", {len(selection.paths)} changed path(s). {len(rows)} check row(s): {summary}."
-    )
-    if selection.unclassified:
-        lines.append("")
-        lines.append(f"Unclassified paths ({selection.policy}): " + ", ".join(f"`{path}`" for path in selection.unclassified))
+def _count_text(counts: dict[str, int]) -> str:
+    return ", ".join(f"{counts[name]} {name}" for name in _TEST_COUNTS if name in counts)
+
+
+def format_markdown(rows: list[Row], problems: list[str], heading: bool) -> str:
+    tally = {status: sum(1 for row in rows if row.status == status) for status in _COUNT_ORDER}
+    summary = ", ".join(f"{count} {status}" for status, count in tally.items() if count) or "no results"
+    shas = sorted({row.sha[:8] for row in rows})
+    lines = ["## Run results", ""] if heading else []
+    lines.append(f"{len(rows)} result(s): {summary}." + (f" Candidate {', '.join(f'`{item}`' for item in shas)}." if shas else ""))
     if rows:
-        lines += ["", "| Check | Platform | Status | Evidence | Host | Detail |", "|---|---|---|---|---|---|"]
-        lines += [f"| `{_cell(row.key)}` | {_cell(row.platform)} | {row.status} | {_cell(row.evidence)} | {_cell(row.host)} | {_cell(row.detail)} |" for row in rows]
-    missing = not_verified_lines(rows, selection)
-    if missing:
-        lines += ["", "Not verified:"] + [f"- {_flat(line)}" for line in missing]
-    reported = [(row.key, item) for row in rows for item in row.unverified]
+        lines += ["", "| Name | Platform | Status | Tests | Host | Detail |", "|---|---|---|---|---|---|"]
+        lines += [f"| `{_cell(row.name)}` | {_cell(row.platform)} | {row.status} | {_cell(_count_text(row.counts))} | {_cell(row.host)} | {_cell(row.detail)} |"
+                  for row in rows]
+    files = [(row, item) for row in rows if row.status != constants.PASS for item in row.artifacts]
+    if files:
+        lines += ["", "Files of runs that did not pass:"] + [f"- `{_flat(row.name)}` ({_flat(row.platform)}) {_flat(item['kind'])}: {_flat(item['path'])}" for row, item in files]
+    again = [(row, hint) for row in rows for hint in row.rerun]
+    if again:
+        lines += ["", "Run again what did not pass:"] + [f"- `{_flat(row.name)}`: {_flat(hint)}" for row, hint in again]
+    reported = [(row.name, item) for row in rows for item in row.unverified]
     if reported:
-        lines += ["", "Reported by the runs as not covered:"] + [f"- {_flat(key)}: {_flat(item)}" for key, item in reported]
+        lines += ["", "Reported by the runs as not covered:"] + [f"- {_flat(name)}: {_flat(item)}" for name, item in reported]
     if problems:
         lines += ["", "Ignored result files:"] + [f"- {_flat(problem)}" for problem in problems]
-    if not selection.paths and not selection.named_kinds:
-        lines += ["", "No changed paths: check that the base ref is the intended one."]
     return "\n".join(lines)
 
 
 def _configure_report(parser: argparse.ArgumentParser) -> None:
-    _add_common(parser)
     parser.add_argument("--results", type=Path, required=True, help="a folder searched recursively for gdv.result/1 files")
-    parser.add_argument("--level", choices=LEVELS, default="release", help="highest level the report covers (default: release)")
-    parser.add_argument("--pr", action="store_true", help="print the block with its `## Local verification` heading, ready for a pull request description")
+    parser.add_argument("--sha", help="show only results of this commit (default: the newest result of every name, platform and host)")
+    parser.add_argument("--pr", action="store_true", help="print the block with a heading, ready for a pull request description")
     parser.add_argument("--json", action="store_true", help="print rows and counts as JSON")
-    parser.add_argument("--sha", help="the candidate revision results must belong to (default: HEAD)")
 
 
 def _report(arguments: argparse.Namespace) -> int:
-    def action() -> int:
-        selection = resolve_selection(arguments)
-        if selection.failed:
-            print("valtrion report: unclassified paths with policy fail; fix the area map first: " + ", ".join(selection.unclassified), file=sys.stderr)
-            return constants.EXIT_FAIL
-        root = repository_root(Path.cwd() if arguments.checks is None else Path(arguments.checks).resolve().parent)
-        head = _git(root, "rev-parse", "HEAD").decode("utf-8", "replace").strip()
-        sha = arguments.sha or head
-        if sha != head:
-            print(f"valtrion report: --sha {sha} is not HEAD ({head}); the selection is computed from HEAD", file=sys.stderr)
-            return constants.EXIT_FAIL
+    try:
         results, problems = load_results(arguments.results)
-        rows = build_rows(selection, results, sha)
-        if arguments.include_worktree and arguments.base_ref and _git(root, "status", "--porcelain").strip():
-            # Results belong to a commit; the uncommitted edits they count as changed were never tested.
-            for row in rows:
-                if row.status == constants.PASS:
-                    row.status = NOT_VERIFIED
-                    row.detail = (row.detail + "; " if row.detail else "") + "worktree has uncommitted changes"
-        if arguments.json:
-            counts = {status: sum(1 for row in rows if row.status == status) for status in _COUNT_ORDER}
-            print(json.dumps({"level": selection.level, "selectedKinds": selection.named_kinds, "kindsNamedExplicitly": bool(selection.named_kinds),
-                              "candidate": sha, "counts": counts, "rows": [row.to_json() for row in rows],
-                              "notVerified": not_verified_lines(rows, selection), "ignoredResults": problems}, indent=2))
-        else:
-            print(format_markdown(selection, rows, sha, problems, arguments.pr))
-        code = exit_code(rows)
-        if code == constants.EXIT_PASS and any(line.startswith("not verified on ") for line in not_verified_lines(rows, selection)):
-            code = constants.EXIT_BLOCKED  # a required platform nothing proved is not a clean report for a machine consumer either
-        # An unreadable or invalid result file may hold the newest outcome: the report cannot be trusted as clean.
-        return max(code, constants.EXIT_BLOCKED) if problems and code == constants.EXIT_PASS else code
-
-    return run_guarded("report", action)
+    except UnreadableInput as error:
+        print(f"valtrion report: BLOCKED: {error}", file=sys.stderr)
+        return constants.EXIT_BLOCKED
+    rows = build_rows(results, arguments.sha)
+    if arguments.json:
+        counts = {status: sum(1 for row in rows if row.status == status) for status in _COUNT_ORDER}
+        print(json.dumps({"candidate": arguments.sha, "counts": counts, "rows": [row.to_json() for row in rows], "ignoredResults": problems}, indent=2))
+    else:
+        print(format_markdown(rows, problems, arguments.pr))
+    code = exit_code(rows)
+    # An unreadable or invalid result file may hold the newest outcome: the report cannot be trusted as clean.
+    return max(code, constants.EXIT_BLOCKED) if problems and code == constants.EXIT_PASS else code
 
 
 from .cli import Command, register  # noqa: E402  (cli imports this module last; importing it here keeps both import orders working)
 
-register(Command("report", "build the pull request Local verification block from selected checks and results", "check selection", _report, _configure_report))
+register(Command("report", "show the results of runs in a folder: passed, failed, files, how to run the failed ones again", "results", _report, _configure_report))

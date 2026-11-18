@@ -1,8 +1,7 @@
 """Project discovery (`valtrion.json`) and the compatibility check between the core and the Unity package of a project.
 
-`valtrion.json` at a project root names the Unity project: `{"unityProject": "<path relative to that file>"}`, and optionally the check map:
-`"checks": "<path relative to that file>"`. The CLI finds it by walking
-up from the working directory. `--project-dir` and the `GDV_UNITY_PROJECT` environment variable override it, in that order.
+`valtrion.json` at a project root names the Unity project: `{"unityProject": "<path relative to that file>"}`. It holds no other key. The
+CLI finds it by walking up from the working directory. `--project-dir` and the `GDV_UNITY_PROJECT` environment variable override it, in that order.
 `compat.json` maps Unity package versions to the range of core versions that supports them.
 """
 
@@ -50,28 +49,35 @@ def load_project_file(path: Path) -> Path:
     unity = document.get("unityProject") if isinstance(document, dict) else None
     if not isinstance(unity, str) or not unity:
         raise ProjectError(f'{path} must be an object with "unityProject": "<path relative to this file>"')
+    if "checks" in document:
+        raise ProjectError(f'{path}: "checks" names a check map; Valtrion 1.0 selects nothing and no longer reads checks.json. '
+                           'Remove the "checks" key (and the map file). See the Core CHANGELOG, 1.0.0.')
+    unknown = sorted(key for key in document if key != "unityProject")
+    if unknown:
+        raise ProjectError(f'{path}: unknown key {", ".join(repr(key) for key in unknown)}; the only key is "unityProject"')
     project = (path.parent / unity).resolve()
     if not project.is_dir():
         raise ProjectError(f"{path}: unityProject {unity!r} is not a folder ({project})")
     return project
 
 
-def checks_file_setting(start: Path, root: Path | None = None) -> Path | None:
-    """The `checks` path of the nearest valtrion.json (relative to that file), or None when there is no file or no such key.
-    A file outside `root` (the repository) is ignored, so a stray file in a parent folder cannot redirect the check map."""
-    found = find_project_file(start)
-    if found is None or (root is not None and root.resolve() not in (found.parent, *found.parent.parents)):
-        return None
-    try:
-        document = json.loads(found.read_text(encoding="utf-8-sig"))
-    except (OSError, ValueError) as error:
-        raise ProjectError(f"cannot read {found}: {error}") from error
-    checks = document.get("checks") if isinstance(document, dict) else None
-    if checks is None:
-        return None
-    if not isinstance(checks, str) or not checks:
-        raise ProjectError(f'{found}: "checks" must be a path relative to this file')
-    return (found.parent / checks).resolve()
+def leftover_check_map(folder: Path) -> Path | None:
+    """`validation/device/checks.json` (the old default place of the check map) in `folder` or a parent up to the project or repository root, or None.
+
+    The search ends at the first folder that holds `valtrion.json` or `.git`. Without either, only `folder` itself is searched.
+    """
+    folder = folder.resolve()
+    levels = (folder, *folder.parents)
+    chain = [folder]
+    for index, candidate in enumerate(levels):
+        if (candidate / "valtrion.json").exists() or (candidate / ".git").exists():
+            chain = list(levels[: index + 1])
+            break
+    for candidate in chain:
+        found = candidate / "validation" / "device" / "checks.json"
+        if found.is_file():
+            return found
+    return None
 
 
 def resolve_unity_project(explicit: Path | None = None, environ: Mapping[str, str] | None = None, cwd: Path | None = None) -> Path | None:

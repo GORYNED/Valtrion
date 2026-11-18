@@ -14,13 +14,15 @@ is the only ready app integration: Valtrion can build the app, install it, start
 with the plan, watch it, collect the result and compare compatible metrics.
 A run that could not prove something says so (`BLOCKED`, `NEEDS_PERMISSION`).
 
+Valtrion does not choose what to test. You or your agent name what to run; Valtrion executes it and reports. See [What to run](cli.md#what-to-run).
+
 ## Parts
 
 | Part | Role |
 | --- | --- |
 | **Core** (`valtrion` CLI and library) | Runs on the machine that drives the work and on every host that owns a resource. Selects the host, takes leases, builds, installs, launches, supervises, collects, compares. |
 | **Providers** | One per platform: `ios`, `android`, `windows`, `macos`, `editor`. Each implements build, install, push/pull files, launch, terminate, screenshot and health for its platform. See [providers.md](providers.md). |
-| **Contracts** | JSON schemas `gdv.*/1` for plans, pipelines, results, heartbeats, jobs, events, hosts, registry, leases, checks and baselines. See [contracts.md](contracts.md). |
+| **Contracts** | JSON schemas `gdv.*/1` for plans, pipelines, results, heartbeats, jobs, events, hosts, registry, leases and baselines. See [contracts.md](contracts.md). |
 | **App-side runner** | Code inside the app that reads the plan, runs the steps and writes the heartbeat and result. For Unity this is the package `com.goryned.valtrion.unity`, which has its own version; `compat.json` says which core versions each package version works with. The host and the app meet only through the files and arguments in [protocol.md](protocol.md). |
 
 ## Hosts
@@ -40,9 +42,9 @@ State is kept as files: a run folder per job under the artifacts root holds `job
 
 `PASS` 0, `FAIL` 1, `BLOCKED` 2, `NEEDS_PERMISSION` 2, `STALL` 3, `TIMEOUT` 3. Details are in [contracts.md](contracts.md).
 
-## Choosing checks for a change
+## Results of runs
 
-A project can map changed files to the checks a change needs (`valtrion select`) and print a verification block for a pull request (`valtrion report`). See [cli.md](cli.md).
+`valtrion report` shows the results of runs in a folder: what passed, what failed, the files of the run and how to run the failed ones again. See [cli.md](cli.md).
 
 ## Seeing what runs
 

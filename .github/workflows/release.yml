@@ -112,7 +112,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
   draft:
-    name: draft GitHub pre-release (core)
+    name: draft GitHub release (core)
     needs: verify
     if: ${{ inputs.component == 'core' && !inputs.dry_run && needs.verify.outputs.mode == 'full' }}
     runs-on: ubuntu-latest
@@ -132,14 +132,14 @@ jobs:
             gh api -X DELETE "repos/$GITHUB_REPOSITORY/releases/$id"
           done
           cat > notes.md <<NOTES
-          Valtrion Core $VERSION (pre-release).
+          Valtrion Core $VERSION.
 
           Install: \`pipx install valtrion==$VERSION\`
 
           Unity package: independent version; see docs/install.md. Compatible pairs are in compat.json.
           Changelog: https://github.com/$GITHUB_REPOSITORY/blob/$GITHUB_SHA/CHANGELOG.md
           NOTES
-          gh release create "$TAG" dist/* --repo "$GITHUB_REPOSITORY" --draft --prerelease --target "$GITHUB_SHA" \
+          gh release create "$TAG" dist/* --repo "$GITHUB_REPOSITORY" --draft --target "$GITHUB_SHA" \
             --title "Valtrion Core $VERSION" --notes-file notes.md
 
   pypi:
@@ -164,7 +164,7 @@ jobs:
           skip-existing: false
 
   finalize:
-    name: publish the GitHub pre-release (core)
+    name: publish the GitHub release (core)
     needs: [verify, draft, pypi]
     # Runs after a successful publish, or alone in "finalize" mode (PyPI has the version, only the Release is missing).
     if: ${{ always() && inputs.component == 'core' && !inputs.dry_run && (needs.pypi.result == 'success' || (needs.verify.result == 'success' && needs.verify.outputs.mode == 'finalize')) }}
@@ -200,23 +200,23 @@ jobs:
       - name: Publish the Release (creates the tag at the commit stored in the draft)
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh api -X PATCH "repos/$GITHUB_REPOSITORY/releases/$release_id" -F draft=false -F prerelease=true -f make_latest=false
+        run: gh api -X PATCH "repos/$GITHUB_REPOSITORY/releases/$release_id" -F draft=false -F prerelease=false -f make_latest=true
 
   unity:
-    name: tag and publish Unity pre-release
+    name: tag and publish Unity release
     needs: verify
     if: ${{ inputs.component == 'unity' && !inputs.dry_run }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
-      - name: Create the tag and pre-release at the verified commit
+      - name: Create the tag and release at the verified commit
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ needs.verify.outputs.tag }}
         run: |
           cat > notes.md <<NOTES
-          Valtrion Unity package $VERSION (pre-release), versioned independently of Core.
+          Valtrion Unity package $VERSION, versioned independently of Core.
 
           Unity Package Manager Git URL:
           \`https://github.com/$GITHUB_REPOSITORY.git?path=integrations/unity/com.goryned.valtrion.unity#$TAG\`
@@ -224,5 +224,5 @@ jobs:
           Compatible Core versions are listed in compat.json. Changelog:
           https://github.com/$GITHUB_REPOSITORY/blob/$GITHUB_SHA/integrations/unity/com.goryned.valtrion.unity/CHANGELOG.md
           NOTES
-          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --prerelease --target "$GITHUB_SHA" \
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --latest=false --target "$GITHUB_SHA" \
             --title "Valtrion Unity $VERSION" --notes-file notes.md

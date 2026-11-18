@@ -2,8 +2,6 @@ import contextlib
 import io
 import json
 import os
-import shutil
-import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -63,6 +61,38 @@ class DiscoveryTests(ProjectCase):
                 with self.assertRaises(project.ProjectError) as caught:
                     project.resolve_unity_project(None, {}, self.repo)
                 self.assertIn("valtrion.json", str(caught.exception))
+
+    def test_a_checks_key_is_refused_with_the_upgrade_text(self):
+        self.write_file({"unityProject": "game/UnityProject", "checks": "validation/device/checks.json"})
+        with self.assertRaises(project.ProjectError) as caught:
+            project.resolve_unity_project(None, {}, self.repo)
+        self.assertIn('"checks" names a check map', str(caught.exception))
+        self.assertIn("Remove the", str(caught.exception))
+
+    def test_any_other_unknown_key_is_refused_by_name(self):
+        self.write_file({"unityProject": "game/UnityProject", "platforms": ["ios"]})
+        with self.assertRaises(project.ProjectError) as caught:
+            project.resolve_unity_project(None, {}, self.repo)
+        self.assertIn("'platforms'", str(caught.exception))
+
+    def test_a_leftover_checks_key_blocks_the_commands_that_find_the_project(self):
+        self.write_file({"unityProject": "game/UnityProject", "checks": "x.json"})
+        plan = self.base / "p.json"
+        plan.write_text((Path(__file__).resolve().parent.parent.parent / "contracts" / "fixtures" / "valid" / "plan.json").read_text(encoding="utf-8"), encoding="utf-8")
+        with mock.patch("pathlib.Path.cwd", return_value=self.repo), mock.patch.dict(os.environ, {core.HOME_ENV: str(self.base / "h")}):
+            os.environ.pop(project.PROJECT_ENV, None)
+            code, _, err = run("run", "--repo", "r", "--sha", "a" * 40, "--app", "x", str(plan))
+            self.assertEqual(2, code)
+            self.assertIn('"checks" names a check map', err)
+            code, _, err = run("doctor", "--json", "--project")
+            self.assertEqual(2, code)
+            self.assertIn('"checks" names a check map', err)
+
+    def test_removed_commands_are_unknown(self):
+        for command in ("select", "check-config"):
+            with self.subTest(command), self.assertRaises(SystemExit) as caught:
+                run(command)
+            self.assertEqual(2, caught.exception.code)
 
     def test_a_pipeline_command_reports_an_invalid_valtrion_json_as_blocked(self):
         self.write_file({"unityProject": "missing"})
@@ -140,7 +170,7 @@ class CheckTests(ProjectCase):
         self.assertEqual("ok", self.check()["status"])
 
     def test_the_shipped_compat_table_is_valid_and_lists_this_core(self):
-        self.lock({"version": "0.20.0", "source": "registry"})
+        self.lock({"version": "1.0.0", "source": "registry"})
         self.assertEqual("ok", project.check_project(self.unity)["status"])
 
 
@@ -162,8 +192,50 @@ class DoctorProjectTests(ProjectCase):
         self.assertEqual(0, code)
         self.assertEqual("skipped", json.loads(out)["project"]["status"])
 
+    def test_a_leftover_check_map_is_a_warning_not_a_block(self):
+        self.lock({"version": "1.0.0", "source": "registry"})
+        (self.repo / ".git").mkdir()
+        old = self.repo / "validation" / "device"
+        old.mkdir(parents=True)
+        (old / "checks.json").write_text("{}", encoding="utf-8")
+        code, out, _ = self.doctor("--project", str(self.unity))
+        project_report = json.loads(out)["project"]
+        self.assertEqual((0, "ok"), (code, project_report["status"]))
+        self.assertEqual(1, len(project_report["warnings"]))
+        self.assertIn("checks.json", project_report["warnings"][0])
+
+    def test_the_leftover_search_stops_at_the_repository_root(self):
+        outside = self.base / "validation" / "device"
+        outside.mkdir(parents=True)
+        (outside / "checks.json").write_text("{}", encoding="utf-8")
+        (self.repo / ".git").mkdir()
+        self.assertIsNone(project.leftover_check_map(self.unity))
+
+    def test_the_leftover_search_stops_at_valtrion_json(self):
+        outside = self.base / "validation" / "device"
+        outside.mkdir(parents=True)
+        (outside / "checks.json").write_text("{}", encoding="utf-8")
+        (self.repo / "valtrion.json").write_text("{}", encoding="utf-8")
+        self.assertIsNone(project.leftover_check_map(self.unity))
+
+    def test_without_a_repository_or_valtrion_json_only_the_folder_is_searched(self):
+        parent = self.base / "validation" / "device"
+        parent.mkdir(parents=True)
+        (parent / "checks.json").write_text("{}", encoding="utf-8")
+        self.assertIsNone(project.leftover_check_map(self.unity))
+        own = self.unity / "validation" / "device"
+        own.mkdir(parents=True)
+        (own / "checks.json").write_text("{}", encoding="utf-8")
+        self.assertEqual(own / "checks.json", project.leftover_check_map(self.unity))
+
+    def test_without_a_leftover_map_there_is_no_warning(self):
+        self.lock({"version": "1.0.0", "source": "registry"})
+        (self.repo / ".git").mkdir()
+        _, out, _ = self.doctor("--project", str(self.unity))
+        self.assertNotIn("warnings", json.loads(out)["project"])
+
     def test_supported_package_passes(self):
-        self.lock({"version": "0.20.0", "source": "registry"})
+        self.lock({"version": "1.0.0", "source": "registry"})
         code, out, _ = self.doctor("--project", str(self.unity))
         self.assertEqual((0, "ok"), (code, json.loads(out)["project"]["status"]))
 
@@ -175,7 +247,7 @@ class ShippedTableTests(ProjectCase):
         self.assertEqual("0.7.x", ranges[0]["package"])
 
     def test_package_0_7_x_stays_compatible_with_every_core_of_the_0_9_line_up_to_0_13(self):
-        # The new optional keys of gdv.checks/1 do not change what the package reads, so core 0.9.x keeps the 0.7.x pairing.
+        # The new optional keys of a contract do not change what the package reads, so core 0.9.x keeps the 0.7.x pairing.
         self.lock({"version": "0.7.1", "source": "registry"})
         for core_version in ("0.8.8", "0.9.0", "0.9.7", "0.13.1"):
             self.assertEqual("ok", project.check_project(self.unity, core_version)["status"], core_version)
@@ -301,6 +373,17 @@ class ShippedTableTests(ProjectCase):
         self.assertEqual("ok", project.check_project(self.unity, "0.23.2")["status"])
         self.assertNotEqual("ok", project.check_project(self.unity, "0.24.0")["status"])
 
+    def test_package_1_0_x_is_paired_with_core_1_x_only_and_0_20_x_is_not(self):
+        _, ranges = project.load_compat_document()
+        self.assertEqual([{"package": "1.0.x", "core": ">=1.0.0,<2"}], [r for r in ranges if r["package"] == "1.0.x"])
+        self.lock({"version": "1.0.0", "source": "registry"})
+        self.assertEqual("ok", project.check_project(self.unity, "1.0.0")["status"])
+        self.assertNotEqual("ok", project.check_project(self.unity, "0.25.0")["status"])
+        self.assertNotEqual("ok", project.check_project(self.unity, "2.0.0")["status"])
+        self.lock({"version": "0.20.1", "source": "registry"})
+        self.assertEqual("ok", project.check_project(self.unity, "0.25.0")["status"])
+        self.assertNotEqual("ok", project.check_project(self.unity, "1.0.0")["status"])
+
     def test_package_0_14_x_is_not_paired_with_core_0_18_that_it_cannot_read_the_keys_of(self):
         self.lock({"version": "0.14.0", "source": "registry"})
         result = project.check_project(self.unity, "0.18.0")
@@ -329,85 +412,3 @@ class ShippedTableTests(ProjectCase):
         self.lock({"version": "0.7.0", "source": "registry"})
         result = project.check_project(self.unity, "0.7.0", bad)
         self.assertEqual(("BLOCKED", "reinstall valtrion"), (result["status"], result["action"]))
-
-
-@unittest.skipUnless(shutil.which("git"), "needs git")
-class ChecksSettingTests(ProjectCase):
-    """`checks` in valtrion.json moves the default check map; --checks still wins."""
-
-    CHECKS = json.dumps({"schema": "gdv.checks/1", "platforms": {"required": ["ios"], "dev": ["editor"]}, "areas": [{"glob": "**", "kind": "docs"}],
-                         "kinds": {"docs": {"structure": ["structure"]}}, "unclassified": "widest"})
-
-    def setUp(self):
-        super().setUp()
-        subprocess.run(["git", "init", "-q", str(self.repo)], check=True)
-        self.nested = self.repo / "game" / "validation" / "device"
-        self.nested.mkdir(parents=True)
-        self.map = self.nested / "checks.json"
-        self.map.write_text(self.CHECKS, encoding="utf-8")
-
-    def write_file(self, value):
-        (self.repo / "valtrion.json").write_text(json.dumps(value), encoding="utf-8")
-
-    def check_config(self, *args, cwd=None):
-        with mock.patch("pathlib.Path.cwd", return_value=cwd or self.repo):
-            return run("check-config", *args)
-
-    def test_checks_key_is_relative_to_the_file_and_used_by_default(self):
-        self.write_file({"unityProject": "game/UnityProject", "checks": "game/validation/device/checks.json"})
-        code, out, err = self.check_config()
-        self.assertEqual(0, code, err)
-        self.assertIn(str(self.map.resolve()), out)
-
-    def test_without_the_key_the_repository_default_is_used(self):
-        self.write_file({"unityProject": "game/UnityProject"})
-        code, _, err = self.check_config()
-        self.assertEqual(2, code)
-        self.assertIn("checks.json", err, "validation/device/checks.json under the repository root does not exist here")
-        default = self.repo / "validation" / "device"
-        default.mkdir(parents=True)
-        (default / "checks.json").write_text(self.CHECKS, encoding="utf-8")
-        self.assertEqual(0, self.check_config()[0])
-
-    def test_the_key_is_found_from_a_subfolder(self):
-        self.write_file({"unityProject": "game/UnityProject", "checks": "game/validation/device/checks.json"})
-        self.assertEqual(0, self.check_config(cwd=self.nested)[0])
-
-    def test_explicit_checks_beats_the_key(self):
-        self.write_file({"unityProject": "game/UnityProject", "checks": "missing/checks.json"})
-        self.assertEqual(0, self.check_config("--checks", str(self.map))[0])
-
-    def test_a_bad_checks_value_is_blocked_by_every_command(self):
-        for value in (3, ""):
-            self.write_file({"unityProject": "game/UnityProject", "checks": value})
-            for command in (["check-config"], ["select", "--base-ref", "HEAD"], ["report", "--base-ref", "HEAD", "--results", str(self.base)]):
-                with self.subTest(value=value, command=command[0]), mock.patch("pathlib.Path.cwd", return_value=self.repo):
-                    code, _, err = run(*command)
-                    self.assertEqual(2, code)
-                    self.assertIn('"checks" must be a path', err)
-                    self.assertNotIn("Traceback", err)
-
-    def test_an_unreadable_valtrion_json_is_blocked(self):
-        (self.repo / "valtrion.json").write_text("{ nope", encoding="utf-8")
-        code, _, err = self.check_config()
-        self.assertEqual(2, code)
-        self.assertIn("valtrion.json", err)
-
-    def test_a_valtrion_json_above_the_repository_is_ignored(self):
-        (self.base / "valtrion.json").write_text(json.dumps({"checks": "elsewhere/checks.json"}), encoding="utf-8")
-        default = self.repo / "validation" / "device"
-        default.mkdir(parents=True)
-        (default / "checks.json").write_text(self.CHECKS, encoding="utf-8")
-        code, out, err = self.check_config()
-        self.assertEqual(0, code, err)
-        self.assertNotIn("elsewhere", out)
-
-    def test_select_uses_the_key_too(self):
-        self.write_file({"unityProject": "game/UnityProject", "checks": "game/validation/device/checks.json"})
-        env = {"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@e", "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@e"}
-        for args in (["add", "-A"], ["commit", "-q", "-m", "x"]):
-            subprocess.run(["git", "-C", str(self.repo), *args], check=True, env={**os.environ, **env})
-        with mock.patch("pathlib.Path.cwd", return_value=self.repo):
-            code, out, err = run("select", "--base-ref", "HEAD", "--json")
-        self.assertEqual(0, code, err)
-        self.assertEqual("HEAD", json.loads(out)["baseRef"])

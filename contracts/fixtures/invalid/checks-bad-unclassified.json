@@ -1,7 +1,0 @@
-{
-  "schema": "gdv.checks/1",
-  "platforms": { "required": ["ios"] },
-  "areas": [ { "glob": "docs/**", "kind": "docs" } ],
-  "kinds": { "docs": { "structure": ["structure"] } },
-  "unclassified": "ignore"
-}

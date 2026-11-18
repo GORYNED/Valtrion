@@ -1,13 +1,13 @@
 # Releasing
 
-Core (PyPI package `valtrion`) and the Unity package (`com.goryned.valtrion.unity`) have independent versions. Releases are made only by the manual [Release workflow](../.github/workflows/release.yml). It never runs on push or pull request, and it is separate from CI. Releases are marked as GitHub **Pre-release** while Valtrion is pre-1.0.
+Core (PyPI package `valtrion`) and the Unity package (`com.goryned.valtrion.unity`) have independent versions. Releases are made only by the manual [Release workflow](../.github/workflows/release.yml). It never runs on push or pull request, and it is separate from CI. From 1.0.0 on, releases are ordinary (stable) GitHub Releases; Core's is marked Latest.
 
 | Component | Version source | Tag | Published to |
 | --- | --- | --- | --- |
 | Core | `core/pyproject.toml` and `core/valtrion/__init__.py` | `core-vX.Y.Z` | PyPI and a GitHub Release |
 | Unity package | `integrations/unity/com.goryned.valtrion.unity/package.json` | `unity-vX.Y.Z` | GitHub tag and Release (UPM installs from Git) |
 
-Versions are final `X.Y.Z` (no `rc`/`a` suffix): "pre-release" is the GitHub flag and the `Development Status :: 4 - Beta` classifier. Keep `compat.json` pairing the Unity and Core versions that work together.
+Versions are final `X.Y.Z` (no `rc`/`a` suffix): the classifier is `Development Status :: 5 - Production/Stable`. Keep `compat.json` pairing the Unity and Core versions that work together.
 
 ## One-time setup (already done for this repository)
 
@@ -19,7 +19,7 @@ Versions are final `X.Y.Z` (no `rc`/`a` suffix): "pre-release" is the GitHub fla
 
 1. In a pull request, bump the version(s) and add a `## X.Y.Z` section to `CHANGELOG.md` (Core) or the Unity `CHANGELOG.md`. For Core change both `core/pyproject.toml` and `core/valtrion/__init__.py`. Update `compat.json` if the pairing changes, and the version numbers quoted in the docs. Merge it to `main`.
 2. Run **Actions → release → Run workflow** on `main` with the component and version and **dry run on** (the default). It checks that the version equals the source, runs the contract/source checks and Core tests, builds the sdist and wheel, runs `twine check --strict`, installs the wheel into a clean environment, and reports the state of PyPI, the tag and the Release. Nothing is published.
-3. Run it again with **dry run off**. For Core the order is: draft GitHub Release with the exact files → **manual approval of the `pypi` environment** → upload to PyPI by OIDC → the draft is published as a Pre-release, which creates the tag at the verified commit. For Unity it creates the tag and Pre-release directly.
+3. Run it again with **dry run off**. For Core the order is: draft GitHub Release with the exact files → **manual approval of the `pypi` environment** → upload to PyPI by OIDC → the draft is published as the Latest release, which creates the tag at the verified commit. For Unity it creates the tag and the Release directly (not marked Latest).
 4. Never create these tags by hand: the workflow refuses an existing tag. If the install docs reference a new Unity tag, release the Unity package first.
 5. Check <https://pypi.org/project/valtrion/> and the Release page.
 

@@ -59,10 +59,9 @@ namespace Valtrion.Unity.Contracts
         public const string Hosts = "gdv.hosts/1";
         public const string Registry = "gdv.registry/1";
         public const string Lease = "gdv.lease/1";
-        public const string Checks = "gdv.checks/1";
         public const string Baseline = "gdv.baseline/1";
 
-        public static readonly string[] All = { Plan, Pipeline, Result, Heartbeat, Job, Event, Hosts, Registry, Lease, Checks, Baseline };
+        public static readonly string[] All = { Plan, Pipeline, Result, Heartbeat, Job, Event, Hosts, Registry, Lease, Baseline };
     }
 
     static class Enums
@@ -87,7 +86,6 @@ namespace Valtrion.Unity.Contracts
         public static readonly string[] TransportKinds = { "local", "ssh" };
         public static readonly string[] HostSelections = { "local", "capability", "pinned" };
         public static readonly string[] WorktreePolicies = { "per-task", "shared" };
-        public static readonly string[] Unclassified = { "widest", "fail" };
     }
 
     /// <summary>A gdv document: it knows its schema id and writes itself as a JSON value tree.</summary>

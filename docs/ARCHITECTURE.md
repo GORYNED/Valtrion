@@ -6,14 +6,14 @@ This page describes the components of Valtrion, the boundaries between them and 
 
 ### Core (`core/`)
 
-The `valtrion` CLI and library, distribution `valtrion` 0.25.0, Python 3.10 or newer, standard library only. It is delivered in this repository. It provides:
+The `valtrion` CLI and library, distribution `valtrion` 1.0.0, Python 3.10 or newer, standard library only. It is delivered in this repository. It provides:
 
 - Host inventory and selection: this machine first, then SSH hosts by capability, or a pinned host.
 - Detached, supervised jobs with hard timeouts, stall detection and process-tree kill.
 - Exclusive resource leases (devices, Unity Editor slots) with explicit release, expiry and recovery. A pipeline holds the build resources only during its `build` stage and the device only during its device stages, so builds overlap device runs; see [cli.md](cli.md#leases-by-stage-build-reuse).
 - A host-local cache of published builds (`<home>/builds`), reused by commit, profile and toolchain.
 - Build, install, launch, collect and cleanup through platform providers: `ios`, `android`, `windows`, `macos`, `editor`.
-- Result validation, baselines and comparison, check selection for a change, and a work root outside protected folders.
+- Result validation, baselines and comparison, a report over the results of runs, and a work root outside protected folders.
 
 The core does not require Unity, `adb` or Xcode to run; a missing tool makes only the work that needs it `BLOCKED`.
 
@@ -36,7 +36,7 @@ make every pipeline or comparison application-neutral.
 
 ### Contracts (`contracts/`)
 
-JSON schemas `gdv.*/1` and fixtures. They define every document that crosses a boundary: plans, pipelines, results, heartbeats, jobs, events, hosts, registry, leases, checks and baselines. The core validates against them; app-side runners produce documents that validate against them. See [contracts.md](contracts.md).
+JSON schemas `gdv.*/1` and fixtures. They define every document that crosses a boundary: plans, pipelines, results, heartbeats, jobs, events, hosts, registry, leases and baselines. The core validates against them; app-side runners produce documents that validate against them. See [contracts.md](contracts.md).
 
 ### Unity package (`integrations/unity/`)
 

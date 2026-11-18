@@ -1,8 +1,0 @@
-{
-  "schema": "gdv.checks/1",
-  "platforms": { "required": ["ios"] },
-  "areas": [{ "glob": "docs/**", "kind": "docs" }],
-  "contentRules": [{ "glob": "docs/**/*.md", "kind": "docs", "lineComment": [] }],
-  "kinds": { "docs": { "structure": ["structure"] } },
-  "unclassified": "widest"
-}

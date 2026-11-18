@@ -1,6 +1,6 @@
 {
   "name": "com.goryned.valtrion.unity",
-  "version": "0.20.1",
+  "version": "1.0.0",
   "displayName": "Valtrion Unity",
   "license": "MIT",
   "description": "Development-only device validation for Unity: plan contracts and the Runtime harness of Valtrion.",

@@ -1,11 +1,9 @@
-"""`valtrion result write`: a `gdv.result/1` for a check that Valtrion does not run itself.
+"""`valtrion result write`: a `gdv.result/1` for a run that Valtrion did not make itself.
 
-`select` names structure checks (`structure`, `structure:name`), Editor suites (`editmode:ASSEMBLY`, `playmode:ASSEMBLY`) and player builds (`player:TARGET`).
-A project often runs them with its own runner and decides PASS or FAIL itself (skip policy, XML inspection). This command records
-that decision so `valtrion report` can show it: the caller gives the status, Valtrion never interprets it. The document is the
-ordinary `gdv.result/1`, with `plan.id` equal to the check key (how `report` matches a result to a check) and, because no plan file
-exists, `plan.sha256` equal to the SHA-256 of the key's UTF-8 text. The commit and the dirty flag are read from git, never taken
-from the caller, so `report` still shows NOT_VERIFIED for a dirty tree.
+A project often runs tests or a script with its own runner and decides PASS or FAIL itself (skip policy, XML inspection). This command
+records that decision so `valtrion report` can show it: the caller names what it ran, gives the status and Valtrion never interprets it.
+The document is the ordinary `gdv.result/1`, with `plan.id` equal to the name and, because no plan file exists, `plan.sha256` equal to
+the SHA-256 of the name's UTF-8 text. The commit and the dirty flag are read from git, never taken from the caller.
 """
 
 from __future__ import annotations
@@ -18,15 +16,12 @@ from typing import Any, Sequence
 
 from . import compare, constants, core
 from .gitstate import read_state
-from .schema import Validator, validate_document
-from .select import repository_root, run_guarded
+from .schema import UnreadableInput, Validator, validate_document
 
 #: Platforms the schema knows (common.schema.json `platform`).
 PLATFORMS = ("editor", "windows", "macos", "ios", "android")
 _HEX40 = re.compile(r"[0-9a-f]{40}")
 _NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]*")
-#: The checks Valtrion does not run itself. A `device:` plan id is a result of `valtrion run` / `pipeline`, never written by hand.
-_KEY = re.compile(r"(structure(:.+)?|(editmode|playmode|player):.+)")
 #: No device is named in these results, so a claim of physical or emulator evidence cannot be true.
 EVIDENCE = (constants.EVIDENCE_EDITOR, constants.EVIDENCE_HOST)
 
@@ -35,16 +30,11 @@ class WriteRefused(Exception):
     """The inputs cannot make a valid, honest result; the message says why."""
 
 
-def defaults_for(key: str) -> tuple[str | None, str]:
-    """(platform, evidence) a check key implies: Editor suites ran in the Editor, `structure` on the host, `player:ios` on that platform."""
-    kind, _, target = key.partition(":")
-    if kind in ("editmode", "playmode"):
-        return "editor", constants.EVIDENCE_EDITOR
-    if kind == "structure":
-        return "editor", constants.EVIDENCE_HOST
-    if kind == "player":
-        return (target if target in PLATFORMS else None), constants.EVIDENCE_HOST
-    return None, constants.EVIDENCE_HOST
+def repository_root(start: Path) -> Path:
+    code, output = compare.run_git(start, ["rev-parse", "--show-toplevel"])
+    if code != 0:
+        raise UnreadableInput(f"{start} is not inside a git repository: {output}")
+    return Path(output.strip())
 
 
 def run_id(key: str, sha: str, host_id: str, platform: str, evidence: str, dirty: bool) -> str:
@@ -82,22 +72,15 @@ def build_document(
 
 
 def write_result(arguments: argparse.Namespace) -> Path:
-    key = arguments.key
-    if not _KEY.fullmatch(key):
-        raise WriteRefused(f"{key!r} is not a structure, editmode, playmode or player check key; a device check is recorded by `valtrion run` or `valtrion pipeline`")
+    key = arguments.name
     if not _NAME.fullmatch(key) or len(key) > 200:
-        raise WriteRefused(f"check key {key!r} is not a valid identifier (letters, digits and ._:-); use the key exactly as `valtrion select --json` lists it")
+        raise WriteRefused(f"name {key!r} is not a valid identifier (letters, digits and ._:-)")
     if arguments.status != constants.PASS and not (arguments.reason or "").strip():
         raise WriteRefused(f"a {arguments.status} result needs --reason")
     if arguments.status == constants.PASS and arguments.reason:
         raise WriteRefused("a PASS result has no reason")
-    default_platform, default_evidence = defaults_for(key)
-    platform = arguments.platform or default_platform
-    if platform is None:
-        raise WriteRefused(f"--platform is required for {key!r} ({', '.join(PLATFORMS)})")
-    evidence = arguments.evidence or default_evidence
-    if key.partition(":")[0] in ("editmode", "playmode") and evidence != constants.EVIDENCE_EDITOR:
-        raise WriteRefused(f"an Editor suite ({key}) has editor evidence, not {evidence}")
+    platform = arguments.platform
+    evidence = arguments.evidence or (constants.EVIDENCE_EDITOR if platform == "editor" else constants.EVIDENCE_HOST)
 
     folder = Path(arguments.repo_dir).resolve() if arguments.repo_dir else Path.cwd()
     root = repository_root(folder)
@@ -145,13 +128,13 @@ def write_result(arguments: argparse.Namespace) -> Path:
 
 def _configure(parser: argparse.ArgumentParser) -> None:
     sub = parser.add_subparsers(dest="action", required=True)
-    write = sub.add_parser("write", help="write a gdv.result/1 for a check Valtrion did not run (structure, Editor suite, player)")
-    write.add_argument("key", help="the check key exactly as `valtrion select --json` lists it (`structure`, `structure:lint`, `editmode:Media.Tests`, `player:ios`)")
+    write = sub.add_parser("write", help="write a gdv.result/1 for a run Valtrion did not make itself")
+    write.add_argument("name", help="what was run, as the agent names it (letters, digits and ._:-), for example `editmode.Game.Tests`")
     write.add_argument("--status", required=True, choices=constants.STATUSES, help="decided by the caller; Valtrion does not interpret skip policies")
     write.add_argument("--reason", help="required for every status but PASS, forbidden for PASS")
     write.add_argument("--out", type=Path, required=True, help="the folder to write into; `valtrion report --results` reads it")
-    write.add_argument("--evidence", choices=EVIDENCE, help="default: editor for editmode/playmode, host otherwise; physical and emulator are only for results of a device run")
-    write.add_argument("--platform", choices=PLATFORMS, help="default: editor for editmode/playmode/structure, the target of player:ios|android|windows|macos")
+    write.add_argument("--evidence", choices=EVIDENCE, help="default: editor on platform editor, host otherwise; physical and emulator are only for results of a device run")
+    write.add_argument("--platform", choices=PLATFORMS, default="editor", help="where it ran (default: editor)")
     write.add_argument("--repo-dir", type=Path, help="a folder of the repository whose HEAD was checked (default: the current directory)")
     write.add_argument("--sha", help="the full commit; must equal HEAD (default: HEAD)")
     write.add_argument("--dirty", action="store_true", help="mark the result dirty even if git shows a clean tree (never the other way round)")
@@ -167,18 +150,18 @@ def _configure(parser: argparse.ArgumentParser) -> None:
 
 
 def _result(arguments: argparse.Namespace) -> int:
-    def action() -> int:
-        try:
-            destination = write_result(arguments)
-        except WriteRefused as error:
-            print(f"valtrion result write: {error}", file=sys.stderr)
-            return constants.EXIT_FAIL
-        print(destination)
-        return constants.EXIT_PASS
-
-    return run_guarded("result write", action)
+    try:
+        destination = write_result(arguments)
+    except WriteRefused as error:
+        print(f"valtrion result write: {error}", file=sys.stderr)
+        return constants.EXIT_FAIL
+    except UnreadableInput as error:
+        print(f"valtrion result write: BLOCKED: {error}", file=sys.stderr)
+        return constants.EXIT_BLOCKED
+    print(destination)
+    return constants.EXIT_PASS
 
 
 from .cli import Command, register  # noqa: E402
 
-register(Command("result", "write a gdv.result/1 for a check the project ran itself", "check selection", _result, _configure))
+register(Command("result", "write a gdv.result/1 for a run the project made itself", "results", _result, _configure))

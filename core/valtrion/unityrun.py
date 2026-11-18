@@ -70,8 +70,8 @@ def has_option(args: Sequence[str], *prefixes: str) -> bool:
 
 
 def normalize_assembly_names(args: Sequence[str]) -> list[str]:
-    """Unity's `-assemblyNames` takes names separated by `;`. A united list from `valtrion select` (`{assemblies}`) is comma separated
-    (a `;` would end the command in a shell), so the value of `-assemblyNames` is rewritten with `;`. Only this option: the
+    """Unity's `-assemblyNames` takes names separated by `;`. A list written with commas
+    (a `;` would end the command in a shell) is accepted too, so the value of `-assemblyNames` is rewritten with `;`. Only this option: the
     names of `-testFilter` may hold commas (test parameters)."""
     result = list(args)
     for position, item in enumerate(result[:-1]):

@@ -1,4 +1,4 @@
-"""The result cache for the runners a check map writes: a relative `-testResults`, a host default `-buildTarget` (host.json
+"""The result cache for a Unity command line: a relative `-testResults`, a host default `-buildTarget` (host.json
 `unityBuildTarget`) and a run that selects by `-testFilter` only (no `-assemblyNames`)."""
 
 import io
@@ -80,7 +80,7 @@ class DefaultsTests(CacheTestCase):
 class OffloadPathTests(CacheTestCase):
     def test_an_offloaded_run_gets_the_result_path_under_the_project(self):
         from valtrion import commands
-        from .test_select import run as cli
+        from .test_host import run as cli
 
         seen = {}
 
