@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.20.1 (2026-11-18)
+
+- Compatible Core versions are listed in `compat.json`: package 0.20.1 works with Core 0.24.0 up to, not including, 0.26. No package code changed; this release moves the pairing to Core 0.25.0, which adds fixture selection for Unity test runs. The Editor tests of the package (294: 293 passed, 1 ignored on Windows) and its PlayMode tests (7) passed in Unity 6000.6.8f1, the Editor of the package's test project from this release.
+
 ## 0.20.0 (2026-11-17)
 
 - Compatible Core versions are listed in `compat.json`: package 0.20.0 works with Core 0.24.0 up to, not including, 0.25. Packages 0.17.x to 0.19.x are paired with Core below 0.24 and cannot read the renamed levels. The package was not run in a real Editor for this change; update the package tag in `Packages/manifest.json` to `unity-v0.20.0`.

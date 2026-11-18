@@ -293,7 +293,7 @@ class ShippedTableTests(ProjectCase):
 
     def test_package_0_20_x_is_paired_with_core_0_24_only_and_0_19_x_is_not(self):
         _, ranges = project.load_compat_document()
-        self.assertEqual([{"package": "0.20.x", "core": ">=0.24.0,<0.25"}], [r for r in ranges if r["package"] == "0.20.x"])
+        self.assertEqual([{"package": "0.20.x", "core": ">=0.24.0,<0.26"}], [r for r in ranges if r["package"] == "0.20.x"])
         self.lock({"version": "0.20.0", "source": "registry"})
         self.assertEqual("ok", project.check_project(self.unity, "0.24.0")["status"])
         self.assertNotEqual("ok", project.check_project(self.unity, "0.23.2")["status"])

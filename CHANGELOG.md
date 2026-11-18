@@ -2,6 +2,14 @@
 
 Core (the `valtrion` Python package) and the Unity package `com.goryned.valtrion.unity` are versioned independently. The Unity changelog is in `integrations/unity/com.goryned.valtrion.unity/CHANGELOG.md`; `compat.json` lists compatible pairs.
 
+## 0.25.0 (2026-11-18)
+
+- **Upgrade note.** Additive: existing `checks.json` files and runners keep working. `compat.json` pairs Core 0.25.0 with Unity packages 0.20.x (0.20.1 is the package of this release). Update with `pipx upgrade valtrion` (and `valtrion hosts sync` on SSH hosts). A project opts in to fixture selection by mapping change kinds to the test fixtures that cover them (see `examples/unity-fixture-checks.json`); maps that do not are unchanged.
+
+- **A runner can select single Unity test fixtures.** The new `{fixtures;}` placeholder expands the selected fixture names into a `-testFilter` value, each anchored and escaped, so that a fixture matches only itself and its methods (and a parameterized fixture), not a longer name that starts the same. Map the common change kinds to their covering fixtures and `affected` no longer runs a whole assembly or build for them.
+- **The Unity memory guard counts the other occupied Editor slots.** A run waiting for a slot needs the minimum free memory once for itself and once more for each other occupied Editor slot, so Editors that are still starting do not all pass on the same free memory.
+- **A stalled `-runTests` run is judged by completed tests.** Once the Unity package reports a test run, only newly completed tests count as progress (log growth no longer does), so a run that keeps writing the log but finishes no test ends `STALL`; before the first report, log growth counts as before.
+
 ## 0.24.0 (2026-11-17)
 
 - **Upgrade note.** Breaking: the levels of `checks.json` are renamed (below). `compat.json` pairs Core 0.24.0 with Unity package 0.20.x only; packages 0.17.x to 0.19.x are paired with Core below 0.24 and cannot read the new keys. Release the package first, rename the levels in every `checks.json`, map generator, test and document of the project, then update with `pipx upgrade valtrion` (and `valtrion hosts sync` on SSH hosts). Packages 0.17.x to 0.19.x stay with Core 0.23.x.
