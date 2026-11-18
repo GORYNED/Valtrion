@@ -97,7 +97,7 @@ Install and integrate
    compatible Test Framework version (Valtrion's test project uses 1.8.0).
 5. Reuse suitable existing tests, or copy examples/unity-smoke into a dedicated
    Assets/Validation test folder. Its assembly is Valtrion.SmokeTests. Copy
-   examples/smoke.plan.json to validation/smoke.plan.json. Avoid duplicate assembly
+   examples/smoke.plan.json to tools/valtrion/plans/smoke.plan.json. Avoid duplicate assembly
    names. Add tools/valtrion/valtrion.json with unityProject relative to that file
    (for a Unity project at the Git root: "../.."; only that key). Target only platforms that really exist.
 6. Add output/cache paths to the project's ignore rules. Keep Unity-generated

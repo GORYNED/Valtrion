@@ -171,8 +171,110 @@ class ProfilesLocationTests(ProjectCase):
         self.assertNotIn("none", (first, second))
         self.assertNotEqual(first, second)
 
+    def test_a_git_file_stops_the_search_like_a_git_folder(self):
+        (self.repo / ".git").write_text("gitdir: elsewhere", encoding="utf-8")
+        outer = self.base / "tools" / "valtrion"
+        outer.mkdir(parents=True)
+        (outer / "profiles.json").write_text("{}", encoding="utf-8")
+        self.assertEqual(self.repo / "tools" / "valtrion" / "profiles.json", project.profiles_file(self.unity))
+
+    def test_a_unity_project_in_a_subfolder_reads_the_profiles_of_the_repository_root(self):
+        from valtrion.providers.unity import support
+        (self.repo / ".git").mkdir()
+        target = self.repo / "tools" / "valtrion" / "profiles.json"
+        target.parent.mkdir(parents=True)
+        target.write_text(json.dumps({"schema": "gdv.profiles/1", "profiles": {"Validation": {"editor": {"planAssembly": "A"}}}}), encoding="utf-8")
+        self.assertEqual({"Validation": {"editor": {"planAssembly": "A"}}}, support.load_profiles(self.unity))
+
+    def test_a_malformed_profiles_file_is_named_by_its_path(self):
+        from valtrion.providers.unity import support
+        (self.repo / ".git").mkdir()
+        target = self.repo / "tools" / "valtrion" / "profiles.json"
+        target.parent.mkdir(parents=True)
+        target.write_text("{", encoding="utf-8")
+        with self.assertRaises(support.ProfileError) as caught:
+            support.load_profiles(self.unity)
+        self.assertIn(str(target), str(caught.exception))
+
     def test_without_a_repository_the_expected_path_is_below_the_project(self):
         self.assertEqual(self.unity / "tools" / "valtrion" / "profiles.json", project.profiles_file(self.unity))
+
+
+class StrayFileTests(ProjectCase):
+    def put(self, relative, text="{}"):
+        path = self.repo / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+
+    def test_files_in_the_right_place_give_no_warning(self):
+        (self.repo / ".git").mkdir()
+        self.put("tools/valtrion/valtrion.json", '{"unityProject": "../../game/UnityProject"}')
+        self.put("tools/valtrion/profiles.json", '{"schema": "gdv.profiles/1", "profiles": {}}')
+        self.put("tools/valtrion/plans/smoke.plan.json")
+        self.put("tools/valtrion/plans/night.pipeline.json")
+        self.assertEqual([], project.stray_files(self.unity))
+
+    def test_every_stray_file_is_one_warning_that_names_where_it_belongs(self):
+        (self.repo / ".git").mkdir()
+        self.put("valtrion.json")
+        self.put("game/UnityProject/validation/device/profiles.json", '{"schema": "gdv.profiles/1"}')
+        self.put("validation/device/smoke.plan.json")
+        self.put("docs/night.pipeline.json")
+        self.put("validation/device/checks.json")
+        warnings = project.stray_files(self.unity)
+        self.assertEqual(7, len(warnings), warnings)
+        joined = " | ".join(warnings)
+        for expected in ("valtrion.json is not read: move it to tools/valtrion/valtrion.json",
+                         "game/UnityProject/validation/device/profiles.json is not read: move it to tools/valtrion/profiles.json",
+                         "validation/device/smoke.plan.json is outside tools/valtrion/: move it to tools/valtrion/plans/smoke.plan.json",
+                         "docs/night.pipeline.json is outside tools/valtrion/: move it to tools/valtrion/plans/night.pipeline.json",
+                         "validation/device/checks.json is a check map",
+                         "validation/device/ is a Valtrion folder in the wrong place"):
+            self.assertIn(expected, joined)
+
+    def test_a_profiles_json_of_another_tool_is_not_reported(self):
+        (self.repo / ".git").mkdir()
+        self.put("web/profiles.json", '{"user": "x"}')
+        self.assertEqual([], project.stray_files(self.unity))
+
+    def test_cache_and_build_folders_are_skipped(self):
+        (self.repo / ".git").mkdir()
+        for folder in ("Library", "node_modules", "Temp", "Builds", "Logs", "obj", "game/UnityProject/Library/PackageCache/x"):
+            self.put(f"{folder}/a.plan.json")
+        self.assertEqual([], project.stray_files(self.unity))
+
+    def test_the_warnings_are_sorted_and_bounded(self):
+        (self.repo / ".git").mkdir()
+        for index in range(project.MAX_STRAY_WARNINGS + 5):
+            self.put(f"plans/p{index:03d}.plan.json")
+        warnings = project.stray_files(self.unity)
+        self.assertEqual(project.MAX_STRAY_WARNINGS + 1, len(warnings))
+        self.assertIn("p000.plan.json", warnings[0])
+        self.assertEqual("5 more Valtrion files outside tools/valtrion/", warnings[-1])
+
+    def test_without_a_git_folder_only_the_unity_project_folder_is_searched(self):
+        self.put("outside.plan.json")
+        self.put("game/UnityProject/smoke.plan.json")
+        warnings = project.stray_files(self.unity)
+        self.assertEqual(1, len(warnings), warnings)
+        self.assertIn("smoke.plan.json", warnings[0])
+
+    def test_a_git_file_of_a_worktree_marks_the_repository_root(self):
+        (self.repo / ".git").write_text("gitdir: elsewhere", encoding="utf-8")
+        self.put("a.plan.json")
+        self.assertEqual(self.repo, project.repository_root(self.unity))
+        self.assertEqual(1, len(project.stray_files(self.unity)))
+
+    def test_doctor_lists_them_without_blocking(self):
+        self.lock({"version": "1.0.0", "source": "registry"})
+        (self.repo / ".git").mkdir()
+        self.put("smoke.plan.json")
+        environ = {core.HOME_ENV: str(self.base / "home"), "GDV_UNITY_HUB_PATHS": str(self.base / "none")}
+        with mock.patch.dict(os.environ, environ):
+            code, out, _ = run("doctor", "--json", "--project", str(self.unity))
+        report = json.loads(out)["project"]
+        self.assertEqual((0, "ok", 1), (code, report["status"], len(report["warnings"])))
+        self.assertIn("tools/valtrion/plans/smoke.plan.json", report["warnings"][0])
 
 
 class VersionTests(unittest.TestCase):

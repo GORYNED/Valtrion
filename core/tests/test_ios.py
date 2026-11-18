@@ -527,7 +527,7 @@ class IosTests(unittest.TestCase):
         (self.project / Path("tools") / "valtrion" / "profiles.json").unlink()
         outcome = self.adapter.build(self.project, "Internal", self.out)
         self.assertEqual(constants.BLOCKED, outcome.status)
-        self.assertIn("profiles.json", outcome.reason)
+        self.assertIn(str(Path("tools") / "valtrion" / "profiles.json"), outcome.reason)
         self.write_profiles({"executeMethod": "M.B", "bogus": 1})
         self.assertIn("unknown keys", self.adapter.build(self.project, "Internal", self.out).reason)
         self.write_profiles({"executeMethod": "M.B"}, profile="Other")

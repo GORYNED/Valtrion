@@ -11,7 +11,7 @@ This page describes the platform providers (`ios`, `android`, `windows`, `macos`
 
 ## Build profiles
 
-Every provider that builds reads its settings from `tools/valtrion/profiles.json` in the repository of the Unity project (next to `valtrion.json`, see [the folder layout](cli.md#the-toolsvaltrion-folder); a `validation/device/profiles.json` is no longer read):
+Every provider that builds reads its settings from `tools/valtrion/profiles.json` in the repository of the Unity project (the nearest one from the Unity project folder up to its repository root; next to `valtrion.json` in the usual layout, see [the folder layout](cli.md#the-toolsvaltrion-folder); a `validation/device/profiles.json` is no longer read):
 
 ```json
 {
@@ -100,7 +100,7 @@ Runs a plan as a Unity Test Framework PlayMode test in a background batch-mode E
 
 ## unity-support
 
-`editor.runner` sets the test runner script (relative to the Unity project); without it the first `tools/validation/run-unity-tests.py` found in the project folder or above is used.
+`editor.runner` and `signScript` in `profiles.json` are paths relative to the Unity project. `editor.runner` sets the test runner script; without it the first `tools/validation/run-unity-tests.py` found in the project folder or above is used.
 
 `valtrion.providers.unity.support` is shared code, not a platform: reading `profiles.json`, finding the Editor of a project, tolerant file copies, and turning a process exit plus its `GDV-RESULT` or `STATUS` line into a status (never a `PASS` without a result).
 

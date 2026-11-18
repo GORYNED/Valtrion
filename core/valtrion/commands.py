@@ -306,9 +306,12 @@ def _project_check(arguments: argparse.Namespace) -> dict | None:
     if folder is None:
         return {"status": "skipped", "reason": "no Unity project given (no --project DIR, GDV_UNITY_PROJECT or tools/valtrion/valtrion.json)"}
     result = {**project.check_project(folder), "project": str(folder)}
+    warnings = project.stray_files(folder)
     leftover = project.leftover_check_map(folder)
-    if leftover is not None:
-        result["warnings"] = [f"{leftover} is a check map: Valtrion 1.0 selects nothing and no longer reads it; delete it (see the Core CHANGELOG, 1.0.0)"]
+    if leftover is not None and not any("checks.json" in warning for warning in warnings):
+        warnings.insert(0, f"{leftover} is a check map: Valtrion 1.0 selects nothing and no longer reads it; delete it (see the Core CHANGELOG, 1.0.0)")
+    if warnings:
+        result["warnings"] = warnings
     return result
 
 

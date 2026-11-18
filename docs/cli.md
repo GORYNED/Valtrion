@@ -43,9 +43,9 @@ Commands that need the Unity project (`run`, `pipeline`, `doctor --project`) res
 2. the `GDV_UNITY_PROJECT` environment variable
 3. the nearest `tools/valtrion/valtrion.json`, found by walking up from the current directory; the search ends at the first folder that has a `.git`. Its content is `{"unityProject": "<path relative to the file>"}`; for a Unity project at the repository root that is `{"unityProject": "../.."}`.
 
-Everything Valtrion reads from a project is in the `tools/valtrion/` folder of its repository: `valtrion.json` and the build profiles `profiles.json`. The profiles are the `tools/valtrion/profiles.json` of the Unity project's repository (the nearest one when walking up from the Unity project folder, ending at the first folder with a `.git`), whichever of the three rules named the project. Nothing is read from any other place; `valtrion.json` at a project root and `validation/device/profiles.json` (the places before 1.1) are ignored.
+Everything Valtrion reads from a project is in the `tools/valtrion/` folder of its repository: `valtrion.json` and the build profiles `profiles.json`. The profiles are the `tools/valtrion/profiles.json` of the Unity project's repository (the nearest one when walking up from the Unity project folder, ending at the first folder with a `.git`), whichever of the three rules named the project. Valtrion's own configuration is read from no other place, and `tools/valtrion/` is the only default; `valtrion.json` at a project root and `validation/device/profiles.json` (the places before 1.1) are ignored.
 
-`valtrion.json` only names a folder. It does not run anything. A missing folder or an invalid file is `BLOCKED`. `unityProject` is its only key: any other key is an error, and `"checks"` (the check map of Valtrion before 1.0) says so in its message. `doctor --project` warns about a leftover `validation/device/checks.json`, which Valtrion no longer reads; the warning does not block.
+`valtrion.json` only names a folder. It does not run anything. A missing folder or an invalid file is `BLOCKED`. `unityProject` is its only key: any other key is an error, and `"checks"` (the check map of Valtrion before 1.0) says so in its message. `doctor --project` warns about a leftover `validation/device/checks.json`, which Valtrion no longer reads, and about Valtrion files outside `tools/valtrion/` (see [the folder](#the-toolsvaltrion-folder)); warnings do not block.
 
 ## The `tools/valtrion/` folder
 
@@ -61,7 +61,7 @@ tools/valtrion/
   README.md       how the project uses Valtrion (install, pins, typical commands, a pointer to the handbook)
 ```
 
-Valtrion itself reads only `valtrion.json` and `profiles.json`; the rest is the project's own convention. Nothing else of Valtrion belongs elsewhere in the project, except the Unity package entry in `Packages/manifest.json` and `Packages/packages-lock.json`.
+Valtrion itself reads only `valtrion.json` and `profiles.json`; the rest is the project's own convention. Nothing else of Valtrion belongs elsewhere in the project, except the Unity package entry in `Packages/manifest.json` and `Packages/packages-lock.json`. `valtrion doctor --project` checks this: it walks the repository of the Unity project (without a `.git`, the Unity project folder; it skips `.git`, `Library`, `node_modules`, `Temp`, `Builds`, `Logs`, `obj`, package caches and `tools/valtrion/`) and adds a `warnings` entry for each `valtrion.json`, `gdv.profiles/1` `profiles.json`, `*.plan.json` or `*.pipeline.json` outside `tools/valtrion/`, for a `validation/device/` folder with other files in it and for a `validation/device/checks.json`. Each warning names the file and where it belongs; the exit code does not change, and at most 20 are listed.
 
 A minimal `tools/valtrion/valtrion.json` for a Unity project at the repository root:
 
