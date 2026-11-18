@@ -8,6 +8,7 @@ Core (the `valtrion` Python package) and the Unity package `com.goryned.valtrion
 - **Removed.** `valtrion select` and `check-config`, `build --check-key`, `checks.json` and everything it held, and the `checks` key of `valtrion.json`. `valtrion.json` now holds `unityProject` only; any other key is an error.
 - **Stable.** Valtrion 1.0 is marked as a stable release: the GitHub Release is no longer a pre-release and the PyPI classifier is `Development Status :: 5 - Production/Stable`.
 - **`report` shows the results of runs.** It lists the newest result of each name, platform and host in a folder: status, passed, failed and skipped tests, the files of the run and how to run again what did not pass. It no longer reads a diff, a level or a list of expected checks, so there are no `NOT_RUN` or `NOT_VERIFIED` rows; a result from a dirty tree says so in its detail. `--base-ref`, `--kind`, `--level`, `--checks`, `--include-worktree`, `--offline` and the pull request block `Local verification` are gone (`--pr` prints a block titled `Run results`).
+- **`report --sha` no longer defaults to `HEAD`.** Without `--sha`, `report` shows the newest result of every name, platform and host, whatever the commit; `--sha` keeps the results of one commit.
 - **`result write` takes any name.** `result write NAME` accepts any identifier as the name; `--platform` defaults to `editor` and `--evidence` follows it. The fixed key forms (`structure`, `editmode:X`, `playmode:X`, `player:X`) are no longer required.
 
 ## 0.25.0 (2026-11-18)

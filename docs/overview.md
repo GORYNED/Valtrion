@@ -14,6 +14,8 @@ is the only ready app integration: Valtrion can build the app, install it, start
 with the plan, watch it, collect the result and compare compatible metrics.
 A run that could not prove something says so (`BLOCKED`, `NEEDS_PERMISSION`).
 
+Valtrion does not choose what to test. You or your agent name what to run; Valtrion executes it and reports. See [What to run](cli.md#what-to-run).
+
 ## Parts
 
 | Part | Role |

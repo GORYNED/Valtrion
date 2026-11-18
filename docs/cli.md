@@ -4,6 +4,19 @@ This page lists every `valtrion` command with its options, explains how a comman
 
 `valtrion` is also available as `python -m valtrion`. `valtrion --version` prints `valtrion <version> (contract <n>)`.
 
+## What to run
+
+You, or your agent, name what to run; Valtrion executes it (queue, Editor slots, memory limits, hang detection) and reports. It selects nothing itself.
+
+- Specific tests: `valtrion unity run -- -batchmode -nographics -runTests -testPlatform EditMode -assemblyNames A -testFilter X -testResults R.xml`
+- All tests: the same command without `-assemblyNames` and `-testFilter`.
+- A build: `valtrion build --repo REPO --platform P`.
+- A run on a device: `valtrion run PLAN --repo REPO --sha SHA --app APP`, or a whole `valtrion pipeline FILE`.
+- Run the failures again: `valtrion unity run --rerun-failed R.xml -- <the same Unity arguments>`, or `valtrion pipeline FILE --only-failed`.
+- Show the outcome: `valtrion report --results FOLDER`. `run`, `pipeline` and `build` write a `gdv.result/1` there themselves. `unity run` does not: record it with `valtrion result write NAME --status PASS --out FOLDER --artifact xml=R.xml --count passed=120 --count failed=0` (a status other than `PASS` needs `--reason`).
+
+See [`unity run`](#unity-run), [Results of runs](#results-of-runs) and [Selected stages](#selected-stages-reused-results-and-repeats).
+
 ## Exit codes
 
 | Code | Meaning |
@@ -199,7 +212,7 @@ Two results are compared only when plan id, plan SHA-256, device class, OS major
 
 | Command | What it does |
 | --- | --- |
-| `report --results FOLDER [--sha SHA] [--pr] [--json]` | Show the `gdv.result/1` files below `FOLDER`: one row per name (`plan.id`), platform and host, the newest result, with status, passed, failed and skipped tests when the result records them, evidence, host and a detail (the reason, a dirty tree, offloaded, reused from a cached run). For a row that did not pass it lists the files of the run (test XML, logs) and how to run it again: `valtrion unity run --rerun-failed RESULTS.xml -- ...` for a test XML, `valtrion pipeline FILE --only-failed` for a pipeline. `--sha` keeps the results of one commit. `--pr` prints the block with a heading. Exit code of the worst row; 2 when the folder holds no result or a file in it is unreadable or invalid. |
+| `report --results FOLDER [--sha SHA] [--pr] [--json]` | Show the `gdv.result/1` files below `FOLDER`: one row per name (`plan.id`), platform and host, the newest result, with status, passed, failed and skipped tests when the result records them, evidence, host and a detail (the reason, a dirty tree, offloaded, reused from a cached run). For a row that did not pass it lists the files of the run (test XML, logs) and how to run it again: `valtrion unity run --rerun-failed RESULTS.xml -- ...` for a test XML, `valtrion pipeline FILE --only-failed` for a pipeline. `--sha` keeps the results of one commit. `--pr` prints the block with a heading. Exit code of the worst row; 2 when the folder holds no result, or when every row passed but a file in it is unreadable or invalid (a `FAIL` row stays 1). |
 | `result write NAME --status STATUS --out FOLDER [--reason TEXT] [--evidence KIND] [--platform P] [--repo-dir DIR] [--sha SHA] [--dirty] [--repo R] [--profile P] [--unity V] [--host-id H] [--started-utc T] [--finished-utc T] [--artifact KIND=FILE] [--count NAME=N] [--unverified TEXT]` | Write a `gdv.result/1` for a run the project made with its own runner, so `report` can show it. |
 
 `result write` names the run freely: `NAME` becomes `plan.id` (letters, digits and `._:-`). The caller decides the status (`PASS`, `FAIL`, `BLOCKED`, `NEEDS_PERMISSION`, `STALL`, `TIMEOUT`): Valtrion does not read test XML or apply a skip policy. Any status but `PASS` needs `--reason`; `PASS` takes none. The commit is `HEAD` of the repository of `--repo-dir` (default: the current directory); `--sha` is accepted only when it equals `HEAD`. `candidate.dirty` comes from `git status` of that repository (untracked files under `--out` are not counted); `--dirty` marks it dirty even when git shows a clean tree, never the other way round. `--platform` is where it ran (`editor` by default; `windows`, `macos`, `ios`, `android`). `--evidence` is `editor` or `host` (default: `editor` on platform `editor`, `host` otherwise); `physical` and `emulator` are refused because the result names no device: a device or emulator run is recorded by `valtrion run` or `pipeline`. `--host-id` defaults to this machine's host id (transport `local`). `--artifact KIND=FILE` lists an existing file with its SHA-256 (such as the test XML, kind `xml`); `--count NAME=N` records a number as a metric with unit `count` (`passed`, `failed` and `skipped` are shown by `report`). Because no plan file exists, `plan.sha256` is the SHA-256 of the name's UTF-8 text. `runId` is deterministic from name, commit, host, platform, evidence and tree state, so the file name is too: writing the same result again replaces it. The command prints the path of the file and exits 0 whatever the status written; 1 for refused inputs (nothing is written), 2 when git cannot be read. The document is validated with the `gdv.result/1` validator before it is written.

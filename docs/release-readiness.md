@@ -7,7 +7,7 @@ in PR #1. Packages and a stable 1.0 release were outside that launch; the proces
 PyPI and GitHub pre-releases is described in [releasing](releasing.md); Core 0.7.4
 and Unity package 0.7.1 were published through it after this record. Exact tested
 revisions and the final review are recorded in the PR; earlier results are
-identified below. Actions settings and billing are not changed by this launch.
+identified below. From 1.0.0 releases are stable (no longer pre-releases); this record is kept as history. Actions settings and billing are not changed by this launch.
 
 ## CURRENT — product and repository
 
