@@ -564,6 +564,13 @@ class PageTests(unittest.TestCase):
         self.assertNotIn("stylesheet", html)
         self.assertNotIn("innerHTML", html, "machine values must be put on the page as text")
 
+    def test_the_page_opens_on_all_hosts_with_a_view_per_host(self) -> None:
+        html = dashboardpage.page()
+        self.assertIn("sel = 'all'", html)
+        self.assertIn('id="view-all"', html)
+        self.assertIn('id="view-host"', html)
+        self.assertIn("All hosts", html)
+
 
 if __name__ == "__main__":
     unittest.main()
