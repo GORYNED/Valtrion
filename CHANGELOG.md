@@ -2,7 +2,7 @@
 
 Core (the `valtrion` Python package) and the Unity package `com.goryned.valtrion.unity` are versioned independently. The Unity changelog is in `integrations/unity/com.goryned.valtrion.unity/CHANGELOG.md`; `compat.json` lists compatible pairs.
 
-## Unreleased
+## 1.2.0 (2026-11-19)
 
 - **Dashboard: one tab for all hosts.** The page opens on "All hosts": totals of slots, devices, running jobs and waiting runs across every host, everything that runs now (each card tagged with its host), per-host statistics with a breakdown of recent job outcomes, and recent jobs of all hosts. Each host keeps its own tab with the host details (system, memory, disk, devices) and the full view as before. Slot cards now have equal height and line up in rows.
 
