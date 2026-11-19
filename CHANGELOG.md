@@ -2,6 +2,10 @@
 
 Core (the `valtrion` Python package) and the Unity package `com.goryned.valtrion.unity` are versioned independently. The Unity changelog is in `integrations/unity/com.goryned.valtrion.unity/CHANGELOG.md`; `compat.json` lists compatible pairs.
 
+## Unreleased
+
+- **Dashboard: one tab for all hosts.** The page opens on "All hosts": totals of slots, devices, running jobs and waiting runs across every host, everything that runs now (each card tagged with its host), per-host statistics with a breakdown of recent job outcomes, and recent jobs of all hosts. Each host keeps its own tab with the host details (system, memory, disk, devices) and the full view as before. Slot cards now have equal height and line up in rows.
+
 ## 1.1.0 (2026-11-18)
 
 - **Upgrade note.** Breaking for projects that use the old places. Everything Valtrion reads from a project now lives in one folder of the repository, `tools/valtrion/`. The old places are no longer read (there is no fallback and no warning): `valtrion.json` at a project root and `<unity project>/validation/device/profiles.json`. Move `valtrion.json` to `tools/valtrion/valtrion.json` and `profiles.json` to `tools/valtrion/profiles.json`, and change `unityProject` in `valtrion.json` to be relative to its new place: for a Unity project at the repository root it is `"../.."`, for a project in a folder `MyGame` it is `"../../MyGame"`. A relative `editor.runner` in `profiles.json` is still relative to the Unity project.

@@ -14,7 +14,7 @@ body{min-height:100vh;background:radial-gradient(1100px 520px at 88% -10%,#0d3a5
 header{display:flex;align-items:center;gap:14px;padding:18px 28px;border-bottom:1px solid var(--line);flex-wrap:wrap}
 header .trident{width:34px;height:34px}
 h1{font:600 24px/1 var(--font);letter-spacing:-.02em;margin:0}
-.hosts{display:flex;gap:8px;flex-wrap:wrap}
+.hosts{display:flex;gap:8px;flex-wrap:wrap}[hidden]{display:none!important}
 .hostchip{display:flex;align-items:center;gap:8px;font:inherit;font-size:13px;color:var(--muted);background:var(--surface);border:1px solid var(--line);
 border-radius:999px;padding:5px 12px;cursor:pointer}
 .hostchip:hover{border-color:#1689f8aa;color:var(--text)}.hostchip.sel{border-color:var(--accent);color:var(--text);box-shadow:0 0 0 3px #1689f822}
@@ -35,13 +35,20 @@ a.tile:hover{border-color:var(--accent);transform:translateY(-1px)}a.tile:focus-
 .tile.warn .meter i{background:var(--amber)}
 h2,h3{scroll-margin-top:14px}
 @keyframes flash{0%{color:var(--blue)}100%{color:inherit}}h2:target{animation:flash 1.6s ease-out}
-.card+.card{margin-top:12px}
+#memory>.card+.card{margin-top:12px}
 h2{font:600 16px/1 var(--font);margin:28px 0 6px;display:flex;align-items:center;gap:10px}
 h2 .count{color:var(--muted);font-weight:400;font-size:13px}
 .hint{color:var(--muted);font-size:12.5px;margin:0 0 12px;max-width:820px;line-height:1.5}
 h3{font:500 12px/1 var(--body);text-transform:uppercase;letter-spacing:.07em;color:var(--muted);margin:16px 0 8px}
-.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:12px}
-.card{background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:13px 15px;min-height:104px}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:12px;align-items:stretch}
+.card{background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:13px 15px;min-height:132px;display:flex;flex-direction:column}
+.card>.bar{margin-top:auto}.card>:has(+.bar){margin-bottom:10px}
+.hosttag{align-self:flex-start;margin-top:6px;font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--teal);border:1px solid var(--teal-deep);border-radius:6px;padding:1px 7px}
+.kv{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px 18px;margin-bottom:22px}
+.kv .k{color:var(--muted);font-size:11.5px;text-transform:uppercase;letter-spacing:.06em}.kv .v{font:500 15px/1.3 var(--font);margin-top:3px;overflow-wrap:anywhere}
+.hostchip.all{font-weight:600}
+.outcome{display:flex;gap:18px;flex-wrap:wrap;margin-top:8px}
+.section-note{color:var(--muted);font-size:12px;margin:6px 2px 0}
 .card.active{border-color:#1689f8aa;box-shadow:0 0 0 1px #1689f833,0 8px 28px #00c4ff12}
 .card.free{background:transparent;border-style:dashed;opacity:.75}.card.off{opacity:.45}
 .card .head{display:flex;justify-content:space-between;align-items:center;gap:8px;color:var(--muted);font-size:12px;text-transform:uppercase;letter-spacing:.05em}
@@ -91,7 +98,7 @@ const gb = (mib) => (mib / 1024).toFixed(mib >= 10240 ? 0 : 1) + ' GB';
 const short = (s, n = 70) => (s && s.length > n ? s.slice(0, n - 1) + '…' : s || '');
 const baseName = (p) => (p || '').replace(/[\\/]+$/, '').split(/[\\/]/).pop();
 const COLORS = ['#00c4ff', '#00e2ca', '#1689f8', '#7c8cff', '#f5b84c', '#ff8f6b', '#b58cff', '#5fd1a0'];
-let last = 0, all = null, sel = 'local';
+let last = 0, all = null, sel = 'all';
 
 function fill(node, children) { node.replaceChildren(...children); }
 function tile(label, value, note, warn, tip, small, href, used) {
@@ -192,8 +199,24 @@ function diskCard(mach) {
   const stack = el('div', 'stack'), part = el('i'); part.style.width = (100 * used / mach.diskTotalGiB) + '%'; part.style.background = '#1689f8'; stack.append(part); c.append(stack);
   return c;
 }
-function renderView(s) {
-  const slots = s.slots || { capacity: 0, unityEditor: s.leases.filter((l) => l.resource.startsWith('unity-editor:')).map((l, i) => ({ slot: i + 1, state: l.state, purpose: l.purpose, owner: l.owner, pid: l.pid, heldSec: l.heldSec, renewedSec: l.renewedSec })) };
+function slotsOf(s) {
+  return s.slots || { capacity: 0, unityEditor: s.leases.filter((l) => l.resource.startsWith('unity-editor:')).map((l, i) => ({ slot: i + 1, state: l.state, purpose: l.purpose, owner: l.owner, pid: l.pid, heldSec: l.heldSec, renewedSec: l.renewedSec })) };
+}
+function hostInfo(h) {
+  const s = h.snap, slots = slotsOf(s), mach = s.machine, mem = mach.memory, devs = (s.devices || []).filter((d) => d.exclusive);
+  const editors = s.unity.editors.filter((e) => !e.worker);
+  const items = [['Host', h.name], ['System', h.os || '–'], ['Unity slots', String(slots.capacity || slots.unityEditor.length)],
+    ['Devices', devs.length ? `${devs.filter((d) => d.online).length} online of ${devs.length}` : 'none'],
+    ['Memory', mem ? gb(mem.totalMiB) : (mach.freeMemoryMiB == null ? '–' : gb(mach.freeMemoryMiB) + ' free')],
+    ['Disk', mach.diskTotalGiB == null ? '–' : Math.round(mach.diskTotalGiB) + ' GB'],
+    ['Unity Editors running', s.unity.readable ? String(editors.length) : '–']];
+  const box = el('div', 'kv');
+  items.forEach(([k, v]) => { const d = el('div'); d.append(el('div', 'k', k), el('div', 'v', v)); box.append(d); });
+  return box;
+}
+function renderView(s, h) {
+  fill($('host-info'), h ? [hostInfo(h)] : []);
+  const slots = slotsOf(s);
   const total = slots.capacity || slots.unityEditor.length, busy = slots.unityEditor.filter((x) => x.state === 'held').length;
   const devs = (s.devices || []).filter((d) => d.exclusive), devBusy = devs.filter((d) => d.busy).length;
   const active = s.jobs.filter((j) => j.active), waiting = s.leases.reduce((n, l) => n + (l.waiting || 0), 0);
@@ -228,6 +251,56 @@ function renderView(s) {
   $('jobs-count').textContent = s.jobs.length;
   fill($('jobs'), [table(['Job', 'Project', 'Status', 'Started', 'Reason'], s.jobs.map((j) => [short(j.id, 56), j.project, status(j.active ? 'running' : (j.status || j.state || '')), j.ageSec == null ? '' : dur(j.ageSec) + ' ago', short(j.reason, 80)]))]);
 }
+function hostStats(s) {
+  const slots = slotsOf(s), devs = (s.devices || []).filter((d) => d.exclusive), jobs = {};
+  s.jobs.forEach((j) => { const k = j.active ? 'running' : (j.status || j.state || 'unknown'); jobs[k] = (jobs[k] || 0) + 1; });
+  return { total: slots.capacity || slots.unityEditor.length, busy: slots.unityEditor.filter((x) => x.state === 'held').length, devTotal: devs.length, devBusy: devs.filter((d) => d.busy).length,
+    active: s.jobs.filter((j) => j.active).length, waiting: s.leases.reduce((n, l) => n + (l.waiting || 0), 0), jobs, slots, devs };
+}
+const OUTCOME = { running: '#00c4ff', PASS: '#00e2ca', FAIL: '#ff6b6b', TIMEOUT: '#ff6b6b', STALL: '#ff6b6b', BLOCKED: '#f5b84c', NEEDS_PERMISSION: '#f5b84c' };
+function tagged(card, name) { card.insertBefore(el('div', 'hosttag', name), card.children[1]); return card; }
+function renderAll(list) {
+  const ok = list.filter((h) => h.snap).map((h) => ({ h, s: h.snap, st: hostStats(h.snap) }));
+  const sum = (f) => ok.reduce((n, x) => n + f(x.st), 0);
+  const total = sum((x) => x.total), busy = sum((x) => x.busy), devTotal = sum((x) => x.devTotal), devBusy = sum((x) => x.devBusy), active = sum((x) => x.active), waiting = sum((x) => x.waiting);
+  fill($('all-tiles'), [
+    tile('Hosts', `${ok.length}`, ok.length < list.length ? `${list.length - ok.length} not answering` : 'all answering', ok.length < list.length, 'Hosts that answered the last request.', `of ${list.length}`, null, list.length ? ok.length / list.length : 0),
+    tile('Unity slots', `${total - busy}`, `${busy} busy`, total > 0 && busy === total, 'Free places for a Unity Editor on all hosts together.', `free of ${total}`, null, total ? busy / total : 0),
+    tile('Device slots', `${devTotal - devBusy}`, devTotal ? `${devBusy} busy` : 'no devices registered', false, 'Free phones, tablets and emulators on all hosts.', `free of ${devTotal}`, null, devTotal ? devBusy / devTotal : 0),
+    tile('Jobs running', active, 'background pipelines', false, 'Detached jobs on all hosts.', null, null),
+    tile('Waiting in line', waiting, waiting ? 'runs waiting for a slot, project or device' : 'no run is waiting', waiting > 0, 'Runs that asked for something somebody else holds.', null, null)]);
+
+  const cards = [];
+  ok.forEach(({ h, st, s }) => {
+    st.slots.unityEditor.filter((x) => x.state === 'held').forEach((x) => cards.push(tagged(editorSlot(x, st.total), h.name)));
+    st.devs.filter((d) => d.busy).forEach((d) => cards.push(tagged(deviceSlot(d), h.name)));
+    s.jobs.filter((j) => j.active).forEach((j) => cards.push(tagged(jobCard(j), h.name)));
+  });
+  $('all-running-count').textContent = cards.length || '';
+  if (cards.length) { const g = el('div', 'grid'); cards.forEach((c) => g.append(c)); fill($('all-running'), [g]); } else fill($('all-running'), [el('div', 'empty', 'Nothing is running on any host.')]);
+
+  const rows = list.map((h) => {
+    if (!h.snap) return [h.name, h.os || '', el('span', 'sub', h.loading ? 'asking…' : (h.legacy ? h.note : (h.error ? `no answer: ${h.error}` : 'no data'))), '', '', '', '', ''];
+    const st = hostStats(h.snap), j = st.jobs, bad = (j.FAIL || 0) + (j.TIMEOUT || 0) + (j.STALL || 0);
+    return [h.name, h.os || '', `${st.busy} of ${st.total}`, `${st.devBusy} of ${st.devTotal}`, st.active, st.waiting || '', j.PASS || 0, bad || ''];
+  });
+  const totals = {};
+  ok.forEach((x) => Object.keys(x.st.jobs).forEach((k) => { totals[k] = (totals[k] || 0) + x.st.jobs[k]; }));
+  const all_n = Object.values(totals).reduce((a, b) => a + b, 0), stack = el('div', 'stack'), legend = el('div', 'legend');
+  Object.keys(totals).sort().forEach((k) => {
+    const color = OUTCOME[k] || '#5d7694', part = el('i'); part.style.width = (100 * totals[k] / all_n) + '%'; part.style.background = color; part.title = `${k}: ${totals[k]}`; stack.append(part);
+    const row = el('div'), sw = el('span', 'sw'); sw.style.background = color; row.append(sw, el('span', 'name', k), el('span', 'num', `${totals[k]} · ${(100 * totals[k] / all_n).toFixed(0)}%`)); legend.append(row);
+  });
+  const stats = [table(['Host', 'System', 'Unity slots busy', 'Devices busy', 'Jobs running', 'Waiting', 'Recent passed', 'Recent failed'], rows)];
+  if (all_n) { const c = el('div', 'card'); c.style.minHeight = '0'; c.style.marginTop = '12px'; c.append(el('div', 'title', `Recent jobs by outcome · ${all_n} in total`), stack, legend); stats.push(c); }
+  fill($('all-stats'), stats);
+
+  const jobRows = [];
+  ok.forEach(({ h, s }) => s.jobs.forEach((j) => jobRows.push({ h, j })));
+  jobRows.sort((a, b) => (a.j.ageSec == null ? 1e12 : a.j.ageSec) - (b.j.ageSec == null ? 1e12 : b.j.ageSec));
+  $('all-jobs-count').textContent = jobRows.length;
+  fill($('all-jobs'), [table(['Host', 'Job', 'Project', 'Status', 'Started', 'Reason'], jobRows.slice(0, 40).map(({ h, j }) => [h.name, short(j.id, 56), j.project, status(j.active ? 'running' : (j.status || j.state || '')), j.ageSec == null ? '' : dur(j.ageSec) + ' ago', short(j.reason, 80)]))]);
+}
 function hostsOf(s) {
   const list = [{ id: 'local', name: s.host.id, os: s.host.os, snap: s }];
   (s.remotes || []).forEach((r) => list.push({ id: r.id, name: r.id, os: r.os, snap: r.snapshot || null, ok: r.ok, legacy: r.legacy, note: r.note, error: r.error, loading: r.loading, age: r.ageSec }));
@@ -238,7 +311,12 @@ function busyCount(snap) {
   return snap.jobs.filter((j) => j.active).length + slots;
 }
 function renderHosts(list) {
-  fill($('hosts'), list.map((h) => {
+  const total = list.reduce((n, h) => n + (h.snap ? busyCount(h.snap) : 0), 0);
+  const allChip = el('button', 'hostchip all' + (sel === 'all' ? ' sel' : ''));
+  allChip.append(el('span', 'dot'), el('span', '', 'All hosts'));
+  if (total) allChip.append(el('span', 'badge', total));
+  allChip.onclick = () => { sel = 'all'; if (all) render(all); };
+  fill($('hosts'), [allChip].concat(list.map((h) => {
     const b = el('button', 'hostchip' + (h.id === sel ? ' sel' : ''));
     const state = h.snap ? 'ok' : (h.loading ? 'wait' : (h.ok === false ? 'bad' : 'wait'));
     b.append(el('span', 'dot ' + state), el('span', '', `${h.name} · ${h.os}`));
@@ -246,10 +324,11 @@ function renderHosts(list) {
     b.title = h.age != null ? `updated ${Math.round(h.age)}s ago` : '';
     b.onclick = () => { sel = h.id; if (all) render(all); };
     return b;
-  }));
+  })));
 }
 function renderMessage(h) {
   const text = h.loading ? `Asking ${h.name}…` : (h.legacy ? h.note : (h.error ? `${h.name} did not answer: ${h.error}` : 'No data.'));
+  fill($('host-info'), []);
   ['tiles', 'slots', 'jobs-running', 'memory', 'leases', 'unity', 'jobs'].forEach((id) => fill($(id), []));
   ['slots-count', 'jobs-running-count', 'lease-count', 'unity-count', 'jobs-count'].forEach((id) => { $(id).textContent = ''; });
   fill($('slots'), [el('div', 'empty', text)]);
@@ -257,10 +336,12 @@ function renderMessage(h) {
 function render(s) {
   all = s; last = Date.now();
   const list = hostsOf(s);
-  if (!list.some((h) => h.id === sel)) sel = 'local';
+  if (sel !== 'all' && !list.some((h) => h.id === sel)) sel = 'all';
   renderHosts(list);
+  $('view-all').hidden = sel !== 'all'; $('view-host').hidden = sel === 'all';
+  if (sel === 'all') { renderAll(list); return; }
   const h = list.find((x) => x.id === sel);
-  if (h.snap) renderView(h.snap); else renderMessage(h);
+  if (h.snap) renderView(h.snap, h); else renderMessage(h);
 }
 async function poll() {
   try {
@@ -282,6 +363,16 @@ def page() -> str:
 <header>{brandassets.TRIDENT_SVG}<h1>Valtrion</h1><span class="hosts" id="hosts"></span><span class="spacer"></span>
 <span class="live"><span class="dot off" id="dot"></span><span id="updated">connecting…</span></span></header>
 <main>
+<div id="view-all">
+<div class="tiles" id="all-tiles"></div>
+<h2 id="all-sec-running">Running now <span class="count" id="all-running-count"></span></h2>
+<p class="hint">Everything that holds a slot or runs in the background, on every host. The tag on a card says which host it is on.</p>
+<div id="all-running"></div>
+<h2>Statistics</h2><p class="hint">Per host: how much of its capacity is in use, and how the recent jobs ended.</p><div id="all-stats"></div>
+<h2>Recent jobs <span class="count" id="all-jobs-count"></span></h2><div id="all-jobs"></div>
+</div>
+<div id="view-host" hidden>
+<div id="host-info"></div>
 <div class="tiles" id="tiles"></div>
 <h2 id="sec-slots">Slots <span class="count" id="slots-count"></span></h2>
 <p class="hint">A slot is a place for one run. The host allows a fixed number of Unity Editors at once, and each phone or tablet takes one run at a time. A slot is filled while a run uses it; the rest wait in line.</p>
@@ -293,6 +384,7 @@ def page() -> str:
 <div id="leases"></div>
 <h2 id="sec-unity">Unity Editors <span class="count" id="unity-count"></span></h2><div id="unity"></div>
 <h2 id="sec-jobs">Recent jobs <span class="count" id="jobs-count"></span></h2><div id="jobs"></div>
+</div>
 </main><footer>Valtrion dashboard · read-only</footer>
 <script>{SCRIPT}</script></body></html>
 """
