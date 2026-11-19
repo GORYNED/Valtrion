@@ -10,9 +10,9 @@ Python 3.10 or newer. Nothing else is installed at runtime (standard library onl
 
 ```
 pipx install valtrion              # latest release
-pipx install valtrion==1.1.0       # a specific release
+pipx install valtrion==1.2.0       # a specific release
 pipx upgrade valtrion              # update later
-pipx install --force valtrion==1.1.0   # pin or change to a specific release
+pipx install --force valtrion==1.2.0   # pin or change to a specific release
 valtrion --version
 ```
 

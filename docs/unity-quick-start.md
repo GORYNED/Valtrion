@@ -30,7 +30,7 @@ valtrion --version
 valtrion validate examples/smoke.plan.json
 ```
 
-Expected: `valtrion 1.1.0 (contract 2)` (or a newer version that [compat.json](../compat.json) pairs with the package), and a valid `gdv.plan/1`. If you installed from the checkout, run the same commands with the CLI path the installer printed (no environment activation or `PATH` change needed).
+Expected: `valtrion 1.2.0 (contract 2)` (or a newer version that [compat.json](../compat.json) pairs with the package), and a valid `gdv.plan/1`. If you installed from the checkout, run the same commands with the CLI path the installer printed (no environment activation or `PATH` change needed).
 
 ## 2. Add the Unity package
 
