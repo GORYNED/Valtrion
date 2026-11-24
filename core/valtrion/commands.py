@@ -1826,7 +1826,8 @@ def _unity_offload(arguments: argparse.Namespace, unity_args: list[str], found: 
     limit = arguments.timeout_sec if arguments.timeout_sec > 0 else REMOTE_UNITY_NO_TIMEOUT_SEC
     return unityoffload.UnityOffload(unity_args, arguments.raw_argv, folder, entries=entries, settings=settings, remote_for=_offload_remote,
                                      local_room=unityoffload.default_local_room, timeout_sec=limit + REMOTE_UNITY_MARGIN_SEC,
-                                     force=arguments.offload, local_host=core.local_host_id(), unity=arguments.unity).run()
+                                     force=arguments.offload, local_host=core.local_host_id(), unity=arguments.unity,
+                                     local_slots=unityoffload.describe_local_slots, purpose=arguments.purpose).run()
 
 
 def _configure_dashboard(parser: argparse.ArgumentParser) -> None:

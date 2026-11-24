@@ -956,6 +956,32 @@ class LifelineTransportTests(unittest.TestCase):
         with self.assertRaises(OSError):
             os.fstat(seen[1])  # closed once the call is over, which is what the host sees as the end of input
 
+    def test_cancel_ends_the_input_of_the_remote_command_while_the_call_runs(self):
+        import threading
+
+        from valtrion.transport import SshTransport
+
+        transport = SshTransport("me@host", runner=lambda argv, timeout, cwd, env, stdin=None: CommandResult(0))
+        transport.lifeline = True
+        transport.LIFELINE_BEAT_SEC = 0.05
+        transport.cancel = threading.Event()
+        read = []
+
+        def reading_runner(argv, timeout, cwd, env, stdin=None):
+            threading.Timer(0.2, transport.cancel.set).start()
+            while True:  # like ssh: forward the input until it ends
+                chunk = os.read(stdin, 100)
+                if not chunk:
+                    return CommandResult(2, "interrupted\nSTATUS BLOCKED\n")
+                read.append(chunk)
+
+        transport._runner = reading_runner
+        started = time.monotonic()
+        result = transport.run(["valtrion", "unity", "run"], 60)
+        self.assertLess(time.monotonic() - started, 5)
+        self.assertEqual(2, result.returncode)
+        self.assertTrue(read)  # the beat had armed the host's watcher before the input ended
+
     def test_a_runner_with_four_parameters_still_works_without_a_lifeline(self):
         from valtrion.transport import SshTransport
 

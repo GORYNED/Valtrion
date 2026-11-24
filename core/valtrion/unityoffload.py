@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import re
 import sys
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -39,6 +40,13 @@ _TARGET_OF = {"macos": "OSXUniversal", "windows": "Win64", "linux": "Linux64"}
 REFUSED = "offload refused: "
 POLL_SEC = offload.POLL_SEC
 COPY_TIMEOUT_SEC = 300
+#: While a run sent to a host has not started Unity there: how often the host's slots (and this host's) are looked at, how often the
+#: caller is told that it still waits, how many answers in a row the host may miss, and how long a given-up call may take to end.
+START_POLL_SEC = 10.0
+START_NOTE_SEC = 60.0
+START_PROBE_TIMEOUT_SEC = 20
+START_MISSED_PROBES = 3
+CANCEL_GRACE_SEC = 30.0
 
 _FLAGS = frozenset({"-batchmode", "-nographics", "-quit", "-runtests"})
 #: Options whose value is a name, not a path: it is passed as it is and not looked at for paths.
@@ -160,7 +168,7 @@ def command_line(raw_argv: Sequence[str]) -> list[str]:
     """The caller's own `unity run` command line up to `--`, without the options that name this machine or are set here."""
     line = list(raw_argv)
     line = line[: line.index("--")] if "--" in line else line
-    for name in ("--project-dir", "--lease-wait", "--host", "--remote-project", "--unity"):
+    for name in ("--project-dir", "--lease-wait", "--host", "--remote-project", "--unity", "--purpose"):
         line = submit.drop_option(line, name)
     return [item for item in line if item not in ("--offload", "--no-offload", "--stop-on-stdin-eof")]
 
@@ -186,6 +194,7 @@ class _Attempt:
     refused: str | None = None
     lost: str | None = None
     problem: str | None = None  # the code cannot be sent at all (codesync.SnapshotError)
+    abandoned: str | None = None  # given up before Unity started on the host: the run goes to this host's queue
 
 
 class UnityOffload:
@@ -196,8 +205,13 @@ class UnityOffload:
                  timeout_sec: float, force: bool = False, git: compare.GitRunner = compare.run_git,
                  snapshot: Callable[..., codesync.Snapshot] = codesync.snapshot, sleep: Callable[[float], None] = time.sleep,
                  monotonic: Callable[[], float] = time.monotonic, local_host: str = "", unity: str | None = None,
-                 err: TextIO | None = None) -> None:
+                 err: TextIO | None = None, local_slots: Callable[[], str] | None = None, purpose: str = "") -> None:
         self.unity = unity
+        self._local_slots = local_slots or (lambda: "")
+        self.purpose = purpose
+        self.start_poll_sec = START_POLL_SEC
+        self.start_note_sec = START_NOTE_SEC
+        self._probe_failed = ""
         self.unity_args = list(unity_args)
         self.raw_argv = list(raw_argv)
         self.project_dir = project_dir
@@ -256,6 +270,11 @@ class UnityOffload:
                     return self._lost(target.entry, attempt.lost)
                 if attempt.problem is not None:
                     return self._unplaced(attempt.problem, snapshot=True)
+                if attempt.abandoned is not None:
+                    if self.force:
+                        return self._blocked(f"--offload: {attempt.abandoned}")
+                    self._say(f"offload: host {target.entry.id} given up before Unity started there: {attempt.abandoned}; running here")
+                    return None
                 if attempt.busy:
                     self.busy.append(target.entry.id)
                 elif attempt.refused:
@@ -287,7 +306,9 @@ class UnityOffload:
 
     def _attempt(self, target: offload.Target, rewritten: Plan) -> _Attempt:
         entry = target.entry
-        self._say(f"offload: local Editor slots are busy; trying host {entry.id}")
+        slots = self._local_slots()
+        self._say(f"offload: local Editor slots are busy ({slots}); trying host {entry.id}" if slots else
+                  f"offload: local Editor slots are busy; trying host {entry.id}")
         try:
             prepared = offload.prepare(target, self.project_dir, self._plain, self.settings, self.git, KIND, self.snapshot)
         except codesync.SnapshotError as error:
@@ -300,11 +321,93 @@ class UnityOffload:
             session = self._remote_for(entry, retry=False, lifeline=True)
         except (submit.SubmitError, ValueError, OSError) as error:
             return _Attempt(refused=str(error))
-        argv = [*command_line(self.raw_argv), "--lease-wait", "0", "--stop-on-stdin-eof", "--offload-project", target.project,
-                "--offload-checkout", prepared.checkout_id, "--offload-sha", prepared.sha, "--offload-from", self.local_host,
-                "--offload-out", out_dir, "--", *arguments]
-        result = session.call(argv, int(self.timeout_sec))
+        if not self.force and self._local_room():
+            return _Attempt(abandoned="a local Editor slot became free while the code was sent")
+        # The host's slot lease carries this mark in its purpose: the sender sees in `lease slots` that Unity has started there.
+        mark = f"offloaded from {self.local_host or 'another host'} ({submit.last_segment(out_dir) or out_dir})"
+        # Without the characters that cmd.exe on a Windows host cannot take literally (the transport would refuse the whole command).
+        what = re.sub(r'[%"\r\n\x00]', "", self.purpose or unityrun.default_purpose(self.unity_args, self.project_dir))
+        argv = [*command_line(self.raw_argv), "--lease-wait", "0", "--stop-on-stdin-eof", "--purpose", f"{what}, {mark}",
+                "--offload-project", target.project, "--offload-checkout", prepared.checkout_id, "--offload-sha", prepared.sha,
+                "--offload-from", self.local_host, "--offload-out", out_dir, "--", *arguments]
+        result, abandoned = self._watched_call(entry, session, argv, mark, prepared.sha)
+        if abandoned is not None:
+            return _Attempt(abandoned=abandoned)
         return self._interpret(entry, prepared, result, copies)
+
+    def _watched_call(self, entry: HostEntry, session: remote.Remote, argv: list[str], mark: str, sha: str) -> tuple[Any, str | None]:
+        """Run the command on the host and watch it until Unity has started there: (its result, None), or (None, why it was given up).
+
+        Before Unity starts the host checks the commit out and prepares the project, and nothing of that reaches this side. So every
+        few seconds the host's `lease slots` are read: Unity has started once a slot there is held with `mark`. Until then the call is
+        given up (its input is closed, so the host stops the run and gives its leases back) when this host gets a free slot, when the
+        host does not answer `START_MISSED_PROBES` times in a row, or after `offload.startSec`. After the start nothing is given up:
+        the run is not started a second time unasked."""
+        finished = threading.Event()
+        box: dict[str, Any] = {}
+        cancel = threading.Event()
+        if hasattr(session.transport, "cancel"):
+            session.transport.cancel = cancel
+
+        def call() -> None:
+            try:
+                box["result"] = session.call(argv, int(self.timeout_sec))
+            except BaseException as error:  # noqa: BLE001 - raised again in the caller's thread below
+                box["error"] = error
+            finally:
+                finished.set()
+
+        threading.Thread(target=call, name="valtrion-offload-call", daemon=True).start()
+        begun = self.monotonic()
+        limit = self.settings.start_sec
+        next_note = begun + self.start_note_sec
+        missed = 0
+        why: str | None = None
+        while not finished.wait(self.start_poll_sec):
+            if self._started_on(entry, mark):
+                break
+            if self._probe_failed:
+                missed += 1
+                if missed >= START_MISSED_PROBES:
+                    why = f"host {entry.id} did not answer {missed} times in a row while it prepared the run ({self._probe_failed})"
+                    break
+            else:
+                missed = 0
+            waited = self.monotonic() - begun
+            if not self.force and self._local_room():
+                why = f"a local Editor slot became free after {waited:.0f} s"
+                break
+            if limit > 0 and waited >= limit:
+                why = (f"Unity did not start on host {entry.id} within {limit:g} s (offload.startSec); the host was still checking out "
+                       f"{sha[:12]} or preparing the project")
+                break
+            if self.monotonic() >= next_note:
+                bound = f"; up to {limit:g} s, offload.startSec" if limit > 0 else ""
+                self._say(f"offload: waiting for Unity to start on host {entry.id} ({waited:.0f} s; it checks out {sha[:12]} and prepares "
+                          f"the project{bound})")
+                next_note = self.monotonic() + self.start_note_sec
+        if why is not None:
+            cancel.set()
+            finished.wait(CANCEL_GRACE_SEC)
+            return None, why
+        finished.wait()
+        if "error" in box:
+            raise box["error"]
+        return box["result"], None
+
+    def _started_on(self, entry: HostEntry, mark: str) -> bool:
+        """Whether a slot of the host is held by the run with `mark`; `_probe_failed` says why the host could not be asked."""
+        self._probe_failed = ""
+        try:
+            result, document = self._plain(entry).call_json(["lease", "slots"], START_PROBE_TIMEOUT_SEC)
+        except (ValueError, OSError) as error:
+            self._probe_failed = str(error) or "no answer"
+            return False
+        if document is None:
+            self._probe_failed = evidence(result) or "no answer"
+            return False
+        held = (document.get("unityEditor") or {}).get("held") or ()
+        return any(mark in str(item.get("purpose") or "") for item in held if isinstance(item, dict))
 
     def _interpret(self, entry: HostEntry, prepared: offload.Prepared, result: Any, copies: list[tuple[str, Path]]) -> _Attempt:
         if result.timed_out or result.returncode in (SSH_FAILURE, None):
@@ -353,6 +456,17 @@ def _first_match(result: Any) -> str:
 def _ran_tests(stdout: str) -> bool:
     """Whether the output says that tests ran (a result line), so that a graphics message in it is a message of a test, not of the start."""
     return bool(re.search(r"\b(?:Passed|Failed|Skipped|Total)\s*[:=]?\s*\d+\b|\btests? (?:passed|failed|ran)\b", stdout or "", re.IGNORECASE))
+
+
+def describe_local_slots(home: Path | None = None) -> str:
+    """This host's `unity-editor` slots in the words of `lease slots`: what made the run look for another host."""
+    try:
+        report = lease.LeaseManager(home).slot_report(lease.UNITY_EDITOR_RESOURCE, lease.unity_editor_capacity(home))
+    except (ValueError, OSError):
+        return ""
+    holders = "; ".join(f"slot {item['slot']}: {item.get('purpose') or item.get('owner') or 'unknown'}" for item in report["held"])
+    text = f"{report['free']} of {report['capacity']} free, {report['waiting']} waiting"
+    return f"{text}; held by {holders}" if holders else text
 
 
 def default_local_room(home: Path | None = None) -> bool:

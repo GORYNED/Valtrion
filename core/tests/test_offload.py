@@ -121,16 +121,20 @@ class SettingsTests(HostTestCase):
         self.assertFalse(settings.accept)
         self.assertEqual(config.OFFLOAD_KINDS, settings.kinds)
         self.assertTrue(settings.rerun_local)
+        self.assertEqual(300.0, settings.start_sec)
 
     def test_a_full_object_is_read(self):
-        self.write({"accept": True, "kinds": ["unity-run"], "maxBundleMiB": 64, "settleSec": 5, "lostSec": 30, "rerunLocal": False})
+        self.write({"accept": True, "kinds": ["unity-run"], "maxBundleMiB": 64, "settleSec": 5, "lostSec": 30, "rerunLocal": False,
+                    "startSec": 90})
         settings = config.load_offload_settings(self.home)
-        self.assertEqual((True, ("unity-run",), 64, 5.0, 30.0, False),
-                         (settings.accept, settings.kinds, settings.max_bundle_mib, settings.settle_sec, settings.lost_sec, settings.rerun_local))
+        self.assertEqual((True, ("unity-run",), 64, 5.0, 30.0, False, 90.0),
+                         (settings.accept, settings.kinds, settings.max_bundle_mib, settings.settle_sec, settings.lost_sec, settings.rerun_local,
+                          settings.start_sec))
 
     def test_bad_values_are_refused_with_the_key(self):
         for bad, key in (({"accept": "yes"}, "accept"), ({"kinds": []}, "kinds"), ({"kinds": ["x"]}, "kinds"), ({"maxBundleMiB": 0}, "maxBundleMiB"),
-                         ({"settleSec": -1}, "settleSec"), ({"lostSec": "a"}, "lostSec"), ({"other": 1}, "unknown keys"), ({"rerunLocal": 1}, "rerunLocal")):
+                         ({"settleSec": -1}, "settleSec"), ({"lostSec": "a"}, "lostSec"), ({"other": 1}, "unknown keys"), ({"rerunLocal": 1}, "rerunLocal"),
+                         ({"startSec": -5}, "startSec")):
             self.write(bad)
             with self.assertRaises(config.ConfigError, msg=str(bad)) as caught:
                 config.load_offload_settings(self.home)

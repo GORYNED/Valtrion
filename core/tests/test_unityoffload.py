@@ -5,6 +5,8 @@ import io
 import json
 import contextlib
 import sys
+import threading
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -32,12 +34,24 @@ class FakeHost(Transport):
         self.files = dict(files or {})
         self.calls: list[list[str]] = []
         self.runs: list[list[str]] = []
+        #: Set by the sender: the end of the input of `unity run` (the host then stops the run).
+        self.cancel: threading.Event | None = None
+        #: `unity run` does not answer until the sender gives it up (a host that is still checking out the commit).
+        self.preparing = False
+        #: `unity run` takes a slot with its purpose at once and answers when `release` is set (Unity started and runs).
+        self.starts = False
+        self.release = threading.Event()
+        self.held: list[dict] = []
+        self.silent = False  # `lease slots` gets no answer (the host stopped answering while the run was prepared)
 
     def run(self, command, timeout_sec, cwd=None):
         arguments = list(command[1:])
         self.calls.append(arguments)
+        if arguments[:2] == ["lease", "slots"] and self.silent and self.runs:
+            return CommandResult(255, "", "ssh: connect to host mac port 22: Operation timed out")
         if arguments[:2] == ["lease", "slots"]:
-            report = {"host": "mac", "version": __version__, "unityEditor": {"capacity": 2, "free": self.free, "waiting": self.waiting, "held": []},
+            report = {"host": "mac", "version": __version__,
+                      "unityEditor": {"capacity": 2, "free": self.free, "waiting": self.waiting, "held": list(self.held)},
                       "unityVersions": ["6000.0.1f1"], "offload": {"accept": True, "kinds": ["editor", "unity-run"], "maxBundleMiB": 512},
                       "projects": ["MyGame"]}
             return CommandResult(0, json.dumps(report))
@@ -47,6 +61,13 @@ class FakeHost(Transport):
             return CommandResult(0, json.dumps({"inbox": "/work/inbox-1"}))
         if arguments[:2] == ["unity", "run"]:
             self.runs.append(arguments)
+            if self.starts:
+                self.held.append({"slot": 1, "purpose": arguments[arguments.index("--purpose") + 1]})
+                self.release.wait(10)
+            elif self.preparing:
+                if not (self.cancel and self.cancel.wait(10)):
+                    return CommandResult(1, "the sender never gave the run up\nSTATUS FAIL\n")
+                return CommandResult(2, "interrupted: the caller's input ended\nSTATUS BLOCKED\n")
             return self.answer
         return CommandResult(127, "", "unexpected call")
 
@@ -169,6 +190,9 @@ class PlacementTests(HostTestCase):
         self.assertIn("console text", err.getvalue())
         self.assertIn("offload: ran on host mac (commit fetched by the host from the project's remote)", self.err.getvalue())
         (command,) = self.host.runs
+        purpose = command.pop(command.index("--purpose") + 1)
+        command.remove("--purpose")
+        self.assertTrue(purpose.endswith(", offloaded from build-pc (inbox-1)"), purpose)  # the mark the sender looks for in `lease slots`
         self.assertEqual(["unity", "run", "--timeout-sec", "100", "--lease-wait", "0", "--stop-on-stdin-eof", "--offload-project", "MyGame",
                           "--offload-checkout", "c1", "--offload-sha", SHA, "--offload-from", "build-pc", "--offload-out", "/work/inbox-1", "--",
                           "-batchmode", "-projectPath", PROJECT_TOKEN, "-runTests", "-testPlatform", "EditMode"], command)
@@ -309,6 +333,82 @@ class PlacementTests(HostTestCase):
         code, _ = self.run_offload(["-batchmode"], unity="/Applications/Unity")
         self.assertIsNone(code)
         self.assertIn("--unity", self.err.getvalue())
+
+    # -- until Unity has started on the host ---------------------------------------------------------------------------------
+
+    def watched(self, *, local_room=lambda: False, force=False, start_sec=0.3, local_slots=None):
+        placed = UnityOffload(["-batchmode"], ["unity", "run", "--", "-batchmode"], self.project, entries=[config.find_host("mac")],
+                              settings=config.OffloadSettings(settle_sec=0, start_sec=start_sec), remote_for=self.factory,
+                              local_room=local_room, timeout_sec=1000, force=force, git=lambda folder, arguments: (1, ""),
+                              snapshot=snapshot_of_head, sleep=self.sleep, local_host="build-pc", err=self.err, local_slots=local_slots)
+        placed.start_poll_sec = 0.01
+        placed.start_note_sec = 0.05
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            return placed.run()
+
+    def test_a_purpose_with_characters_that_cmd_cannot_take_still_reaches_a_windows_host(self):
+        placed = UnityOffload(["-batchmode"], ["unity", "run", "--", "-batchmode"], self.project, entries=[config.find_host("mac")],
+                              settings=config.OffloadSettings(settle_sec=0), remote_for=self.factory, local_room=lambda: False,
+                              timeout_sec=1000, git=lambda folder, arguments: (1, ""), snapshot=snapshot_of_head, local_host="build-pc",
+                              err=self.err, purpose='100% "done"')
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            placed.run()
+        (command,) = self.host.runs
+        self.assertEqual("100 done, offloaded from build-pc (inbox-1)", command[command.index("--purpose") + 1])
+
+    def test_the_busy_local_slots_are_named_as_lease_slots_shows_them(self):
+        self.watched(local_slots=lambda: "0 of 1 free, 0 waiting; held by slot 1: Unity tests (EditMode) - task-ab12cd")
+        self.assertIn("offload: local Editor slots are busy (0 of 1 free, 0 waiting; held by slot 1: Unity tests (EditMode) - task-ab12cd); "
+                      "trying host mac", self.err.getvalue())
+
+    def test_a_host_that_does_not_start_unity_in_time_is_given_up_and_the_run_goes_here(self):
+        self.host.preparing = True
+        started = time.monotonic()
+        self.assertIsNone(self.watched(start_sec=0.3))
+        self.assertLess(time.monotonic() - started, 5)
+        self.assertTrue(self.host.cancel.is_set())  # its input was ended, so the host stops the run and gives its leases back
+        text = self.err.getvalue()
+        self.assertIn("offload: waiting for Unity to start on host mac", text)
+        self.assertIn(f"checks out {SHA[:12]}", text)
+        self.assertIn("offload: host mac given up before Unity started there: Unity did not start on host mac within 0.3 s (offload.startSec)", text)
+        self.assertIn("running here", text)
+        self.assertEqual(1, len(self.host.runs))  # not tried again
+
+    def test_with_offload_a_host_that_does_not_start_unity_in_time_blocks_the_run(self):
+        self.host.preparing = True
+        self.assertEqual(constants.EXIT_BLOCKED, self.watched(force=True, start_sec=0.3))
+        self.assertIn("BLOCKED: --offload: Unity did not start on host mac", self.err.getvalue())
+
+    def test_a_local_slot_that_becomes_free_before_unity_started_on_the_host_takes_the_run(self):
+        self.host.preparing = True
+        answers = iter([False, False])  # before the survey, after the code was sent; then free
+        self.assertIsNone(self.watched(local_room=lambda: next(answers, True), start_sec=0))
+        self.assertTrue(self.host.cancel.is_set())
+        self.assertIn("given up before Unity started there: a local Editor slot became free", self.err.getvalue())
+
+    def test_a_local_slot_that_became_free_while_the_code_was_sent_takes_the_run_before_it_starts_there(self):
+        answers = iter([False])
+        self.assertIsNone(self.watched(local_room=lambda: next(answers, True)))
+        self.assertEqual([], self.host.runs)
+        self.assertIn("a local Editor slot became free while the code was sent; running here", self.err.getvalue())
+
+    def test_a_host_that_stops_answering_before_unity_started_is_given_up(self):
+        self.host.preparing = True
+        self.host.silent = True
+        self.assertIsNone(self.watched(start_sec=0))
+        self.assertIn("host mac did not answer 3 times in a row while it prepared the run", self.err.getvalue())
+        self.assertTrue(self.host.cancel.is_set())
+
+    def test_once_unity_has_started_on_the_host_the_run_is_waited_for_and_never_given_up(self):
+        self.host.starts = True
+        threading.Timer(0.5, self.host.release.set).start()  # longer than startSec and with a free local slot meanwhile
+        local = iter([False, False])
+        code = self.watched(local_room=lambda: next(local, True), start_sec=0.1)
+        self.assertEqual(0, code)
+        self.assertFalse(self.host.cancel.is_set())
+        self.assertIn("offload: ran on host mac", self.err.getvalue())
+        (held,) = self.host.held
+        self.assertIn("offloaded from build-pc (inbox-1)", held["purpose"])
 
 
 class CommandTests(HostTestCase):
