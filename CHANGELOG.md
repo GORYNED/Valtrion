@@ -2,7 +2,7 @@
 
 Core (the `valtrion` Python package) and the Unity package `com.goryned.valtrion.unity` are versioned independently. The Unity changelog is in `integrations/unity/com.goryned.valtrion.unity/CHANGELOG.md`; `compat.json` lists compatible pairs.
 
-## Unreleased
+## 1.3.0 (2026-11-24)
 
 - **`unity run` no longer waits silently for an offload host.** A run sent to another host because the local Editor slots were busy used to wait for the host's answer without a limit and without a word while the host checked out the commit and prepared the project. Now the sender reads the host's `lease slots` every 10 s until a slot there is held by this run (Unity has started). Until then it gives the host up and runs the command here (in the local queue) when a local slot becomes free, when the host does not answer three times in a row, or after the new `offload.startSec` of `host.json` (default 300, 0: no limit); the host's run is stopped through the end of its input and gives its leases back. It says every minute that it is still waiting. With `--offload` a host that gives up ends the run `BLOCKED` instead. Once Unity has started on the host nothing changes: the run is waited for as before.
 - **Why the run went to another host.** The line `offload: local Editor slots are busy (...)` now shows the local slots as `lease slots` reads them (free, capacity, waiting and who holds each slot), and the slot lease on the host names the sending host (`offloaded from HOST`), so it shows on that host's dashboard.
