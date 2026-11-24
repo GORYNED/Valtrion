@@ -327,13 +327,15 @@ OFFLOAD_KINDS = ("editor", "unity-run")
 class OffloadSettings:
     """`host.json` `offload`. As the host that receives work: `accept` and `kinds`, `maxBundleMiB`. As the host that sends it: `settleSec` (how
     long a job that finds every Editor slot busy looks for a free host before it joins the local queue), `lostSec` (how long a host
-    that does not answer is waited for after the remote run started) and `rerunLocal` (run again here once when it is lost)."""
+    that does not answer is waited for after the remote run started), `rerunLocal` (run again here once when it is lost) and `startSec` (how
+    long a `unity run` sent to a host waits for Unity to start there before it runs here instead; 0: no limit)."""
     accept: bool = False
     kinds: tuple[str, ...] = OFFLOAD_KINDS
     max_bundle_mib: int = 512
     settle_sec: float = 30.0
     lost_sec: float = 120.0
     rerun_local: bool = True
+    start_sec: float = 300.0
 
 
 def load_offload_settings(home: Path | None = None) -> OffloadSettings:
@@ -349,7 +351,7 @@ def load_offload_settings(home: Path | None = None) -> OffloadSettings:
         return OffloadSettings()
     if not isinstance(value, dict):
         raise ConfigError("host.json: offload must be an object")
-    unknown = sorted(set(value) - {"accept", "kinds", "maxBundleMiB", "settleSec", "lostSec", "rerunLocal"})
+    unknown = sorted(set(value) - {"accept", "kinds", "maxBundleMiB", "settleSec", "lostSec", "rerunLocal", "startSec"})
     if unknown:
         raise ConfigError(f"host.json: offload has unknown keys: {', '.join(unknown)}")
     for key in ("accept", "rerunLocal"):
@@ -362,13 +364,13 @@ def load_offload_settings(home: Path | None = None) -> OffloadSettings:
     if isinstance(size, bool) or not isinstance(size, int) or size < 1:
         raise ConfigError("host.json: offload.maxBundleMiB must be a positive integer")
     seconds = {}
-    for key, default in (("settleSec", 30.0), ("lostSec", 120.0)):
+    for key, default in (("settleSec", 30.0), ("lostSec", 120.0), ("startSec", 300.0)):
         number = value.get(key, default)
         if isinstance(number, bool) or not isinstance(number, (int, float)) or not math.isfinite(number) or number < 0:
             raise ConfigError(f"host.json: offload.{key} must be a non-negative number")
         seconds[key] = float(number)
     return OffloadSettings(bool(value.get("accept", False)), tuple(dict.fromkeys(kinds)), size, seconds["settleSec"], seconds["lostSec"],
-                           bool(value.get("rerunLocal", True)))
+                           bool(value.get("rerunLocal", True)), seconds["startSec"])
 
 
 def default_lease_wait(home: Path | None = None) -> float | None:

@@ -13,6 +13,7 @@ import re
 import shlex
 import subprocess
 import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Mapping, Sequence
@@ -227,6 +228,9 @@ class SshTransport(Transport):
         #: host sees end of input when this process dies or ssh drops, which a command without a terminal cannot learn otherwise.
         self.lifeline = False
         self.LIFELINE_BEAT_SEC = 5.0
+        #: With the lifeline: set it to end the input of the remote command early. A command started with `--stop-on-stdin-eof` then
+        #: stops as if the caller were gone (it gives its leases back) and the call returns its answer.
+        self.cancel: threading.Event | None = None
         #: The folder for the multiplexing control sockets. Connection sharing needs a POSIX ssh client (the Windows OpenSSH client
         #: has no ControlMaster), so it is on by default only there and only when a folder is given.
         self.control_dir = control_dir
@@ -285,8 +289,17 @@ class SshTransport(Transport):
             return CommandResult(2, "", f"refused to send the command to {self.target}: {error}")
         if not self.lifeline:
             return self._runner(argv, timeout_sec + self.connect_timeout_sec, None, None)
-        read_end, write_end = os.pipe()  # the write end stays open exactly as long as this call runs
+        read_end, write_end = os.pipe()  # the write end stays open exactly as long as this call runs (or until `cancel` is set)
         done = threading.Event()
+        cancel = self.cancel
+        closed = threading.Lock()
+        open_ends = {"write": True}
+
+        def close_write() -> None:
+            with closed:
+                if open_ends["write"]:
+                    open_ends["write"] = False
+                    os.close(write_end)
 
         def beat() -> None:
             # One byte at once and then every few seconds: the host trusts the end of its input as a sign of a lost caller only after it
@@ -296,8 +309,15 @@ class SshTransport(Transport):
                     os.write(write_end, b".")
                 except OSError:
                     return
-                if done.wait(self.LIFELINE_BEAT_SEC):
-                    return
+                beat_end = time.monotonic() + self.LIFELINE_BEAT_SEC
+                while True:
+                    if done.wait(min(0.2, max(0.0, beat_end - time.monotonic())) if cancel is not None else self.LIFELINE_BEAT_SEC):
+                        return
+                    if cancel is not None and cancel.is_set():
+                        close_write()  # the end of the input: the command on the host stops
+                        return
+                    if cancel is None or time.monotonic() >= beat_end:
+                        break
 
         beater = threading.Thread(target=beat, name="valtrion-ssh-lifeline", daemon=True)
         beater.start()
@@ -307,7 +327,7 @@ class SshTransport(Transport):
             done.set()
             beater.join(timeout=2)
             os.close(read_end)
-            os.close(write_end)
+            close_write()
 
     @staticmethod
     def _scp_path(remote: str) -> str:
